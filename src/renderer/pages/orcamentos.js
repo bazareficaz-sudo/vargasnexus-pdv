@@ -361,12 +361,20 @@ const Orcamentos = (() => {
     if (!_searchItems.length) { box.style.display = 'none'; return; }
     box.innerHTML = `<table style="width:100%;border-collapse:collapse">
       <thead><tr style="border-bottom:1px solid var(--border);background:var(--bg3)">
-        <th style="padding:6px 10px;font-size:10px;color:var(--text3);text-transform:uppercase;text-align:left">SKU</th>
+        <th style="padding:6px 10px;font-size:10px;color:var(--text3);text-transform:uppercase;text-align:left;width:80px">SKU</th>
         <th style="padding:6px 10px;font-size:10px;color:var(--text3);text-transform:uppercase;text-align:left">Produto</th>
-        <th style="padding:6px 10px;font-size:10px;color:var(--text3);text-transform:uppercase;text-align:right">Preço</th>
+        <th style="padding:6px 10px;font-size:10px;color:var(--text3);text-transform:uppercase;text-align:left;width:110px">Marca</th>
+        <th style="padding:6px 10px;font-size:10px;color:var(--text3);text-transform:uppercase;text-align:center;width:80px">Estoque</th>
+        <th style="padding:6px 10px;font-size:10px;color:var(--text3);text-transform:uppercase;text-align:right;width:100px">Preço</th>
       </tr></thead>
       <tbody>
-      ${_searchItems.slice(0,30).map((p,i)=>`
+      ${_searchItems.slice(0,30).map((p,i)=>{
+        const estoqueHtml = p.estoque <= 0
+          ? `<span style="color:var(--red)">❌ 0</span>`
+          : p.estoque <= 5
+            ? `<span style="color:var(--yellow)">⚠️ ${p.estoque}</span>`
+            : `<span style="color:var(--green)">${p.estoque}</span>`;
+        return `
       <tr class="orc-si${i===_searchHighlight?' highlighted':''}" id="orc-si-${i}"
         onclick="Orcamentos._selecionarProduto(${i})">
         <td style="padding:8px 10px;font-size:11px;color:var(--text3);white-space:nowrap">${p.sku||'—'}</td>
@@ -374,10 +382,12 @@ const Orcamentos = (() => {
           <span style="font-size:14px;margin-right:4px">${p.emoji||'📦'}</span>
           <span style="font-weight:500;font-size:13px">${p.nome}</span>
         </td>
+        <td style="padding:8px 10px;font-size:12px;color:var(--text2)">${p.marca||'—'}</td>
+        <td style="padding:8px 10px;text-align:center;font-size:12px">${estoqueHtml}</td>
         <td style="padding:8px 10px;text-align:right;font-weight:700;color:var(--accent);font-family:'Syne',sans-serif;white-space:nowrap">
           R$ ${fmtMoney(p.preco_venda)}
         </td>
-      </tr>`).join('')}
+      </tr>`;}).join('')}
       </tbody></table>`;
     box.style.display = 'block';
   }
