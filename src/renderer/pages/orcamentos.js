@@ -636,7 +636,18 @@ const Orcamentos = (() => {
     _cliTimeout = setTimeout(async () => {
       const res = await window.pdv.clientes.buscar(val);
       if (!el) return;
-      if (!res.length) { el.style.display='none'; return; }
+      if (!res.length) {
+        // Nenhum cliente encontrado — mostrar opção de cadastro rápido
+        el.innerHTML = `
+<div style="padding:12px 14px;text-align:center">
+  <div style="color:var(--text3);font-size:13px;margin-bottom:10px">Nenhum cliente encontrado para "<strong>${val}</strong>"</div>
+  <button class="btn btn-primary btn-sm" onclick="Orcamentos._abrirCadastroCliente('${val.replace(/'/g,"\\'")}')">
+    + Cadastrar novo cliente
+  </button>
+</div>`;
+        el.style.display='block';
+        return;
+      }
       el.innerHTML = res.slice(0,10).map(c=>`
 <div onclick="Orcamentos._selecionarCliente('${c.id}','${(c.nome||'').replace(/'/g,"\\'")}','${c.telefone||''}')"
   style="padding:10px 14px;cursor:pointer;border-bottom:1px solid var(--border);transition:background .1s"
@@ -646,6 +657,58 @@ const Orcamentos = (() => {
 </div>`).join('');
       el.style.display='block';
     }, 200);
+  }
+
+  function _abrirCadastroCliente(digitado) {
+    // Fecha o dropdown antes de abrir o modal
+    const el = document.getElementById('orc-cli-results');
+    if (el) el.style.display = 'none';
+
+    // Detecta se o que foi digitado parece telefone ou nome
+    const parecePhone = /^[\d\s\-()+]{6,}$/.test(digitado);
+    const nomeVal     = parecePhone ? '' : digitado;
+    const telVal      = parecePhone ? digitado.replace(/\D/g,'') : '';
+
+    Modal.open(`
+<div style="display:flex;flex-direction:column;gap:14px">
+  <div>
+    <label style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text3);display:block;margin-bottom:4px">Nome *</label>
+    <input class="input" id="orc-nc-nome" placeholder="Nome completo" value="${nomeVal}"
+      onkeydown="if(event.key==='Enter'){document.getElementById('orc-nc-tel').focus()}">
+  </div>
+  <div>
+    <label style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text3);display:block;margin-bottom:4px">Celular *</label>
+    <input class="input" id="orc-nc-tel" placeholder="(xx) xxxxx-xxxx" value="${telVal}"
+      onkeydown="if(event.key==='Enter'){Orcamentos._salvarNovoCliente()}">
+  </div>
+</div>
+<div class="modal-actions" style="margin-top:8px">
+  <button class="btn btn-primary" onclick="Orcamentos._salvarNovoCliente()">Salvar cliente</button>
+  <button class="btn btn-ghost" onclick="Modal.close()">Cancelar</button>
+</div>`, 'Novo Cliente');
+
+    // Foca no campo correto
+    setTimeout(() => {
+      const foco = nomeVal ? 'orc-nc-tel' : 'orc-nc-nome';
+      document.getElementById(foco)?.focus();
+    }, 80);
+  }
+
+  async function _salvarNovoCliente() {
+    const nome = document.getElementById('orc-nc-nome')?.value?.trim();
+    const tel  = document.getElementById('orc-nc-tel')?.value?.trim();
+    if (!nome) { Toast.show('Nome é obrigatório', 'error'); document.getElementById('orc-nc-nome')?.focus(); return; }
+    if (!tel)  { Toast.show('Celular é obrigatório', 'error'); document.getElementById('orc-nc-tel')?.focus(); return; }
+
+    try {
+      const id = await window.pdv.clientes.salvar({ nome, telefone: tel });
+      Modal.close();
+      _selecionarCliente(id, nome, tel);
+      document.getElementById('orc-cli-search').value = '';
+      Toast.show(`Cliente ${nome} cadastrado!`, 'success');
+    } catch (err) {
+      Toast.show('Erro ao salvar cliente: ' + err.message, 'error');
+    }
   }
 
   function _selecionarCliente(id, nome, telefone) {
