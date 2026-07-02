@@ -278,6 +278,67 @@ ipcMain.handle('vendas:editar', async (_, id, novosItens, novosDados) => {
 ipcMain.handle('vendas:totaisHoje', () => db.vendas.totaisHoje());
 ipcMain.handle('vendas:listarCloud', (_, data) => api.listarVendasCloud(data));
 
+// Orçamentos
+ipcMain.handle('orcamentos:registrar', async (_, orc) => {
+  const result = db.orcamentos.registrar(orc);
+  setImmediate(async () => {
+    try {
+      const payload = db.orcamentos.payloadSync(result.id);
+      const usuario = store.get('auth.usuario') || {};
+      const b44Payload = {
+        empresa_id: usuario.empresa_estoque_id || usuario.empresa_id || store.get('auth.empresa_id'),
+        empresa_nome: usuario.empresa_nome || null,
+        numero: payload.numero,
+        status: 'enviado',
+        origem: 'sistema_vargas',
+        terminal_id: store.get('config.terminal_id') || null,
+        cliente_nome: payload.cliente_nome || null,
+        cliente_telefone: payload.cliente_telefone || null,
+        forma_pagamento: payload.forma_pagamento || 'dinheiro',
+        validade_dias: payload.validade_dias || 7,
+        itens: payload.itens.map(i => ({
+          produto_id: i.produto_remote_id || null,
+          produto_nome: i.produto_nome,
+          produto_sku: i.produto_sku || null,
+          quantidade: i.quantidade,
+          preco_unitario: i.preco_unitario,
+          desconto: i.desconto || 0,
+          subtotal: i.total,
+        })),
+        subtotal: payload.subtotal,
+        desconto_total: payload.desconto || 0,
+        total: payload.total,
+        observacao: payload.observacao || null,
+        vendedor_nome: payload.vendedor_nome || usuario.nome || null,
+        vendedor_email: usuario.email || null,
+      };
+      const res = await api.sincronizarOrcamento(b44Payload);
+      if (res?.id || res?._id) db.orcamentos.atualizarRemoteId(result.id, res.id || res._id);
+    } catch (err) {
+      console.warn('[ORC] Sync Base44 falhou:', err.message);
+    }
+  });
+  return result;
+});
+ipcMain.handle('orcamentos:listar', (_, filtros) => db.orcamentos.listar(filtros));
+ipcMain.handle('orcamentos:getById', (_, id) => db.orcamentos.getById(id));
+ipcMain.handle('orcamentos:cancelar', async (_, id) => {
+  db.orcamentos.cancelar(id);
+  const orc = db.orcamentos.getById(id);
+  if (orc?.remote_id) {
+    try { await api.atualizarStatusOrcamento(orc.remote_id, 'cancelado'); } catch {}
+  }
+  return { ok: true };
+});
+ipcMain.handle('orcamentos:marcarConvertido', async (_, id) => {
+  db.orcamentos.marcarConvertido(id);
+  const orc = db.orcamentos.getById(id);
+  if (orc?.remote_id) {
+    try { await api.atualizarStatusOrcamento(orc.remote_id, 'convertido'); } catch {}
+  }
+  return { ok: true };
+});
+
 // Estoque
 ipcMain.handle('estoque:get', (_, produtoId) => db.estoque.get(produtoId));
 ipcMain.handle('estoque:movimentar', (_, mov) => db.estoque.movimentar(mov));

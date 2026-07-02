@@ -277,6 +277,40 @@ function createTables() {
       sync_status TEXT DEFAULT 'pending'
     );
 
+    -- Orçamentos
+    CREATE TABLE IF NOT EXISTS orcamentos (
+      id TEXT PRIMARY KEY,
+      remote_id TEXT UNIQUE,
+      numero INTEGER,
+      status TEXT DEFAULT 'pendente',
+      cliente_id TEXT,
+      cliente_nome TEXT,
+      cliente_telefone TEXT,
+      vendedor_nome TEXT,
+      forma_pagamento TEXT DEFAULT 'dinheiro',
+      validade_dias INTEGER DEFAULT 7,
+      subtotal REAL NOT NULL DEFAULT 0,
+      desconto REAL DEFAULT 0,
+      total REAL NOT NULL DEFAULT 0,
+      observacao TEXT,
+      created_at TEXT NOT NULL,
+      synced_at TEXT,
+      sync_status TEXT DEFAULT 'pending'
+    );
+
+    CREATE TABLE IF NOT EXISTS orcamento_itens (
+      id TEXT PRIMARY KEY,
+      orcamento_id TEXT NOT NULL,
+      produto_id TEXT,
+      produto_nome TEXT,
+      produto_sku TEXT,
+      quantidade REAL NOT NULL,
+      preco_unitario REAL NOT NULL,
+      desconto REAL DEFAULT 0,
+      total REAL NOT NULL,
+      FOREIGN KEY (orcamento_id) REFERENCES orcamentos(id)
+    );
+
     -- Config local
     CREATE TABLE IF NOT EXISTS config (
       chave TEXT PRIMARY KEY,
@@ -409,6 +443,21 @@ function runMigrations() {
     'ALTER TABLE vendas ADD COLUMN nfce_serie TEXT',
     'ALTER TABLE vendas ADD COLUMN nfce_url_pdf TEXT',
     'ALTER TABLE vendas ADD COLUMN nfce_referencia TEXT',
+    `CREATE TABLE IF NOT EXISTS orcamentos (
+      id TEXT PRIMARY KEY, remote_id TEXT UNIQUE, numero INTEGER,
+      status TEXT DEFAULT 'pendente', cliente_id TEXT,
+      cliente_nome TEXT, cliente_telefone TEXT, vendedor_nome TEXT,
+      forma_pagamento TEXT DEFAULT 'dinheiro', validade_dias INTEGER DEFAULT 7,
+      subtotal REAL NOT NULL DEFAULT 0, desconto REAL DEFAULT 0, total REAL NOT NULL DEFAULT 0,
+      observacao TEXT, created_at TEXT NOT NULL, synced_at TEXT, sync_status TEXT DEFAULT 'pending'
+    )`,
+    `CREATE TABLE IF NOT EXISTS orcamento_itens (
+      id TEXT PRIMARY KEY, orcamento_id TEXT NOT NULL,
+      produto_id TEXT, produto_nome TEXT, produto_sku TEXT,
+      quantidade REAL NOT NULL, preco_unitario REAL NOT NULL,
+      desconto REAL DEFAULT 0, total REAL NOT NULL,
+      FOREIGN KEY (orcamento_id) REFERENCES orcamentos(id)
+    )`,
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* coluna já existe */ }
@@ -1575,6 +1624,93 @@ const mktAnuncios = {
   },
 };
 
+// ─── ORÇAMENTOS ───────────────────────────────────────────────────
+const orcamentos = {
+  registrar(orc) {
+    const id = uuidv4();
+    const now = new Date().toISOString();
+    const ultimo = db.prepare('SELECT MAX(numero) as n FROM orcamentos').get();
+    const numero = (ultimo?.n || 0) + 1;
+
+    db.transaction(() => {
+      db.prepare(`
+        INSERT INTO orcamentos
+        (id, numero, status, cliente_id, cliente_nome, cliente_telefone,
+         vendedor_nome, forma_pagamento, validade_dias, subtotal, desconto, total, observacao, created_at, sync_status)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      `).run(
+        id, numero, 'pendente',
+        orc.cliente_id || null, orc.cliente_nome || null, orc.cliente_telefone || null,
+        orc.vendedor_nome || null, orc.forma_pagamento || 'dinheiro', orc.validade_dias || 7,
+        orc.subtotal || 0, orc.desconto || 0, orc.total || 0,
+        orc.observacao || null, now, 'pending'
+      );
+      for (const item of (orc.itens || [])) {
+        db.prepare(`
+          INSERT INTO orcamento_itens
+          (id, orcamento_id, produto_id, produto_nome, produto_sku, quantidade, preco_unitario, desconto, total)
+          VALUES (?,?,?,?,?,?,?,?,?)
+        `).run(
+          uuidv4(), id,
+          item.produto_id || null, item.produto_nome, item.produto_sku || null,
+          item.quantidade, item.preco_unitario, item.desconto || 0, item.total
+        );
+      }
+    })();
+
+    return { id, numero };
+  },
+
+  listar(filtros = {}) {
+    let where = '1=1';
+    const params = [];
+    if (filtros.status) { where += ' AND status = ?'; params.push(filtros.status); }
+    if (filtros.busca) {
+      const q = `%${filtros.busca.toLowerCase()}%`;
+      where += ' AND (LOWER(cliente_nome) LIKE ? OR CAST(numero AS TEXT) LIKE ?)';
+      params.push(q, q);
+    }
+    return db.prepare(`
+      SELECT * FROM orcamentos WHERE ${where} ORDER BY created_at DESC LIMIT 200
+    `).all(...params);
+  },
+
+  getById(id) {
+    const orc = db.prepare('SELECT * FROM orcamentos WHERE id = ?').get(id);
+    if (!orc) return null;
+    orc.itens = db.prepare('SELECT * FROM orcamento_itens WHERE orcamento_id = ? ORDER BY rowid').all(id);
+    return orc;
+  },
+
+  cancelar(id) {
+    db.prepare(`UPDATE orcamentos SET status = 'cancelado', sync_status = 'pending' WHERE id = ?`).run(id);
+  },
+
+  atualizarRemoteId(id, remoteId) {
+    db.prepare(`UPDATE orcamentos SET remote_id = ?, synced_at = ?, sync_status = 'synced' WHERE id = ?`)
+      .run(remoteId, new Date().toISOString(), id);
+  },
+
+  marcarConvertido(id) {
+    db.prepare(`UPDATE orcamentos SET status = 'convertido', sync_status = 'pending' WHERE id = ?`).run(id);
+  },
+
+  // Monta payload de sync resolvendo remote_ids dos produtos
+  payloadSync(id) {
+    const orc = this.getById(id);
+    if (!orc) return null;
+    return {
+      ...orc,
+      itens: orc.itens.map(i => {
+        const prod = i.produto_id
+          ? db.prepare('SELECT remote_id FROM produtos WHERE id = ?').get(i.produto_id)
+          : null;
+        return { ...i, produto_remote_id: prod?.remote_id || null };
+      }),
+    };
+  },
+};
+
 module.exports = {
   initialize,
   db: () => db,
@@ -1587,6 +1723,7 @@ module.exports = {
   estoque,
   faltas,
   entregas,
+  orcamentos,
   sync: syncQueue,
   mktAnuncios,
   mktPedidos,

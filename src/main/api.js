@@ -559,6 +559,16 @@ async function sincronizarConfigTermometro() {
   return items[0] || null; // Uma config por empresa
 }
 
+// ─── Orçamentos ───────────────────────────────────────────────────────
+
+async function sincronizarOrcamento(payload) {
+  return post('/entities/Orcamento', payload);
+}
+
+async function atualizarStatusOrcamento(remoteId, status) {
+  return put(`/entities/Orcamento/${remoteId}`, { status });
+}
+
 // ─── Estoque ──────────────────────────────────────────────────────────
 
 async function sincronizarEstoque(ultimaSync = null) {
@@ -833,6 +843,8 @@ module.exports = {
   atualizarSeparacao,
   mapearAnuncioBase44,
   getIdProdutoGenerico,
+  sincronizarOrcamento,
+  atualizarStatusOrcamento,
   registrarNfceVenda,
 };
 

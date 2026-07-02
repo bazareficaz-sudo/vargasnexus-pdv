@@ -59,6 +59,15 @@ contextBridge.exposeInMainWorld('pdv', {
     listarCloud: (data) => ipcRenderer.invoke('vendas:listarCloud', data),
   },
 
+  // Orçamentos
+  orcamentos: {
+    registrar:       (orc)        => ipcRenderer.invoke('orcamentos:registrar', orc),
+    listar:          (filtros)    => ipcRenderer.invoke('orcamentos:listar', filtros),
+    getById:         (id)         => ipcRenderer.invoke('orcamentos:getById', id),
+    cancelar:        (id)         => ipcRenderer.invoke('orcamentos:cancelar', id),
+    marcarConvertido:(id)         => ipcRenderer.invoke('orcamentos:marcarConvertido', id),
+  },
+
   // Estoque
   estoque: {
     get: (id) => ipcRenderer.invoke('estoque:get', id),

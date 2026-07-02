@@ -68,6 +68,7 @@ const App = (() => {
     const titles = {
       pdv: 'Frente de Caixa', clientes: 'Clientes',
       produtos: 'Produtos', vendas: 'Vendas',
+      orcamentos: 'Orçamentos',
       estoque: 'Estoque', faltas: 'Faltas & Encomendas',
       carteira: 'Carteira de Clientes', entregas: 'Entregas',
       config: 'Configurações', marketplace: 'Marketplace'
@@ -77,7 +78,7 @@ const App = (() => {
     // Renderizar página
     const content = document.getElementById('main-content');
     const pages = { pdv: PDV, produtos: Produtos, clientes: Clientes,
-                    vendas: Vendas, estoque: Estoque, faltas: Faltas,
+                    vendas: Vendas, orcamentos: Orcamentos, estoque: Estoque, faltas: Faltas,
                     carteira: Carteira, entregas: Entregas, config: Config,
                     marketplace: Marketplace };
     const p = pages[page];

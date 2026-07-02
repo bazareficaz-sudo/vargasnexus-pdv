@@ -143,6 +143,9 @@ const PDV = (() => {
     <!-- Botões de ação -->
     <div class="pdv-actions">
       <button class="btn btn-ghost" onclick="PDV.clearCart()" style="flex:1">🗑 Limpar</button>
+      <button class="btn btn-ghost" id="btn-orc" onclick="PDV.salvarComoOrcamento()" style="flex:1" disabled title="Salvar como orçamento sem baixar estoque">
+        📝 Orçamento
+      </button>
       <button class="btn btn-primary btn-lg" id="btn-finalizar" onclick="PDV.finalizarVenda()" style="flex:2" disabled>
         F9 — Finalizar
       </button>
@@ -570,6 +573,8 @@ const PDV = (() => {
       btn.disabled = cart.length === 0;
       btn.textContent = negativo ? 'F9 — Devolver' : 'F9 — Finalizar';
     }
+    const btnOrc = document.getElementById('btn-orc');
+    if (btnOrc) btnOrc.disabled = cart.length === 0;
     calcTroco();
     SaudeVenda.atualizar(cart, getDesconto(), payMethod);
   }
@@ -1118,6 +1123,15 @@ const PDV = (() => {
 
       clearCart();
       _ultimaVenda = { id: result.id, numero: result.numero, remoteId: result.remote_id || null, venda };
+
+      // Se estava convertendo um orçamento, marcá-lo como convertido
+      if (window._orcamentoParaConverter) {
+        window.pdv.orcamentos.marcarConvertido(window._orcamentoParaConverter).catch(() => {});
+        window._orcamentoParaConverter = null;
+        const banner = document.getElementById('pdv-edicao-banner');
+        if (banner) banner.style.display = 'none';
+      }
+
       Modal.open(renderComprovante(result.numero, venda, result.remote_id), eDevolucao ? 'Comprovante de Devolução' : 'Comprovante');
       _setupComprovanteKeys();
       _enviarImpressao(result.numero, venda);
@@ -1684,6 +1698,93 @@ const PDV = (() => {
     Toast.show('Edição cancelada', 'warning');
   }
 
+  // Salva carrinho atual como orçamento (sem baixar estoque, sem financeiro)
+  async function salvarComoOrcamento() {
+    if (!cart.length) { Toast.show('Carrinho vazio', 'warning'); return; }
+
+    const subtotal = getSubtotal();
+    const desconto = parseFloat(document.getElementById('pdv-desconto')?.value) || 0;
+    const total = Math.max(0, subtotal - desconto);
+    const usuario = await window.pdv.config.get('auth.usuario') || {};
+
+    const orc = {
+      cliente_id:       selectedClient?.id || null,
+      cliente_nome:     selectedClient?.nome || null,
+      cliente_telefone: selectedClient?.telefone || null,
+      vendedor_nome:    vendedorAtual?.nome || usuario.nome || null,
+      forma_pagamento:  payMethod || 'dinheiro',
+      validade_dias:    7,
+      subtotal, desconto, total,
+      observacao:       null,
+      itens: cart.filter(i => i.quantidade > 0).map(i => ({
+        produto_id:     i.produto_id,
+        produto_nome:   i.produto_nome,
+        produto_sku:    i.produto_sku || null,
+        quantidade:     i.quantidade,
+        preco_unitario: i.preco_unitario,
+        desconto:       i.desconto || 0,
+        total:          i.total,
+      })),
+    };
+
+    try {
+      const result = await window.pdv.orcamentos.registrar(orc);
+      Toast.show(`Orçamento #${result.numero} salvo! O carrinho foi mantido.`, 'success');
+    } catch (err) {
+      Toast.show('Erro ao salvar orçamento: ' + err.message, 'error');
+    }
+  }
+
+  // Carrega itens de um orçamento no carrinho (vindo de Orcamentos.converterEmVenda)
+  async function carregarDoOrcamento(orc) {
+    clearCart();
+    modoEdicao = null;
+
+    for (const item of (orc.itens || [])) {
+      // Busca o produto local pelo produto_id ou sku para pegar emoji/unidade
+      let prod = null;
+      if (item.produto_id) {
+        try { prod = await window.pdv.produtos.getById(item.produto_id); } catch {}
+      }
+      cart.push({
+        produto_id:     item.produto_id || null,
+        produto_nome:   item.produto_nome,
+        produto_sku:    item.produto_sku || null,
+        preco_unitario: item.preco_unitario,
+        quantidade:     item.quantidade,
+        desconto:       item.desconto || 0,
+        total:          item.total,
+        unidade:        prod?.unidade || 'UN',
+        emoji:          prod?.emoji   || '📦',
+        estoque_max:    9999,
+        devolucao:      false,
+        entregar:       false,
+      });
+    }
+
+    if (orc.cliente_id) {
+      try {
+        const c = await window.pdv.clientes.getById(orc.cliente_id);
+        if (c) { selectedClient = c; renderClientBar(); }
+      } catch {}
+    }
+
+    const elDesc = document.getElementById('pdv-desconto');
+    if (elDesc) elDesc.value = orc.desconto || 0;
+
+    // Mostra banner de orçamento
+    const banner = document.getElementById('pdv-edicao-banner');
+    const label  = document.getElementById('pdv-edicao-label');
+    if (banner) banner.style.display = 'flex';
+    if (label)  label.textContent = `📝 Orçamento #${orc.numero} → converter em venda`;
+
+    renderCart();
+    updateTotals();
+
+    // Quando venda for finalizada, marcar orçamento como convertido
+    window._orcamentoParaConverter = orc.id;
+  }
+
   function init() {
     SaudeVenda.init();
     initKeyboard();
@@ -1706,5 +1807,6 @@ const PDV = (() => {
     openClientSearch, searchClientes, selectClient, clearClient,
     _abrirNovoCliente, _salvarNovoCliente,
     _reimprimir, _enviarImpressao, _emitirNFCeComprovante,
-    verContaCliente, _receberCredito };
+    verContaCliente, _receberCredito,
+    salvarComoOrcamento, carregarDoOrcamento };
 })();
