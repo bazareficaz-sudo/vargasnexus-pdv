@@ -846,7 +846,23 @@ module.exports = {
   sincronizarOrcamento,
   atualizarStatusOrcamento,
   registrarNfceVenda,
+  chamarPdvProxy,
 };
+
+// ─── pdvProxy — gateway server-side (WhatsApp, etc.) ────────────────────────
+async function chamarPdvProxy(action, params) {
+  const pdvUserId = store.get('auth.token');
+  if (!pdvUserId) throw new Error('Usuário não autenticado');
+  const url = `https://app.base44.com/api/apps/${APP_ID}/functions/pdvProxy`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'api-key': API_KEY },
+    body: JSON.stringify({ pdv_user_id: pdvUserId, action, params }),
+  });
+  const json = await res.json();
+  if (!json.sucesso) throw new Error(json.erro || 'Erro no servidor');
+  return json.dados;
+}
 
 // ─── NFC-e — Sincronizar resultado para Base44 ────────────────────────────────
 async function registrarNfceVenda(vendaRemoteId, dados) {

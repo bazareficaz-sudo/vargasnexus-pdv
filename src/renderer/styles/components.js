@@ -754,6 +754,48 @@ const Clientes = {
   }
 };
 
+// ─── WhatsApp ─────────────────────────────────────────────────────
+const WA = {
+  // Envia via pdvProxy → Z-API server-side
+  async enviar(tipo, id, telefone) {
+    try {
+      await window.pdv.whatsapp.enviar(tipo, id, telefone || null);
+      Toast.show('WhatsApp enviado com sucesso!', 'success');
+      Modal.close();
+    } catch (e) {
+      Toast.show('Erro ao enviar WhatsApp: ' + (e.message || e), 'error');
+    }
+  },
+
+  // Modal de confirmação com campo de telefone editável
+  abrirModal(titulo, telefoneInicial, tipo, id) {
+    Modal.open(`
+<div style="display:flex;flex-direction:column;gap:14px">
+  <p style="color:var(--text2);font-size:13px;margin:0">
+    O servidor irá montar a mensagem e enviar via WhatsApp Z-API.
+  </p>
+  <div>
+    <label style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text3);display:block;margin-bottom:4px">
+      Número WhatsApp do cliente
+    </label>
+    <input class="input" id="wa-telefone" placeholder="(xx) xxxxx-xxxx" value="${telefoneInicial || ''}"
+      onkeydown="if(event.key==='Enter')document.getElementById('wa-btn-enviar').click()">
+  </div>
+</div>
+<div class="modal-actions" style="margin-top:8px">
+  <button id="wa-btn-enviar" class="btn btn-primary" style="background:#25D366;border-color:#25D366"
+    onclick="WA.enviar('${tipo}','${id}',document.getElementById('wa-telefone').value)">
+    📱 Enviar WhatsApp
+  </button>
+  <button class="btn btn-ghost" onclick="Modal.close()">Cancelar</button>
+</div>`, titulo);
+    setTimeout(() => {
+      const inp = document.getElementById('wa-telefone');
+      inp?.focus(); inp?.select();
+    }, 80);
+  },
+};
+
 // ─── Vendas ───────────────────────────────────────────────────────
 const Vendas = {
   _todoTerminais: false,
@@ -993,6 +1035,7 @@ const Vendas = {
                  ? `<span class="badge badge-green" title="NFC-e emitida · Chave: ${v.nfce_chave || ''}">✅ NFC-e</span>
                     ${v.nfce_url_pdf ? `<button class="btn btn-ghost btn-sm" style="color:var(--green);font-size:10px" onclick="window.open('${v.nfce_url_pdf}','_blank')" title="Ver DANFE">📄 DANFE</button>` : ''}`
                  : !cancelada ? `<button class="btn btn-ghost btn-sm" style="color:var(--green);font-size:10px" onclick="Vendas.emitirNFCe('${id}')" title="Emitir NFC-e">🧾 NFC-e</button>` : ''}
+               ${!cancelada && v.cliente_telefone ? `<button class="btn btn-ghost btn-sm" style="color:#25D366" onclick="WA.abrirModal('Enviar comprovante via WhatsApp','${(v.cliente_telefone||'').replace(/'/g,"\\'")}','venda','${id}')" title="Enviar por WhatsApp">📱</button>` : ''}
                ${!cancelada ? `<button class="btn btn-danger btn-sm" onclick="Vendas.cancelar('${id}')">Cancelar</button>` : ''}`}
         </td>
       </tr>`;

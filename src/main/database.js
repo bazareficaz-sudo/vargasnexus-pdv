@@ -1180,7 +1180,7 @@ const vendas = {
     }
 
     return db.prepare(`
-      SELECT v.*, c.nome as cliente_nome
+      SELECT v.*, c.nome as cliente_nome, c.telefone as cliente_telefone, c.whatsapp as cliente_whatsapp
       FROM vendas v
       LEFT JOIN clientes c ON c.id = v.cliente_id
       WHERE ${where}

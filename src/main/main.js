@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, Menu, Tray, dialog, nativeTheme } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, Tray, dialog, nativeTheme, shell } = require('electron');
 const path = require('path');
 const Store = require('electron-store');
 
@@ -337,6 +337,14 @@ ipcMain.handle('orcamentos:marcarConvertido', async (_, id) => {
     try { await api.atualizarStatusOrcamento(orc.remote_id, 'convertido'); } catch {}
   }
   return { ok: true };
+});
+
+// WhatsApp via pdvProxy
+ipcMain.handle('whatsapp:enviar', async (_, tipo, id, telefone) => {
+  const params = { tipo, telefone };
+  if (tipo === 'orcamento') params.orcamento_id = id;
+  else params.venda_id = id;
+  return api.chamarPdvProxy('enviarWhatsApp', params);
 });
 
 // Estoque
@@ -812,6 +820,7 @@ ipcMain.handle('update:install', () => updater.instalarAgora());
 
 // Sistema
 ipcMain.handle('app:version', () => app.getVersion());
+ipcMain.handle('app:openExternal', (_, url) => { shell.openExternal(url); return true; });
 ipcMain.handle('app:reload', () => mainWindow?.reload());
 ipcMain.handle('app:minimize', () => mainWindow?.minimize());
 ipcMain.handle('app:maximize', () => {

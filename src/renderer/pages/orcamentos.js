@@ -80,6 +80,7 @@ const Orcamentos = (() => {
   <td style="font-size:12px;color:${expirado?'var(--red)':'var(--text3)'}">${o.status==='pendente'||o.status==='aprovado'?_fmtData(venc.toISOString()):'—'}</td>
   <td onclick="event.stopPropagation()"><div style="display:flex;gap:4px">
     <button class="btn btn-ghost btn-sm" onclick="Orcamentos.verDetalhes('${o.id}')">👁️</button>
+    ${o.cliente_telefone?`<button class="btn btn-ghost btn-sm" style="color:#25D366" title="Enviar por WhatsApp" onclick="WA.abrirModal('Enviar orçamento via WhatsApp','${(o.cliente_telefone||'').replace(/'/g,"\\'")}','orcamento','${o.id}')">📱</button>`:''}
     ${o.status==='pendente'||o.status==='aprovado'?`<button class="btn btn-ghost btn-sm" title="Converter em venda" onclick="Orcamentos.converterEmVenda('${o.id}')">🛒</button>`:''}
     ${o.status!=='cancelado'&&o.status!=='convertido'?`<button class="btn btn-ghost btn-sm" onclick="Orcamentos.cancelar('${o.id}')">🗑️</button>`:''}
   </div></td>
@@ -775,10 +776,18 @@ const Orcamentos = (() => {
       _modoNovo = false;
       document.getElementById('orc-root').innerHTML = _renderLista();
       load();
+      // Oferecer envio por WhatsApp se cliente tiver telefone
+      if (_cliente?.telefone) {
+        _abrirModalWhatsApp(result.id, _cliente.telefone);
+      }
     } catch (err) {
       Toast.show('Erro ao salvar: ' + err.message, 'error');
       btns.forEach(b => { b.disabled=false; b.textContent='💾 Salvar Orçamento'; });
     }
+  }
+
+  function _abrirModalWhatsApp(id, telefone) {
+    WA.abrirModal('Enviar orçamento via WhatsApp', telefone, 'orcamento', id);
   }
 
   // ─── Detalhes ────────────────────────────────────────────────────
@@ -850,6 +859,7 @@ ${orc.observacao?`<div style="background:var(--bg3);border-radius:8px;padding:10
   ${podeAcionar?`
   <button class="btn btn-primary" onclick="Orcamentos.converterEmVenda('${orc.id}');Modal.close()">🛒 Converter em Venda</button>
   <button class="btn btn-ghost" onclick="Orcamentos.cancelar('${orc.id}');Modal.close()">🗑️ Cancelar</button>`:''}
+  ${orc.cliente_telefone?`<button class="btn btn-ghost" style="color:#25D366" onclick="WA.abrirModal('Enviar orçamento via WhatsApp','${(orc.cliente_telefone||'').replace(/'/g,"\\'")}','orcamento','${orc.id}')">📱 WhatsApp</button>`:''}
   <button class="btn btn-ghost" onclick="Orcamentos._imprimirOrcamento('${orc.id}')">🖨️ Imprimir</button>
   <button class="btn btn-ghost" onclick="Modal.close()">Fechar</button>
 </div>`, `Orçamento #${orc.numero}`);

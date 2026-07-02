@@ -194,6 +194,11 @@ contextBridge.exposeInMainWorld('pdv', {
     },
   },
 
+  // WhatsApp
+  whatsapp: {
+    enviar: (tipo, id, telefone) => ipcRenderer.invoke('whatsapp:enviar', tipo, id, telefone),
+  },
+
   // App
   app: {
     version: () => ipcRenderer.invoke('app:version'),
@@ -202,5 +207,6 @@ contextBridge.exposeInMainWorld('pdv', {
     maximize: () => ipcRenderer.invoke('app:maximize'),
     close: () => ipcRenderer.invoke('app:close'),
     confirm: (msg) => ipcRenderer.invoke('dialog:confirm', msg),
+    openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
   }
 });
