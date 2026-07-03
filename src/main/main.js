@@ -362,13 +362,17 @@ ipcMain.handle('whatsapp:enviar', async (_, tipo, id, telefone, dadosExtras) => 
         troco: venda.troco || 0, created_at: venda.created_at,
       });
       const tmpWin = new BrowserWindow({ show: false, webPreferences: { nodeIntegration: false, contextIsolation: true } });
-      await tmpWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
-      const pdfBuf = await tmpWin.webContents.printToPDF({ marginsType: 1, printBackground: true, pageSize: 'A4' });
+      await new Promise((resolve, reject) => {
+        tmpWin.webContents.once('did-finish-load', resolve);
+        tmpWin.webContents.once('did-fail-load', (_, code, desc) => reject(new Error(`load failed: ${desc}`)));
+        tmpWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+      });
+      const pdfBuf = await tmpWin.webContents.printToPDF({ printBackground: true, pageSize: 'A4' });
       tmpWin.close();
       params.pdf_base64 = pdfBuf.toString('base64');
       params.pdf_filename = `cupom-${venda.numero}.pdf`;
-      console.log('[WA] PDF gerado:', params.pdf_filename, 'tamanho:', pdfBuf.length);
-    } catch (e) { console.error('[WA] PDF gen error:', e.message, e.stack); }
+      console.log('[WA] PDF gerado:', params.pdf_filename, 'bytes:', pdfBuf.length);
+    } catch (e) { console.error('[WA] PDF gen error:', e.message); }
     params.venda_data = venda;
   }
   return api.chamarPdvProxy('enviarWhatsApp', params);
