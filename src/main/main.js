@@ -349,9 +349,40 @@ ipcMain.handle('whatsapp:enviar', async (_, tipo, id, telefone) => {
   } else {
     const venda = db.vendas.getById(id);
     if (!venda) throw new Error('Venda não encontrada');
+    // Gerar PDF do cupom e incluir em base64
+    try {
+      const html = printServer.gerarHtmlCupom({
+        numero: venda.numero, empresa_nome: store.get('auth.usuario.empresa_nome') || '',
+        vendedor_nome: venda.vendedor_nome, cliente_nome: venda.cliente_nome,
+        itens: venda.itens || [], subtotal: venda.subtotal || venda.total,
+        desconto: venda.desconto || 0, total: venda.total,
+        forma_pagamento: venda.forma_pagamento, valor_pago: venda.valor_recebido || venda.total,
+        troco: venda.troco || 0, created_at: venda.created_at,
+      });
+      const fs = require('fs'); const os = require('os'); const pathMod = require('path');
+      const tmpHtml = pathMod.join(os.tmpdir(), `cupom-${id}.html`);
+      fs.writeFileSync(tmpHtml, html, 'utf8');
+      const tmpWin = new BrowserWindow({ show: false, webPreferences: { nodeIntegration: false, contextIsolation: true } });
+      await tmpWin.loadFile(tmpHtml);
+      const pdfBuf = await tmpWin.webContents.printToPDF({ marginsType: 1, printBackground: true, pageSize: 'A4' });
+      tmpWin.close();
+      try { fs.unlinkSync(tmpHtml); } catch {}
+      params.pdf_base64 = pdfBuf.toString('base64');
+      params.pdf_filename = `cupom-${venda.numero}.pdf`;
+    } catch (e) { console.warn('[WA] PDF gen error:', e.message); }
     params.venda_data = venda;
   }
   return api.chamarPdvProxy('enviarWhatsApp', params);
+});
+
+// Atualizar cliente em venda/orçamento
+ipcMain.handle('vendas:atualizarCliente', (_, id, clienteId, nome, telefone) => {
+  db.vendas.atualizarCliente(id, clienteId, nome, telefone);
+  return { ok: true };
+});
+ipcMain.handle('orcamentos:atualizarCliente', (_, id, clienteId, nome, telefone) => {
+  db.orcamentos.atualizarCliente(id, clienteId, nome, telefone);
+  return { ok: true };
 });
 
 // Estoque

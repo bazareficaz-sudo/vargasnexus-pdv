@@ -1201,6 +1201,13 @@ const vendas = {
     return venda;
   },
 
+  atualizarCliente(id, clienteId, nome, telefone) {
+    db.prepare(`UPDATE vendas SET cliente_id=?, cliente_nome=?, sync_status='pending' WHERE id=?`)
+      .run(clienteId || null, nome || null, id);
+    // guarda telefone no campo extra se existir coluna (tenta silencioso)
+    try { db.prepare(`UPDATE vendas SET cliente_telefone=? WHERE id=?`).run(telefone || null, id); } catch {}
+  },
+
   cancelar(id, motivo) {
     const venda = this.getById(id);
     if (!venda || venda.status === 'cancelada') return false;
@@ -1689,6 +1696,11 @@ const orcamentos = {
   atualizarRemoteId(id, remoteId) {
     db.prepare(`UPDATE orcamentos SET remote_id = ?, synced_at = ?, sync_status = 'synced' WHERE id = ?`)
       .run(remoteId, new Date().toISOString(), id);
+  },
+
+  atualizarCliente(id, clienteId, nome, telefone) {
+    db.prepare(`UPDATE orcamentos SET cliente_id=?, cliente_nome=?, cliente_telefone=?, sync_status='pending' WHERE id=?`)
+      .run(clienteId || null, nome || null, telefone || null, id);
   },
 
   marcarConvertido(id) {

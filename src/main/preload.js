@@ -57,6 +57,7 @@ contextBridge.exposeInMainWorld('pdv', {
     atualizarNfce: (id, dados) => ipcRenderer.invoke('vendas:atualizarNfce', id, dados),
     totaisHoje: () => ipcRenderer.invoke('vendas:totaisHoje'),
     listarCloud: (data) => ipcRenderer.invoke('vendas:listarCloud', data),
+    atualizarCliente: (id, clienteId, nome, tel) => ipcRenderer.invoke('vendas:atualizarCliente', id, clienteId, nome, tel),
   },
 
   // Orçamentos
@@ -66,6 +67,7 @@ contextBridge.exposeInMainWorld('pdv', {
     getById:         (id)         => ipcRenderer.invoke('orcamentos:getById', id),
     cancelar:        (id)         => ipcRenderer.invoke('orcamentos:cancelar', id),
     marcarConvertido:(id)         => ipcRenderer.invoke('orcamentos:marcarConvertido', id),
+    atualizarCliente:(id, clienteId, nome, tel) => ipcRenderer.invoke('orcamentos:atualizarCliente', id, clienteId, nome, tel),
   },
 
   // Estoque

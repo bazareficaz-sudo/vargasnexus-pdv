@@ -772,7 +772,7 @@ const WA = {
     Modal.open(`
 <div style="display:flex;flex-direction:column;gap:14px">
   <p style="color:var(--text2);font-size:13px;margin:0">
-    O servidor irá montar a mensagem e enviar via WhatsApp Z-API.
+    ${tipo === 'venda' ? 'O cupom será enviado como PDF via WhatsApp Z-API.' : 'O servidor irá montar a mensagem e enviar via WhatsApp Z-API.'}
   </p>
   <div>
     <label style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text3);display:block;margin-bottom:4px">
@@ -793,6 +793,56 @@ const WA = {
       const inp = document.getElementById('wa-telefone');
       inp?.focus(); inp?.select();
     }, 80);
+  },
+
+  // Modal para capturar cliente quando não há cadastro
+  abrirModalCapturaCliente(tipo, id, nomeAtual) {
+    Modal.open(`
+<div style="display:flex;flex-direction:column;gap:12px">
+  <p style="color:var(--text2);font-size:13px;margin:0">
+    Informe os dados do cliente para salvar e enviar o WhatsApp.
+  </p>
+  <div>
+    <label style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text3);display:block;margin-bottom:4px">Nome</label>
+    <input class="input" id="wa-cc-nome" placeholder="Nome do cliente" value="${(nomeAtual||'').replace(/"/g,'&quot;')}"
+      onkeydown="if(event.key==='Enter')document.getElementById('wa-cc-tel').focus()">
+  </div>
+  <div>
+    <label style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text3);display:block;margin-bottom:4px">Celular / WhatsApp</label>
+    <input class="input" id="wa-cc-tel" placeholder="(xx) xxxxx-xxxx"
+      onkeydown="if(event.key==='Enter')WA._salvarClienteEEnviar('${tipo}','${id}')">
+  </div>
+</div>
+<div class="modal-actions" style="margin-top:8px">
+  <button class="btn btn-primary" style="background:#25D366;border-color:#25D366"
+    onclick="WA._salvarClienteEEnviar('${tipo}','${id}')">
+    💾 Salvar e Enviar WhatsApp
+  </button>
+  <button class="btn btn-ghost" onclick="Modal.close()">Cancelar</button>
+</div>`, 'Cadastrar cliente');
+    setTimeout(() => document.getElementById('wa-cc-nome')?.focus(), 80);
+  },
+
+  async _salvarClienteEEnviar(tipo, id) {
+    const nome = document.getElementById('wa-cc-nome')?.value?.trim();
+    const tel  = document.getElementById('wa-cc-tel')?.value?.trim();
+    if (!nome) { Toast.show('Nome é obrigatório', 'error'); return; }
+    if (!tel)  { Toast.show('Celular é obrigatório', 'error'); return; }
+    try {
+      const clienteId = await window.pdv.clientes.salvar({ nome, telefone: tel });
+      if (tipo === 'venda') {
+        await window.pdv.vendas.atualizarCliente(id, clienteId, nome, tel);
+      } else {
+        await window.pdv.orcamentos.atualizarCliente(id, null, nome, tel);
+      }
+      Modal.close();
+      WA.abrirModal(
+        tipo === 'venda' ? 'Enviar cupom via WhatsApp' : 'Enviar orçamento via WhatsApp',
+        tel, tipo, id
+      );
+    } catch (e) {
+      Toast.show('Erro ao salvar cliente: ' + (e.message || e), 'error');
+    }
   },
 };
 
@@ -1035,7 +1085,7 @@ const Vendas = {
                  ? `<span class="badge badge-green" title="NFC-e emitida · Chave: ${v.nfce_chave || ''}">✅ NFC-e</span>
                     ${v.nfce_url_pdf ? `<button class="btn btn-ghost btn-sm" style="color:var(--green);font-size:10px" onclick="window.open('${v.nfce_url_pdf}','_blank')" title="Ver DANFE">📄 DANFE</button>` : ''}`
                  : !cancelada ? `<button class="btn btn-ghost btn-sm" style="color:var(--green);font-size:10px" onclick="Vendas.emitirNFCe('${id}')" title="Emitir NFC-e">🧾 NFC-e</button>` : ''}
-               ${!cancelada && v.cliente_telefone ? `<button class="btn btn-ghost btn-sm" style="color:#25D366" onclick="WA.abrirModal('Enviar comprovante via WhatsApp','${(v.cliente_telefone||'').replace(/'/g,"\\'")}','venda','${id}')" title="Enviar por WhatsApp">📱</button>` : ''}
+               ${!cancelada ? `<button class="btn btn-ghost btn-sm" style="color:#25D366" title="Enviar por WhatsApp" onclick="${v.cliente_telefone ? `WA.abrirModal('Enviar cupom via WhatsApp','${(v.cliente_telefone||'').replace(/'/g,"\\'")}','venda','${id}')` : `WA.abrirModalCapturaCliente('venda','${id}','${(v.cliente_nome||'').replace(/'/g,"\\'")}')` }">📱</button>` : ''}
                ${!cancelada ? `<button class="btn btn-danger btn-sm" onclick="Vendas.cancelar('${id}')">Cancelar</button>` : ''}`}
         </td>
       </tr>`;
