@@ -198,7 +198,7 @@ contextBridge.exposeInMainWorld('pdv', {
 
   // WhatsApp
   whatsapp: {
-    enviar: (tipo, id, telefone) => ipcRenderer.invoke('whatsapp:enviar', tipo, id, telefone),
+    enviar: (tipo, id, telefone, dadosExtras) => ipcRenderer.invoke('whatsapp:enviar', tipo, id, telefone, dadosExtras),
   },
 
   // App

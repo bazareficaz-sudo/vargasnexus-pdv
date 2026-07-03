@@ -757,9 +757,9 @@ const Clientes = {
 // ─── WhatsApp ─────────────────────────────────────────────────────
 const WA = {
   // Envia via pdvProxy → Z-API server-side
-  async enviar(tipo, id, telefone) {
+  async enviar(tipo, id, telefone, dadosExtras) {
     try {
-      await window.pdv.whatsapp.enviar(tipo, id, telefone || null);
+      await window.pdv.whatsapp.enviar(tipo, id, telefone || null, dadosExtras || null);
       Toast.show('WhatsApp enviado com sucesso!', 'success');
       Modal.close();
     } catch (e) {
@@ -767,8 +767,13 @@ const WA = {
     }
   },
 
+  // Dados extras (venda nuvem) passados entre modais
+  _dadosExtras: null,
+  _vendas: {},
+
   // Modal de confirmação com campo de telefone editável
-  abrirModal(titulo, telefoneInicial, tipo, id) {
+  abrirModal(titulo, telefoneInicial, tipo, id, dadosExtras) {
+    WA._dadosExtras = dadosExtras || null;
     Modal.open(`
 <div style="display:flex;flex-direction:column;gap:14px">
   <p style="color:var(--text2);font-size:13px;margin:0">
@@ -784,7 +789,7 @@ const WA = {
 </div>
 <div class="modal-actions" style="margin-top:8px">
   <button id="wa-btn-enviar" class="btn btn-primary" style="background:#25D366;border-color:#25D366"
-    onclick="WA.enviar('${tipo}','${id}',document.getElementById('wa-telefone').value)">
+    onclick="WA.enviar('${tipo}','${id}',document.getElementById('wa-telefone').value,WA._dadosExtras)">
     📱 Enviar WhatsApp
   </button>
   <button class="btn btn-ghost" onclick="Modal.close()">Cancelar</button>
@@ -796,7 +801,8 @@ const WA = {
   },
 
   // Modal para capturar cliente quando não há cadastro
-  abrirModalCapturaCliente(tipo, id, nomeAtual) {
+  abrirModalCapturaCliente(tipo, id, nomeAtual, dadosExtras) {
+    WA._dadosExtras = dadosExtras || null;
     Modal.open(`
 <div style="display:flex;flex-direction:column;gap:12px">
   <p style="color:var(--text2);font-size:13px;margin:0">
@@ -838,7 +844,7 @@ const WA = {
       Modal.close();
       WA.abrirModal(
         tipo === 'venda' ? 'Enviar cupom via WhatsApp' : 'Enviar orçamento via WhatsApp',
-        tel, tipo, id
+        tel, tipo, id, WA._dadosExtras
       );
     } catch (e) {
       Toast.show('Erro ao salvar cliente: ' + (e.message || e), 'error');
@@ -1079,18 +1085,20 @@ const Vendas = {
         <td style="display:flex;gap:4px;flex-wrap:wrap;min-width:120px">
           ${nuvem
             ? `<button class="btn btn-ghost btn-sm" onclick="Vendas.imprimirCloud(${JSON.stringify(v).replace(/"/g,'&quot;')})" title="Imprimir">🖨️</button>
-               ${!cancelada ? `<button class="btn btn-ghost btn-sm" style="color:#25D366" title="Enviar por WhatsApp" onclick="${v.cliente_telefone ? `WA.abrirModal('Enviar cupom via WhatsApp','${(v.cliente_telefone||'').replace(/'/g,"\\'")}','venda','${id}')` : `WA.abrirModalCapturaCliente('venda','${id}','${(v.cliente_nome||'').replace(/'/g,"\\'")}')` }">📱</button>` : ''}`
+               ${!cancelada ? `<button class="btn btn-ghost btn-sm" style="color:#25D366" title="Enviar por WhatsApp" onclick="${v.cliente_telefone ? `WA.abrirModal('Enviar cupom via WhatsApp','${(v.cliente_telefone||'').replace(/'/g,"\\'")}','venda','${id}',WA._vendas['${id}'])` : `WA.abrirModalCapturaCliente('venda','${id}','${(v.cliente_nome||'').replace(/'/g,"\\'")}',WA._vendas['${id}'])` }">📱</button>` : ''}`
             : `<button class="btn btn-ghost btn-sm" onclick="Vendas.imprimir('${id}')" title="Imprimir">🖨️</button>
                ${!cancelada && podePermissao('editar_venda') ? `<button class="btn btn-ghost btn-sm" style="color:var(--accent)" onclick="Vendas.editarNoPDV('${id}')">✏️</button>` : ''}
                ${!cancelada && v.nfce_emitida
                  ? `<span class="badge badge-green" title="NFC-e emitida · Chave: ${v.nfce_chave || ''}">✅ NFC-e</span>
                     ${v.nfce_url_pdf ? `<button class="btn btn-ghost btn-sm" style="color:var(--green);font-size:10px" onclick="window.open('${v.nfce_url_pdf}','_blank')" title="Ver DANFE">📄 DANFE</button>` : ''}`
                  : !cancelada ? `<button class="btn btn-ghost btn-sm" style="color:var(--green);font-size:10px" onclick="Vendas.emitirNFCe('${id}')" title="Emitir NFC-e">🧾 NFC-e</button>` : ''}
-               ${!cancelada ? `<button class="btn btn-ghost btn-sm" style="color:#25D366" title="Enviar por WhatsApp" onclick="${v.cliente_telefone ? `WA.abrirModal('Enviar cupom via WhatsApp','${(v.cliente_telefone||'').replace(/'/g,"\\'")}','venda','${id}')` : `WA.abrirModalCapturaCliente('venda','${id}','${(v.cliente_nome||'').replace(/'/g,"\\'")}')` }">📱</button>` : ''}
+               ${!cancelada ? `<button class="btn btn-ghost btn-sm" style="color:#25D366" title="Enviar por WhatsApp" onclick="${v.cliente_telefone ? `WA.abrirModal('Enviar cupom via WhatsApp','${(v.cliente_telefone||'').replace(/'/g,"\\'")}','venda','${id}',WA._vendas['${id}'])` : `WA.abrirModalCapturaCliente('venda','${id}','${(v.cliente_nome||'').replace(/'/g,"\\'")}',WA._vendas['${id}'])` }">📱</button>` : ''}
                ${!cancelada ? `<button class="btn btn-danger btn-sm" onclick="Vendas.cancelar('${id}')">Cancelar</button>` : ''}`}
         </td>
       </tr>`;
     }).join('');
+    WA._vendas = WA._vendas || {};
+    lista.forEach(v => { WA._vendas[v.id || v.remote_id] = v; });
   },
 
   async nfceLote() {

@@ -340,14 +340,15 @@ ipcMain.handle('orcamentos:marcarConvertido', async (_, id) => {
 });
 
 // WhatsApp via pdvProxy
-ipcMain.handle('whatsapp:enviar', async (_, tipo, id, telefone) => {
+ipcMain.handle('whatsapp:enviar', async (_, tipo, id, telefone, dadosExtras) => {
   const params = { tipo, telefone: telefone || null };
   if (tipo === 'orcamento') {
     const orc = db.orcamentos.getById(id);
     if (!orc) throw new Error('Orçamento não encontrado');
     params.orcamento_data = orc;
   } else {
-    const venda = db.vendas.getById(id);
+    // dadosExtras: dados da venda passados pelo renderer (para vendas de outros terminais)
+    const venda = db.vendas.getById(id) || dadosExtras;
     if (!venda) throw new Error('Venda não encontrada');
     // Gerar PDF do cupom e incluir em base64
     try {
