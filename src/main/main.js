@@ -341,9 +341,16 @@ ipcMain.handle('orcamentos:marcarConvertido', async (_, id) => {
 
 // WhatsApp via pdvProxy
 ipcMain.handle('whatsapp:enviar', async (_, tipo, id, telefone) => {
-  const params = { tipo, telefone };
-  if (tipo === 'orcamento') params.orcamento_id = id;
-  else params.venda_id = id;
+  const params = { tipo, telefone: telefone || null };
+  if (tipo === 'orcamento') {
+    const orc = db.orcamentos.getById(id);
+    if (!orc) throw new Error('Orçamento não encontrado');
+    params.orcamento_data = orc;
+  } else {
+    const venda = db.vendas.getById(id);
+    if (!venda) throw new Error('Venda não encontrada');
+    params.venda_data = venda;
+  }
   return api.chamarPdvProxy('enviarWhatsApp', params);
 });
 
