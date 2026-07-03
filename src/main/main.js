@@ -347,8 +347,8 @@ ipcMain.handle('whatsapp:enviar', async (_, tipo, id, telefone, dadosExtras) => 
     if (!orc) throw new Error('Orçamento não encontrado');
     params.orcamento_data = orc;
   } else {
-    // dadosExtras: dados da venda passados pelo renderer (para vendas de outros terminais)
-    const venda = db.vendas.getById(id) || dadosExtras;
+    // dadosExtras tem prioridade (vendas de outros terminais não existem no banco local)
+    const venda = dadosExtras || db.vendas.getById(id);
     if (!venda) throw new Error('Venda não encontrada');
     // Gerar PDF do cupom e incluir em base64
     try {
