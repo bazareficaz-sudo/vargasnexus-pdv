@@ -827,20 +827,11 @@ const WA = {
   async _salvarTelefoneEEnviar(tipo, id) {
     const tel = document.getElementById('wa-cc-tel')?.value?.trim();
     if (!tel) { Toast.show('Celular é obrigatório', 'error'); return; }
-    try {
-      if (tipo === 'venda') {
-        await window.pdv.vendas.atualizarCliente(id, null, null, tel);
-      } else {
-        await window.pdv.orcamentos.atualizarCliente(id, null, null, tel);
-      }
-      Modal.close();
-      WA.abrirModal(
-        tipo === 'venda' ? 'Enviar cupom via WhatsApp' : 'Enviar orçamento via WhatsApp',
-        tel, tipo, id, WA._dadosExtras
-      );
-    } catch (e) {
-      Toast.show('Erro: ' + (e.message || e), 'error');
-    }
+    Modal.close();
+    WA.abrirModal(
+      tipo === 'venda' ? 'Enviar cupom via WhatsApp' : 'Enviar orçamento via WhatsApp',
+      tel, tipo, id, WA._dadosExtras
+    );
   },
 };
 
