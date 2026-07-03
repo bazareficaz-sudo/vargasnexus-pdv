@@ -800,46 +800,38 @@ const WA = {
     }, 80);
   },
 
-  // Modal para capturar cliente quando não há cadastro
+  // Modal para capturar telefone quando não há cadastro
   abrirModalCapturaCliente(tipo, id, nomeAtual, dadosExtras) {
     WA._dadosExtras = dadosExtras || null;
     Modal.open(`
 <div style="display:flex;flex-direction:column;gap:12px">
   <p style="color:var(--text2);font-size:13px;margin:0">
-    Informe os dados do cliente para salvar e enviar o WhatsApp.
+    Informe o celular do cliente para enviar via WhatsApp.
   </p>
-  <div>
-    <label style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text3);display:block;margin-bottom:4px">Nome</label>
-    <input class="input" id="wa-cc-nome" placeholder="Nome do cliente" value="${(nomeAtual||'').replace(/"/g,'&quot;')}"
-      onkeydown="if(event.key==='Enter')document.getElementById('wa-cc-tel').focus()">
-  </div>
   <div>
     <label style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text3);display:block;margin-bottom:4px">Celular / WhatsApp</label>
     <input class="input" id="wa-cc-tel" placeholder="(xx) xxxxx-xxxx"
-      onkeydown="if(event.key==='Enter')WA._salvarClienteEEnviar('${tipo}','${id}')">
+      onkeydown="if(event.key==='Enter')WA._salvarTelefoneEEnviar('${tipo}','${id}')">
   </div>
 </div>
 <div class="modal-actions" style="margin-top:8px">
   <button class="btn btn-primary" style="background:#25D366;border-color:#25D366"
-    onclick="WA._salvarClienteEEnviar('${tipo}','${id}')">
-    💾 Salvar e Enviar WhatsApp
+    onclick="WA._salvarTelefoneEEnviar('${tipo}','${id}')">
+    📱 Enviar WhatsApp
   </button>
   <button class="btn btn-ghost" onclick="Modal.close()">Cancelar</button>
-</div>`, 'Cadastrar cliente');
-    setTimeout(() => document.getElementById('wa-cc-nome')?.focus(), 80);
+</div>`, 'Enviar por WhatsApp');
+    setTimeout(() => document.getElementById('wa-cc-tel')?.focus(), 80);
   },
 
-  async _salvarClienteEEnviar(tipo, id) {
-    const nome = document.getElementById('wa-cc-nome')?.value?.trim();
-    const tel  = document.getElementById('wa-cc-tel')?.value?.trim();
-    if (!nome) { Toast.show('Nome é obrigatório', 'error'); return; }
-    if (!tel)  { Toast.show('Celular é obrigatório', 'error'); return; }
+  async _salvarTelefoneEEnviar(tipo, id) {
+    const tel = document.getElementById('wa-cc-tel')?.value?.trim();
+    if (!tel) { Toast.show('Celular é obrigatório', 'error'); return; }
     try {
-      const clienteId = await window.pdv.clientes.salvar({ nome, telefone: tel });
       if (tipo === 'venda') {
-        await window.pdv.vendas.atualizarCliente(id, clienteId, nome, tel);
+        await window.pdv.vendas.atualizarCliente(id, null, null, tel);
       } else {
-        await window.pdv.orcamentos.atualizarCliente(id, null, nome, tel);
+        await window.pdv.orcamentos.atualizarCliente(id, null, null, tel);
       }
       Modal.close();
       WA.abrirModal(
@@ -847,7 +839,7 @@ const WA = {
         tel, tipo, id, WA._dadosExtras
       );
     } catch (e) {
-      Toast.show('Erro ao salvar cliente: ' + (e.message || e), 'error');
+      Toast.show('Erro: ' + (e.message || e), 'error');
     }
   },
 };

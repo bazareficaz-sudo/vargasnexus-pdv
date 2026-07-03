@@ -1202,10 +1202,7 @@ const vendas = {
   },
 
   atualizarCliente(id, clienteId, nome, telefone) {
-    db.prepare(`UPDATE vendas SET cliente_id=?, cliente_nome=?, sync_status='pending' WHERE id=?`)
-      .run(clienteId || null, nome || null, id);
-    // guarda telefone no campo extra se existir coluna (tenta silencioso)
-    try { db.prepare(`UPDATE vendas SET cliente_telefone=? WHERE id=?`).run(telefone || null, id); } catch {}
+    try { db.prepare(`UPDATE vendas SET cliente_telefone=?, sync_status='pending' WHERE id=?`).run(telefone || null, id); } catch (e) { console.warn('[DB] vendas.atualizarCliente:', e.message); }
   },
 
   cancelar(id, motivo) {
