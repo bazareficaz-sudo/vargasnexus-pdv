@@ -853,14 +853,17 @@ module.exports = {
 async function chamarPdvProxy(action, params) {
   const pdvUserId = store.get('auth.token');
   if (!pdvUserId) throw new Error('Usuário não autenticado');
-  const url = `https://app.base44.com/api/apps/${APP_ID}/functions/pdvProxy`;
+  const url = 'https://sistemavargas.com.br/functions/pdvProxy';
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'api-key': API_KEY },
     body: JSON.stringify({ pdv_user_id: pdvUserId, action, params }),
   });
-  const json = await res.json();
-  if (!json.sucesso) throw new Error(json.erro || 'Erro no servidor');
+  const text = await res.text();
+  let json;
+  try { json = JSON.parse(text); } catch { throw new Error(`Servidor retornou resposta inválida: ${text.slice(0, 200)}`); }
+  console.log('[pdvProxy] resposta:', JSON.stringify(json));
+  if (!json.sucesso) throw new Error(json.erro || json.error || json.message || `HTTP ${res.status}: ${text.slice(0, 200)}`);
   return json.dados;
 }
 
