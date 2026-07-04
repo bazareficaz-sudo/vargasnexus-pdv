@@ -68,6 +68,8 @@ contextBridge.exposeInMainWorld('pdv', {
     cancelar:        (id)         => ipcRenderer.invoke('orcamentos:cancelar', id),
     marcarConvertido:(id)         => ipcRenderer.invoke('orcamentos:marcarConvertido', id),
     atualizarCliente:(id, clienteId, nome, tel) => ipcRenderer.invoke('orcamentos:atualizarCliente', id, clienteId, nome, tel),
+    listarCloud:     (filtros)    => ipcRenderer.invoke('orcamentos:listarCloud', filtros),
+    getByIdCloud:    (remoteId)   => ipcRenderer.invoke('orcamentos:getByIdCloud', remoteId),
   },
 
   // Estoque
@@ -157,10 +159,11 @@ contextBridge.exposeInMainWorld('pdv', {
 
   // IA
   ia: {
-    fiscal:   (nome, cat, un) => ipcRenderer.invoke('ia:fiscal', nome, cat, un),
-    descricao:(nome, cat, marca, un) => ipcRenderer.invoke('ia:descricao', nome, cat, marca, un),
-    lote:     (produtos) => ipcRenderer.invoke('ia:lote', produtos),
-    status:   () => ipcRenderer.invoke('ia:status'),
+    fiscal:        (nome, cat, un) => ipcRenderer.invoke('ia:fiscal', nome, cat, un),
+    descricao:     (nome, cat, marca, un) => ipcRenderer.invoke('ia:descricao', nome, cat, marca, un),
+    lote:          (produtos) => ipcRenderer.invoke('ia:lote', produtos),
+    status:        () => ipcRenderer.invoke('ia:status'),
+    buscarImagem:  (nome, ean) => ipcRenderer.invoke('ia:buscarImagem', nome, ean),
   },
 
   // Marketplace multi-conta

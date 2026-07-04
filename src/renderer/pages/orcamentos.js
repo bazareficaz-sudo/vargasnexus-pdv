@@ -6,13 +6,14 @@ const Orcamentos = (() => {
   let _modoNovo      = false;
   let _searchTimeout = null;
   let _cliTimeout    = null;
+  let _periodoCustom = false;
 
   // Navegação por teclado na busca de produto
   let _searchHighlight = -1;
-  let _searchItems     = [];   // resultados completos para o Enter acessar
+  let _searchItems     = [];
 
   // Painel de qty/preço/desconto (similar ao PDV)
-  let _qtyItem = null;         // produto aguardando confirmação
+  let _qtyItem = null;
 
   // ─── Render principal ────────────────────────────────────────────
   function render() {
@@ -23,21 +24,46 @@ const Orcamentos = (() => {
     _modoNovo ? _initForm() : load();
   }
 
+  // ─── Filtros de data ─────────────────────────────────────────────
+  function _rangeParaPeriodo(periodo) {
+    const hoje = new Date();
+    const ini = d => { const x = new Date(d); x.setHours(0,0,0,0); return x; };
+    const fim = d => { const x = new Date(d); x.setHours(23,59,59,999); return x; };
+    if (periodo === 'hoje')  return { de: ini(hoje), ate: fim(hoje) };
+    if (periodo === 'ontem') { const d = new Date(hoje); d.setDate(d.getDate()-1); return { de: ini(d), ate: fim(d) }; }
+    if (periodo === '7dias') { const d = new Date(hoje); d.setDate(d.getDate()-6); return { de: ini(d), ate: fim(hoje) }; }
+    if (periodo === 'mes')   { const d = new Date(hoje.getFullYear(), hoje.getMonth(), 1); return { de: ini(d), ate: fim(hoje) }; }
+    return null; // sem filtro de data (todos / período custom)
+  }
+
   // ─── Lista ───────────────────────────────────────────────────────
   function _renderLista() {
     return `
 <div class="page-header">
   <div><div class="page-title">Orçamentos</div></div>
-  <div class="page-actions" style="display:flex;gap:8px;align-items:center">
+  <div class="page-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
     <input class="input" id="orc-busca" type="text" placeholder="🔍 Cliente ou número..."
-      style="min-width:180px" oninput="Orcamentos.load()">
+      style="min-width:160px" oninput="Orcamentos.load()">
     <select class="input" id="orc-status" onchange="Orcamentos.load()" style="width:auto">
-      <option value="">Todos</option>
+      <option value="">Todos status</option>
       <option value="pendente">Pendente</option>
       <option value="aprovado">Aprovado</option>
       <option value="convertido">Convertido</option>
       <option value="cancelado">Cancelado</option>
     </select>
+    <select class="input" id="orc-periodo" onchange="Orcamentos.onPeriodoChange()" style="width:auto">
+      <option value="hoje">Hoje</option>
+      <option value="ontem">Ontem</option>
+      <option value="7dias">7 dias</option>
+      <option value="mes">Mês corrente</option>
+      <option value="todos">Todos</option>
+      <option value="periodo">Período...</option>
+    </select>
+    <span id="orc-periodo-custom" style="display:none;gap:4px;align-items:center">
+      <input class="input" id="orc-de" type="date" onchange="Orcamentos.load()" style="width:140px">
+      <span style="color:var(--text3)">até</span>
+      <input class="input" id="orc-ate" type="date" onchange="Orcamentos.load()" style="width:140px">
+    </span>
     <button class="btn btn-primary" onclick="Orcamentos.abrirNovo()">+ Novo Orçamento</button>
   </div>
 </div>
@@ -46,10 +72,62 @@ const Orcamentos = (() => {
 </div>`;
   }
 
+  function onPeriodoChange() {
+    const v = document.getElementById('orc-periodo')?.value;
+    const custom = document.getElementById('orc-periodo-custom');
+    if (custom) custom.style.display = v === 'periodo' ? 'flex' : 'none';
+    if (v !== 'periodo') load();
+  }
+
   async function load() {
-    const busca  = document.getElementById('orc-busca')?.value?.trim() || '';
-    const status = document.getElementById('orc-status')?.value || '';
-    _lista = await window.pdv.orcamentos.listar({ busca, status });
+    const busca   = document.getElementById('orc-busca')?.value?.trim() || '';
+    const status  = document.getElementById('orc-status')?.value || '';
+    const periodo = document.getElementById('orc-periodo')?.value || 'hoje';
+
+    // Buscar local e cloud em paralelo
+    const [locais, cloud] = await Promise.all([
+      window.pdv.orcamentos.listar({ busca, status }),
+      window.pdv.orcamentos.listarCloud({ status }),
+    ]);
+
+    // Mesclar: cloud sobrescreve locais pelo numero (prioriza local se tiver remote_id igual)
+    const mapa = new Map();
+    for (const o of cloud) mapa.set(String(o.numero), { ...o, _origem: 'cloud' });
+    for (const o of locais) mapa.set(String(o.numero), { ...o, _origem: o.remote_id ? 'sync' : 'local' });
+    let lista = Array.from(mapa.values());
+
+    // Filtro de busca para os cloud (db local já filtrou)
+    if (busca) {
+      const q = busca.toLowerCase();
+      lista = lista.filter(o =>
+        (o.cliente_nome || '').toLowerCase().includes(q) ||
+        String(o.numero).includes(q)
+      );
+    }
+
+    // Filtro de data
+    let de = null, ate = null;
+    if (periodo === 'periodo') {
+      const dv = document.getElementById('orc-de')?.value;
+      const av = document.getElementById('orc-ate')?.value;
+      if (dv) de  = new Date(dv + 'T00:00:00');
+      if (av) ate = new Date(av + 'T23:59:59');
+    } else if (periodo !== 'todos') {
+      const r = _rangeParaPeriodo(periodo);
+      if (r) { de = r.de; ate = r.ate; }
+    }
+    if (de || ate) {
+      lista = lista.filter(o => {
+        const d = new Date(o.created_at);
+        if (de  && d < de)  return false;
+        if (ate && d > ate) return false;
+        return true;
+      });
+    }
+
+    // Ordenar por data desc
+    lista.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+    _lista = lista;
     _renderTabela();
   }
 
@@ -70,20 +148,25 @@ const Orcamentos = (() => {
       const expirado = o.status === 'pendente' && venc < hoje;
       const st = expirado ? 'expirado' : o.status;
       const badge = { pendente:'<span class="badge badge-yellow">Pendente</span>', aprovado:'<span class="badge badge-green">Aprovado</span>', convertido:'<span class="badge" style="background:var(--accent-bg);color:var(--accent)">Convertido</span>', cancelado:'<span class="badge badge-red">Cancelado</span>', expirado:'<span class="badge" style="background:var(--bg3);color:var(--text3)">Expirado</span>' }[st] || `<span class="badge">${st}</span>`;
+      const isCloud = o._origem === 'cloud'; // orçamento de outro terminal (sem dados locais)
+      const waBtn = o.cliente_telefone
+        ? `WA.abrirModal('Enviar orçamento via WhatsApp','${(o.cliente_telefone||'').replace(/'/g,"\\'")}','orcamento','${o.id}')`
+        : `WA.abrirModalCapturaCliente('orcamento','${o.id}','${(o.cliente_nome||'').replace(/'/g,"\\'")}')`;
       return `
 <tr onclick="Orcamentos.verDetalhes('${o.id}')" style="cursor:pointer">
-  <td style="font-weight:700;font-family:'Syne',sans-serif">#${o.numero}</td>
+  <td style="font-weight:700;font-family:'Syne',sans-serif">
+    #${o.numero}${isCloud?'<br><span style="font-size:9px;color:var(--text3);font-weight:400">outro terminal</span>':''}
+  </td>
   <td style="font-size:12px;color:var(--text3)">${_fmtData(o.created_at)}</td>
-  <td>${o.cliente_nome || '<span style="color:var(--text3)">—</span>'}</td>
+  <td>${o.cliente_nome || '<span style="color:var(--text3)">—</span>'}${o.vendedor_nome&&isCloud?`<br><span style="font-size:10px;color:var(--text3)">${o.vendedor_nome}</span>`:''}</td>
   <td style="text-align:right;font-weight:600;color:var(--accent)">R$ ${fmtMoney(o.total)}</td>
   <td>${badge}</td>
   <td style="font-size:12px;color:${expirado?'var(--red)':'var(--text3)'}">${o.status==='pendente'||o.status==='aprovado'?_fmtData(venc.toISOString()):'—'}</td>
   <td onclick="event.stopPropagation()"><div style="display:flex;gap:4px">
     <button class="btn btn-ghost btn-sm" onclick="Orcamentos.verDetalhes('${o.id}')">👁️</button>
-    <button class="btn btn-ghost btn-sm" style="color:#25D366" title="Enviar por WhatsApp"
-      onclick="${o.cliente_telefone ? `WA.abrirModal('Enviar orçamento via WhatsApp','${(o.cliente_telefone||'').replace(/'/g,"\\'")}','orcamento','${o.id}')` : `WA.abrirModalCapturaCliente('orcamento','${o.id}','${(o.cliente_nome||'').replace(/'/g,"\\'")}')` }">📱</button>
-    ${o.status==='pendente'||o.status==='aprovado'?`<button class="btn btn-ghost btn-sm" title="Converter em venda" onclick="Orcamentos.converterEmVenda('${o.id}')">🛒</button>`:''}
-    ${o.status!=='cancelado'&&o.status!=='convertido'?`<button class="btn btn-ghost btn-sm" onclick="Orcamentos.cancelar('${o.id}')">🗑️</button>`:''}
+    <button class="btn btn-ghost btn-sm" style="color:#25D366" title="Enviar por WhatsApp" onclick="${waBtn}">${WA_ICON}</button>
+    ${!isCloud&&(o.status==='pendente'||o.status==='aprovado')?`<button class="btn btn-ghost btn-sm" title="Converter em venda" onclick="Orcamentos.converterEmVenda('${o.id}')">🛒</button>`:''}
+    ${!isCloud&&o.status!=='cancelado'&&o.status!=='convertido'?`<button class="btn btn-ghost btn-sm" onclick="Orcamentos.cancelar('${o.id}')">🗑️</button>`:''}
   </div></td>
 </tr>`;
     }).join('');
@@ -793,7 +876,12 @@ const Orcamentos = (() => {
 
   // ─── Detalhes ────────────────────────────────────────────────────
   async function verDetalhes(id) {
-    const orc = await window.pdv.orcamentos.getById(id);
+    // id pode ser local UUID ou remote_id do Base44
+    let orc = await window.pdv.orcamentos.getById(id);
+    if (!orc) {
+      // Buscar no cloud (orçamento de outro terminal)
+      orc = await window.pdv.orcamentos.getByIdCloud(id);
+    }
     if (!orc) { Toast.show('Orçamento não encontrado', 'error'); return; }
 
     const hoje = new Date();
@@ -861,7 +949,7 @@ ${orc.observacao?`<div style="background:var(--bg3);border-radius:8px;padding:10
   <button class="btn btn-primary" onclick="Orcamentos.converterEmVenda('${orc.id}');Modal.close()">🛒 Converter em Venda</button>
   <button class="btn btn-ghost" onclick="Orcamentos.cancelar('${orc.id}');Modal.close()">🗑️ Cancelar</button>`:''}
   <button class="btn btn-ghost" style="color:#25D366"
-    onclick="${orc.cliente_telefone ? `WA.abrirModal('Enviar orçamento via WhatsApp','${(orc.cliente_telefone||'').replace(/'/g,"\\'")}','orcamento','${orc.id}')` : `WA.abrirModalCapturaCliente('orcamento','${orc.id}','${(orc.cliente_nome||'').replace(/'/g,"\\'")}')` }">📱 WhatsApp</button>
+    onclick="${orc.cliente_telefone ? `WA.abrirModal('Enviar orçamento via WhatsApp','${(orc.cliente_telefone||'').replace(/'/g,"\\'")}','orcamento','${orc.id}')` : `WA.abrirModalCapturaCliente('orcamento','${orc.id}','${(orc.cliente_nome||'').replace(/'/g,"\\'")}')` }">${WA_ICON} WhatsApp</button>
   <button class="btn btn-ghost" onclick="Orcamentos._imprimirOrcamento('${orc.id}')">🖨️ Imprimir</button>
   <button class="btn btn-ghost" onclick="Modal.close()">Fechar</button>
 </div>`, `Orçamento #${orc.numero}`);
@@ -923,7 +1011,7 @@ ${orc.observacao?`<div style="background:var(--bg3);border-radius:8px;padding:10
   function _fmtForma(f) { return {dinheiro:'Dinheiro',pix:'PIX',credito:'Cartão Crédito',debito:'Cartão Débito',boleto:'Boleto',outros:'A Combinar',carteira:'Crédito Loja'}[f]||f||'—'; }
 
   return {
-    render, init, load,
+    render, init, load, onPeriodoChange,
     abrirNovo, fecharNovo, salvar,
     verDetalhes, converterEmVenda, cancelar,
     _onSearch, _onSearchKey, _selecionarProduto,

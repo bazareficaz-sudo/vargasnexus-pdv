@@ -569,6 +569,62 @@ async function atualizarStatusOrcamento(remoteId, status) {
   return put(`/entities/Orcamento/${remoteId}`, { status });
 }
 
+async function getOrcamentoCloud(remoteId) {
+  const o = await get(`/entities/Orcamento/${remoteId}`);
+  if (!o) return null;
+  const itens = Array.isArray(o.itens) ? o.itens.map(i => ({
+    produto_nome:   i.produto_nome || i.nome || '',
+    quantidade:     i.quantidade || 1,
+    preco_unitario: i.preco_unitario || 0,
+    desconto:       i.desconto || 0,
+    total:          i.total || i.subtotal || 0,
+  })) : [];
+  return {
+    id:               o._id || o.id,
+    remote_id:        o._id || o.id,
+    numero:           o.numero || 0,
+    status:           o.status || 'pendente',
+    cliente_nome:     o.cliente_nome || null,
+    cliente_telefone: o.cliente_telefone || null,
+    forma_pagamento:  o.forma_pagamento || null,
+    validade_dias:    o.validade_dias || 7,
+    subtotal:         o.subtotal || 0,
+    desconto:         o.desconto || 0,
+    total:            o.total || 0,
+    observacao:       o.observacao || null,
+    vendedor_nome:    o.vendedor_nome || null,
+    created_at:       o.created_date || o.created_at || new Date().toISOString(),
+    itens,
+  };
+}
+
+async function listarOrcamentosCloud(filtros = {}) {
+  const q = { empresa_id: EMPRESA_ID };
+  if (filtros.status) q.status = filtros.status;
+  const res = await get('/entities/Orcamento', {
+    q: JSON.stringify(q), limit: 500,
+    sort: JSON.stringify({ created_date: -1 }),
+  });
+  const lista = Array.isArray(res) ? res : (res.results || res.data || []);
+  return lista.map(o => ({
+    id:               o._id || o.id,
+    remote_id:        o._id || o.id,
+    numero:           o.numero || 0,
+    status:           o.status || 'pendente',
+    cliente_nome:     o.cliente_nome || null,
+    cliente_telefone: o.cliente_telefone || null,
+    forma_pagamento:  o.forma_pagamento || null,
+    validade_dias:    o.validade_dias || 7,
+    subtotal:         o.subtotal || 0,
+    desconto:         o.desconto || 0,
+    total:            o.total || 0,
+    observacao:       o.observacao || null,
+    vendedor_nome:    o.vendedor_nome || null,
+    created_at:       o.created_date || o.created_at || new Date().toISOString(),
+    _origem:          'cloud',
+  }));
+}
+
 // ─── Estoque ──────────────────────────────────────────────────────────
 
 async function sincronizarEstoque(ultimaSync = null) {
@@ -845,6 +901,8 @@ module.exports = {
   getIdProdutoGenerico,
   sincronizarOrcamento,
   atualizarStatusOrcamento,
+  listarOrcamentosCloud,
+  getOrcamentoCloud,
   registrarNfceVenda,
   chamarPdvProxy,
 };

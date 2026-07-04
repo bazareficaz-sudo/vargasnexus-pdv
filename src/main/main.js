@@ -321,6 +321,12 @@ ipcMain.handle('orcamentos:registrar', async (_, orc) => {
   return result;
 });
 ipcMain.handle('orcamentos:listar', (_, filtros) => db.orcamentos.listar(filtros));
+ipcMain.handle('orcamentos:listarCloud', async (_, filtros) => {
+  try { return await api.listarOrcamentosCloud(filtros); } catch(e) { return []; }
+});
+ipcMain.handle('orcamentos:getByIdCloud', async (_, remoteId) => {
+  try { return await api.getOrcamentoCloud(remoteId); } catch(e) { return null; }
+});
 ipcMain.handle('orcamentos:getById', (_, id) => db.orcamentos.getById(id));
 ipcMain.handle('orcamentos:cancelar', async (_, id) => {
   db.orcamentos.cancelar(id);
@@ -341,11 +347,67 @@ ipcMain.handle('orcamentos:marcarConvertido', async (_, id) => {
 
 // WhatsApp via pdvProxy
 ipcMain.handle('whatsapp:enviar', async (_, tipo, id, telefone, dadosExtras) => {
-  const params = { tipo, telefone: telefone || null };
-  if (tipo === 'orcamento') {
+  const params = { tipo: tipo === 'catalogo' ? 'orcamento' : tipo, telefone: telefone || null };
+  if (tipo === 'catalogo') {
+    const { produtos, opcoes } = dadosExtras || {};
+    if (!produtos || !produtos.length) throw new Error('Nenhum produto para enviar');
+    const fmtBRL = v => 'R$ ' + Number(v || 0).toFixed(2).replace('.', ',');
+    const empresaNome = store.get('auth.usuario.empresa_nome') || 'Vargas';
+
+    const comFoto = [];
+    const semFotoLinhas = [];
+
+    for (const p of produtos) {
+      const partes = [];
+      if (opcoes?.nome  !== false) partes.push(`*${p.nome}*`);
+      if (opcoes?.preco !== false) partes.push(fmtBRL(p.preco_venda || 0));
+      if (opcoes?.desc  && p.descricao) partes.push(p.descricao);
+      const legenda = partes.join('\n');
+      const fotoUrl = opcoes?.foto !== false ? (p.foto_url || '') : '';
+      if (fotoUrl) {
+        comFoto.push({ url: fotoUrl, caption: legenda });
+      } else {
+        semFotoLinhas.push(legenda);
+      }
+    }
+
+    // Texto apenas para produtos sem foto (ou intro se todos têm foto)
+    params.mensagem_texto = semFotoLinhas.length
+      ? `🏪 *${empresaNome}*\n\n` + semFotoLinhas.join('\n─────────────\n\n')
+      : `🏪 *${empresaNome}*`;
+    if (comFoto.length) params.fotos = comFoto;
+    // orcamento_data mínimo para passar validação do cloud (mensagem_texto substitui o conteúdo)
+    params.orcamento_data = { numero: 'CAT', itens: [], total: 0 };
+    console.log('[WA] catalogo fotos:', comFoto.length, '| semFoto:', semFotoLinhas.length);
+  } else if (tipo === 'orcamento') {
     const orc = db.orcamentos.getById(id);
     if (!orc) throw new Error('Orçamento não encontrado');
-    params.orcamento_data = orc;
+    const itensOrc = Array.isArray(orc.itens) ? orc.itens : [];
+    // Gera mensagem de texto localmente (evita dependência do gerarMensagemOrcamento do Base44)
+    const fmtBRL = v => 'R$ ' + Number(v || 0).toFixed(2).replace('.', ',');
+    const empresaNome = store.get('auth.usuario.empresa_nome') || 'Vargas';
+    let linhasItens = itensOrc.map(i => {
+      const unitario = i.preco_unitario || i.preco || i.preco_venda || i.valor_unitario
+                       || (i.total && i.quantidade ? i.total / Math.max(i.quantidade, 1) : 0);
+      const subtotal = i.subtotal || i.total || (unitario * Math.max(i.quantidade || 1, 1));
+      return `• ${i.produto_nome}\n  ${i.quantidade}x ${fmtBRL(unitario)} = ${fmtBRL(subtotal)}`;
+    }).join('\n');
+    const totalOrc = orc.total || orc.valor_total || itensOrc.reduce((s, i) => s + (i.subtotal || i.total || 0), 0);
+    const validadeTexto = orc.validade ? `\n📅 Válido até: ${orc.validade}` : '';
+    const obsTexto = orc.observacao ? `\n📝 ${orc.observacao}` : '';
+    // Enviar orcamento_data sem o id para o cloud não buscar no Base44
+    // (no Base44 os itens têm preco_unitario=0; aqui temos os preços corretos do SQLite)
+    const itensNormalizados = itensOrc.map(i => {
+      const unitario = i.preco_unitario || i.preco || i.preco_venda || i.valor_unitario
+                       || (i.total && i.quantidade ? i.total / Math.max(i.quantidade, 1) : 0);
+      return { produto_nome: i.produto_nome, quantidade: i.quantidade, preco_unitario: unitario,
+               subtotal: i.subtotal || i.total || (unitario * Math.max(i.quantidade || 1, 1)) };
+    });
+    params.orcamento_data = {
+      numero: orc.numero, itens: itensNormalizados,
+      total: totalOrc, validade: orc.validade, observacao: orc.observacao,
+      // sem id — força o cloud a usar estes dados em vez de buscar no Base44
+    };
   } else {
     // dadosExtras tem prioridade (vendas de outros terminais não existem no banco local)
     const venda = dadosExtras || db.vendas.getById(id);
@@ -361,19 +423,48 @@ ipcMain.handle('whatsapp:enviar', async (_, tipo, id, telefone, dadosExtras) => 
         forma_pagamento: venda.forma_pagamento, valor_pago: venda.valor_recebido || venda.total,
         troco: venda.troco || 0, created_at: venda.created_at,
       });
+      const htmlForPdf = html.replace('</head>', `<style>
+        @page { size: A4; margin: 15mm 20mm; }
+        body { width: 100% !important; max-width: 100% !important; font-size: 13pt !important; }
+        .sm { font-size: 11pt !important; }
+        .lg { font-size: 18pt !important; }
+        .total-row td { font-size: 16pt !important; }
+        .sep { margin: 10px 0 !important; }
+        td { padding: 3px 0 !important; }
+      </style></head>`);
       const tmpWin = new BrowserWindow({ show: false, webPreferences: { nodeIntegration: false, contextIsolation: true } });
       await new Promise((resolve, reject) => {
         tmpWin.webContents.once('did-finish-load', resolve);
         tmpWin.webContents.once('did-fail-load', (_, code, desc) => reject(new Error(`load failed: ${desc}`)));
-        tmpWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+        tmpWin.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(htmlForPdf));
       });
       const pdfBuf = await tmpWin.webContents.printToPDF({ printBackground: true, pageSize: 'A4' });
       tmpWin.close();
       params.pdf_base64 = pdfBuf.toString('base64');
-      params.pdf_filename = `cupom-${venda.numero}.pdf`;
+      params.pdf_filename = `cupom-${venda.numero}`;
       console.log('[WA] PDF gerado:', params.pdf_filename, 'bytes:', pdfBuf.length);
     } catch (e) { console.error('[WA] PDF gen error:', e.message); }
     params.venda_data = venda;
+
+    // Após envio do cupom, verificar se tem NF-Ce e enviar após 10s
+    if (venda.nfce_emitida && venda.nfce_url_pdf && params.telefone) {
+      setTimeout(async () => {
+        try {
+          const fetch = require('node-fetch');
+          const resp = await fetch(venda.nfce_url_pdf);
+          if (!resp.ok) throw new Error(`NF-Ce fetch falhou: ${resp.status}`);
+          const pdfBuffer = Buffer.from(await resp.arrayBuffer());
+          await api.chamarPdvProxy('enviarWhatsApp', {
+            tipo: 'venda',
+            telefone: params.telefone,
+            pdf_base64: pdfBuffer.toString('base64'),
+            pdf_filename: `NFCe-${venda.nfce_numero || venda.numero}.pdf`,
+            venda_data: venda,
+          });
+          console.log('[WA] NF-Ce PDF enviado para:', params.telefone);
+        } catch (e) { console.error('[WA] NF-Ce send error:', e.message); }
+      }, 10000);
+    }
   }
   return api.chamarPdvProxy('enviarWhatsApp', params);
 });
@@ -404,6 +495,7 @@ ipcMain.handle('ia:fiscal', async (_, nome, categoria, unidade) => ia.sugerirFis
 ipcMain.handle('ia:descricao', async (_, nome, categoria, marca, unidade) => ia.gerarDescricao(nome, categoria, marca, unidade));
 ipcMain.handle('ia:lote', async (_, produtos) => ia.enriquecerLote(produtos));
 ipcMain.handle('ia:status', () => ({ configurado: !!ia.getApiKey() }));
+ipcMain.handle('ia:buscarImagem', async (_, nome, ean) => ia.buscarImagemProduto(nome, ean));
 
 // ─── Marketplace (multi-conta, multi-canal) ────────────────────────
 ipcMain.handle('mkt:listarContas', (_, canal) => {

@@ -140,4 +140,68 @@ Regras:
   }
 }
 
-module.exports = { sugerirFiscal, gerarDescricao, enriquecerLote, getApiKey };
+/**
+ * Busca imagem do produto por EAN e/ou nome.
+ * Tenta múltiplas APIs gratuitas em sequência.
+ */
+async function buscarImagemProduto(nome, ean) {
+  const candidatos = [];
+
+  // 1. UPCItemDB (free, sem key, bom para produtos de marca)
+  if (ean) {
+    try {
+      const res = await fetch(`https://api.upcitemdb.com/prod/trial/lookup?upc=${encodeURIComponent(ean)}`, {
+        headers: { 'Accept': 'application/json' },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const item = data?.items?.[0];
+        if (item) {
+          const imgs = (item.images || []).filter(Boolean);
+          imgs.forEach(u => candidatos.push({ url: u, fonte: 'UPCItemDB', titulo: item.title || nome }));
+        }
+      }
+    } catch(e) { console.warn('[IA Imagem] UPCItemDB:', e.message); }
+  }
+
+  // 2. Open Food Facts (gratuito, para alimentos)
+  if (ean && candidatos.length === 0) {
+    try {
+      const res = await fetch(`https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(ean)}.json`);
+      if (res.ok) {
+        const data = await res.json();
+        const img = data?.product?.image_url || data?.product?.image_front_url;
+        if (img) candidatos.push({ url: img, fonte: 'Open Food Facts', titulo: data.product?.product_name || nome });
+      }
+    } catch(e) { console.warn('[IA Imagem] OpenFoodFacts:', e.message); }
+  }
+
+  // 3. Cosmos (API brasileira de produtos por EAN)
+  if (ean && candidatos.length === 0) {
+    try {
+      const res = await fetch(`https://api.cosmos.bluesoft.com.br/gtins/${encodeURIComponent(ean)}`, {
+        headers: { 'X-Cosmos-Token': 'sem-token', 'Accept': 'application/json' },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const img = data?.thumbnail_url || data?.image_url;
+        if (img) candidatos.push({ url: img, fonte: 'Cosmos BR', titulo: data.description || nome });
+      }
+    } catch(e) { console.warn('[IA Imagem] Cosmos:', e.message); }
+  }
+
+  // 4. Claude sugere termos de busca para o usuário procurar manualmente
+  const termoBusca = encodeURIComponent(`${nome} produto foto`);
+  const urlBuscaGoogle = `https://www.google.com/search?q=${termoBusca}&tbm=isch`;
+  const urlBuscaMercadoLivre = `https://lista.mercadolivre.com.br/${encodeURIComponent(nome)}`;
+
+  return {
+    candidatos,
+    busca_manual: {
+      google_imagens: urlBuscaGoogle,
+      mercado_livre: urlBuscaMercadoLivre,
+    },
+  };
+}
+
+module.exports = { sugerirFiscal, gerarDescricao, enriquecerLote, getApiKey, buscarImagemProduto };

@@ -1,3 +1,5 @@
+const WA_ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="16" height="16" style="vertical-align:middle;display:inline-block"><circle cx="16" cy="16" r="16" fill="#25D366"/><path fill="#fff" d="M23.5 20.5c-.4 1.1-2 2-3.2 2.2-.9.2-2-.1-4.8-1.3-4-1.7-6.6-5.8-6.8-6.1-.2-.3-1.6-2.1-1.6-4s1-3 1.4-3.4c.4-.4.8-.5 1.1-.5h.8c.3 0 .6.1.9.7l1.3 3c.1.3.1.6-.1.9l-.7 1c-.1.2-.2.4 0 .7.7 1.2 1.6 2.2 2.6 3 .9.7 1.9 1.2 2.9 1.5.3.1.6.1.8-.2l.7-1c.2-.3.5-.4.8-.3l2.9 1.4c.3.1.5.3.5.6v.8z"/></svg>`;
+
 // ─── Login ────────────────────────────────────────────────────────
 const Login = {
   render() {
@@ -128,6 +130,10 @@ const Produtos = {
 <div id="prod-sel-bar" style="display:none;background:var(--gold);color:#1a1a0e;padding:10px 20px;display:none;align-items:center;gap:12px;font-size:13px;font-weight:600">
   <span id="prod-sel-count">0 selecionados</span>
   <button class="btn btn-sm" style="background:rgba(0,0,0,.15);color:inherit;border:none" onclick="Produtos.iaLoteSelecionados()">🤖 Preencher fiscal com IA</button>
+  <button id="prod-sel-wa-btn" class="btn btn-sm" style="background:#25D366;color:#fff;border:none;display:none"
+    onclick="WA.abrirModalCatalogo(Produtos._data.filter(p=>Produtos._sel.has(p.id)))">
+    ${WA_ICON} Enviar no WhatsApp
+  </button>
   <button class="btn btn-sm" style="background:rgba(0,0,0,.15);color:inherit;border:none" onclick="Produtos.desmarcarTodos()">✕ Limpar seleção</button>
   <button class="btn btn-sm" style="background:rgba(0,0,0,.15);color:inherit;border:none;margin-left:auto" onclick="Produtos.selecionarSemNcm()">Selecionar sem NCM</button>
 </div>
@@ -223,7 +229,11 @@ const Produtos = {
       if (cols.ncm)       cells.push(`<td class="td-mono" style="font-size:12px">${p.ncm||'<span style="color:var(--text3)">—</span>'}</td>`);
       if (cols.cfop)      cells.push(`<td class="td-mono" style="font-size:12px">${p.cfop||'<span style="color:var(--text3)">—</span>'}</td>`);
       if (cols.status)    cells.push(`<td>${p.ativo?'<span class="badge badge-green">Ativo</span>':'<span class="badge badge-gray">Inativo</span>'}</td>`);
-      cells.push(`<td style="white-space:nowrap"><button class="btn btn-ghost btn-sm" onclick="Produtos.openForm('${p.id}')">Editar</button></td>`);
+      cells.push(`<td style="white-space:nowrap;display:flex;gap:4px;align-items:center">
+        <button class="btn btn-ghost btn-sm" onclick="Produtos.openForm('${p.id}')">Editar</button>
+        <button class="btn btn-ghost btn-sm" style="color:#25D366;padding:4px 8px" title="Enviar por WhatsApp"
+          onclick="WA.abrirModalCatalogo(Produtos._data.filter(x=>x.id==='${p.id}'))">${WA_ICON}</button>
+      </td>`);
       return `<tr style="${sel?'background:rgba(var(--gold-rgb,180,140,0),.08)':''}">${cells.join('')}</tr>`;
     }).join('');
   },
@@ -284,6 +294,8 @@ const Produtos = {
     } else {
       bar.style.display = 'none';
     }
+    const waBtn = document.getElementById('prod-sel-wa-btn');
+    if (waBtn) waBtn.style.display = this._sel.size > 0 ? '' : 'none';
   },
 
   // IA: enriquecer selecionados em lote
@@ -369,6 +381,82 @@ const Produtos = {
     }
   },
 
+  // Imagem: preview ao digitar URL
+  _previewFoto(url) {
+    const prev = document.getElementById('pf-img-preview');
+    const placeholder = document.getElementById('pf-img-placeholder');
+    if (url) {
+      if (prev) { prev.src = url; prev.style.display = ''; }
+      else {
+        const area = document.getElementById('pf-img-area');
+        if (area && placeholder) {
+          placeholder.outerHTML = `<img id="pf-img-preview" src="${url}" style="width:72px;height:72px;object-fit:cover;border-radius:8px;border:1px solid var(--border);margin-bottom:8px" onerror="this.style.display='none'">`;
+        }
+      }
+    } else {
+      if (prev) prev.style.display = 'none';
+    }
+  },
+
+  _limparFoto() {
+    const input = document.getElementById('pf-foto');
+    if (input) input.value = '';
+    const prev = document.getElementById('pf-img-preview');
+    if (prev) prev.style.display = 'none';
+  },
+
+  // Buscar imagem por EAN/nome — exibe resultados inline no próprio formulário
+  async buscarImagemForm() {
+    const nome = document.getElementById('pf-nome')?.value?.trim();
+    const ean  = document.getElementById('pf-ean')?.value?.trim();
+    if (!nome && !ean) { Toast.show('Informe o nome ou EAN do produto primeiro', 'error'); return; }
+
+    const btn = document.getElementById('pf-img-btn');
+    const painel = document.getElementById('pf-img-candidatos');
+    if (btn) { btn.disabled = true; btn.textContent = '🔍 Buscando...'; }
+    if (painel) { painel.style.display = 'block'; painel.innerHTML = '<div style="color:var(--text3);font-size:12px">Consultando bases de dados...</div>'; }
+
+    try {
+      const r = await window.pdv.ia.buscarImagem(nome, ean);
+      const { candidatos, busca_manual } = r;
+
+      const opts = candidatos.slice(0, 5).map(c => {
+        const urlSafe = c.url.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        return `<div style="display:flex;align-items:center;gap:8px;padding:6px;border:1px solid var(--border);border-radius:8px;cursor:pointer;margin-bottom:4px"
+          onclick="Produtos._selecionarFoto('${urlSafe}')">
+          <img src="${c.url}" style="width:48px;height:48px;object-fit:cover;border-radius:6px;flex-shrink:0" onerror="this.style.opacity=.2">
+          <div style="flex:1;min-width:0">
+            <div style="font-size:11px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.titulo || nome}</div>
+            <div style="font-size:10px;color:var(--text3)">${c.fonte}</div>
+          </div>
+          <span style="font-size:11px;color:var(--accent)">Usar</span>
+        </div>`;
+      }).join('');
+
+      if (painel) painel.innerHTML = `
+        ${candidatos.length ? `<div style="font-size:11px;color:var(--text3);margin-bottom:6px">${candidatos.length} imagem(ns) encontrada(s):</div>${opts}` :
+          '<div style="font-size:11px;color:var(--text3);margin-bottom:8px">Nenhuma imagem automática. Cole uma URL abaixo ou busque manualmente:</div>'}
+        <div style="display:flex;gap:6px;margin-top:6px">
+          <a href="${busca_manual.google_imagens}" target="_blank" class="btn btn-ghost btn-sm" style="font-size:10px">🌐 Google</a>
+          <a href="${busca_manual.mercado_livre}" target="_blank" class="btn btn-ghost btn-sm" style="font-size:10px">🛒 ML</a>
+          <button class="btn btn-ghost btn-sm" style="font-size:10px;margin-left:auto" onclick="document.getElementById('pf-img-candidatos').style.display='none'">✕</button>
+        </div>`;
+    } catch(e) {
+      if (painel) painel.style.display = 'none';
+      Toast.show('Erro ao buscar imagem: ' + e.message, 'error');
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '🖼️ Buscar imagem'; }
+    }
+  },
+
+  _selecionarFoto(url) {
+    const input = document.getElementById('pf-foto');
+    if (input) input.value = url;
+    this._previewFoto(url);
+    const painel = document.getElementById('pf-img-candidatos');
+    if (painel) painel.style.display = 'none';
+  },
+
   // IA: enriquecer produto individual direto da lista (sem abrir form)
   async enriquecerIA(id, nome, categoria, unidade) {
     try {
@@ -452,12 +540,13 @@ const Produtos = {
 </div>
 <div class="form-row cols-2">
   <div class="form-group">
-    <label class="form-label">Preço de Venda (R$) *</label>
-    <input class="input" id="pf-preco" type="number" step="0.01" value="${p.preco_venda || ''}">
+    <label class="form-label">Preço de Venda (R$)${!id?' *':''}</label>
+    <input class="input" id="pf-preco" type="number" step="0.01" value="${p.preco_venda || ''}" ${id?'readonly style="background:var(--bg2);color:var(--text3);cursor:not-allowed"':''}>
+    ${id?'<div style="font-size:10px;color:var(--text3);margin-top:2px">Altere o preço no Base44</div>':''}
   </div>
   <div class="form-group">
     <label class="form-label">Preço de Custo (R$)</label>
-    <input class="input" id="pf-custo" type="number" step="0.01" value="${p.preco_custo || ''}">
+    <input class="input" id="pf-custo" type="number" step="0.01" value="${p.preco_custo || ''}" ${id?'readonly style="background:var(--bg2);color:var(--text3);cursor:not-allowed"':''}>
   </div>
 </div>
 <div class="form-row cols-2">
@@ -469,6 +558,20 @@ const Produtos = {
     <label class="form-label">Marca</label>
     <input class="input" id="pf-marca" value="${p.marca || ''}">
   </div>
+</div>
+
+<!-- Foto do produto -->
+<div style="margin:10px 0 6px;padding-top:12px;border-top:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
+  <span style="font-size:11px;font-weight:700;color:var(--text3);letter-spacing:.8px">FOTO DO PRODUTO</span>
+  <button class="btn btn-ghost btn-sm" id="pf-img-btn" onclick="Produtos.buscarImagemForm()" style="font-size:12px;color:var(--accent)">🖼️ Buscar imagem</button>
+</div>
+<div id="pf-img-area" style="margin-bottom:10px">
+  ${p.foto_url ? `<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+    <img id="pf-img-preview" src="${p.foto_url}" style="width:72px;height:72px;object-fit:cover;border-radius:8px;border:1px solid var(--border)" onerror="this.style.display='none'">
+    <button class="btn btn-ghost btn-sm" style="color:var(--red)" onclick="Produtos._limparFoto()">✕ Remover</button>
+  </div>` : `<div id="pf-img-placeholder" style="width:72px;height:72px;border:2px dashed var(--border);border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--text3);font-size:24px;margin-bottom:8px">🖼️</div>`}
+  <input class="input" id="pf-foto" value="${p.foto_url || ''}" placeholder="URL da imagem (https://...)" oninput="Produtos._previewFoto(this.value)" style="font-size:12px">
+  <div id="pf-img-candidatos" style="display:none;margin-top:8px"></div>
 </div>
 
 <!-- Visibilidade -->
@@ -552,30 +655,49 @@ const Produtos = {
 
   async salvar(id) {
     const g = (i) => document.getElementById(i);
+    const nome = g('pf-nome')?.value?.trim();
+    if (!nome) { Toast.show('Nome do produto é obrigatório', 'error'); return; }
+
     const dados = {
-      emoji: g('pf-emoji').value,
-      nome: g('pf-nome').value.trim(),
-      sku: g('pf-sku').value.trim(),
-      ean: g('pf-ean').value.trim(),
-      preco_venda: parseFloat(g('pf-preco').value),
-      preco_custo: parseFloat(g('pf-custo').value) || 0,
-      unidade: g('pf-un').value || 'UN',
-      categoria: g('pf-cat').value,
-      marca: g('pf-marca').value,
-      ativo: true,
-      ncm: g('pf-ncm').value.trim(),
-      cfop: g('pf-cfop').value.trim() || '5102',
-      icms_cst: g('pf-icms-cst').value || '400',
-      icms_origem: parseInt(g('pf-icms-origem').value) || 0,
-      pis_cst: g('pf-pis-cst').value || '07',
-      cofins_cst: g('pf-cofins-cst').value || '07',
-      disponivel_pdv: g('pf-disponivel').checked ? 1 : 0,
+      emoji:        g('pf-emoji')?.value || '📦',
+      nome,
+      sku:          g('pf-sku')?.value?.trim() || null,
+      ean:          g('pf-ean')?.value?.trim() || null,
+      unidade:      g('pf-un')?.value || 'UN',
+      categoria:    g('pf-cat')?.value || null,
+      marca:        g('pf-marca')?.value || null,
+      ativo:        1,
+      ncm:          g('pf-ncm')?.value?.trim() || null,
+      cfop:         g('pf-cfop')?.value?.trim() || '5102',
+      icms_cst:     g('pf-icms-cst')?.value || '400',
+      icms_origem:  parseInt(g('pf-icms-origem')?.value) || 0,
+      pis_cst:      g('pf-pis-cst')?.value || '07',
+      cofins_cst:   g('pf-cofins-cst')?.value || '07',
+      disponivel_pdv: g('pf-disponivel')?.checked ? 1 : 0,
+      foto_url:     g('pf-foto')?.value?.trim() || null,
     };
-    if (!dados.nome || !dados.preco_venda) { Toast.show('Nome e preço são obrigatórios', 'error'); return; }
-    if (id) { await window.pdv.produtos.atualizar(id, dados); Toast.show('Produto atualizado!', 'success'); }
-    else { await window.pdv.produtos.salvar(dados); Toast.show('Produto criado!', 'success'); }
-    Modal.close();
-    await this.load(document.getElementById('prod-search')?.value || '');
+
+    // Preço só é alterável em novo produto
+    if (!id) {
+      const preco = parseFloat(g('pf-preco')?.value);
+      if (!preco) { Toast.show('Preço de venda é obrigatório', 'error'); return; }
+      dados.preco_venda = preco;
+      dados.preco_custo = parseFloat(g('pf-custo')?.value) || 0;
+    }
+
+    try {
+      if (id) {
+        await window.pdv.produtos.atualizar(id, dados);
+        Toast.show('Produto atualizado!', 'success');
+      } else {
+        await window.pdv.produtos.salvar(dados);
+        Toast.show('Produto criado!', 'success');
+      }
+      Modal.close();
+      await this.load(document.getElementById('prod-search')?.value || '');
+    } catch(e) {
+      Toast.show('Erro ao salvar: ' + e.message, 'error');
+    }
   }
 };
 
@@ -790,7 +912,7 @@ const WA = {
 <div class="modal-actions" style="margin-top:8px">
   <button id="wa-btn-enviar" class="btn btn-primary" style="background:#25D366;border-color:#25D366"
     onclick="WA.enviar('${tipo}','${id}',document.getElementById('wa-telefone').value,WA._dadosExtras)">
-    📱 Enviar WhatsApp
+    ${WA_ICON} Enviar WhatsApp
   </button>
   <button class="btn btn-ghost" onclick="Modal.close()">Cancelar</button>
 </div>`, titulo);
@@ -817,7 +939,7 @@ const WA = {
 <div class="modal-actions" style="margin-top:8px">
   <button class="btn btn-primary" style="background:#25D366;border-color:#25D366"
     onclick="WA._salvarTelefoneEEnviar('${tipo}','${id}')">
-    📱 Enviar WhatsApp
+    ${WA_ICON} Enviar WhatsApp
   </button>
   <button class="btn btn-ghost" onclick="Modal.close()">Cancelar</button>
 </div>`, 'Enviar por WhatsApp');
@@ -832,6 +954,92 @@ const WA = {
       tipo === 'venda' ? 'Enviar cupom via WhatsApp' : 'Enviar orçamento via WhatsApp',
       tel, tipo, id, WA._dadosExtras
     );
+  },
+
+  // ─── Catálogo de produtos ─────────────────────────────────────────
+  _catalogoProdutos: [],
+
+  async abrirModalCatalogo(produtos) {
+    if (!produtos || !produtos.length) { Toast.show('Nenhum produto selecionado', 'error'); return; }
+    WA._catalogoProdutos = produtos;
+    const empresaNome = (await window.pdv.config.get('auth.usuario'))?.empresa_nome || 'Vargas';
+    const lista = produtos.map(p => `
+      <div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border)">
+        ${p.foto_url ? `<img src="${p.foto_url}" style="width:36px;height:36px;object-fit:cover;border-radius:6px;flex-shrink:0">` : `<span style="font-size:22px">${p.emoji||'📦'}</span>`}
+        <div style="min-width:0">
+          <div style="font-size:13px;font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${p.nome}</div>
+          <div style="font-size:12px;color:var(--green)">R$ ${fmtMoney(p.preco_venda)}</div>
+        </div>
+      </div>`).join('');
+    Modal.open(`
+<div style="display:flex;flex-direction:column;gap:14px;max-width:420px">
+  <div style="background:var(--bg2);border-radius:10px;padding:12px;max-height:200px;overflow-y:auto">
+    ${lista}
+  </div>
+  <div>
+    <div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--text3);margin-bottom:8px;font-weight:600">Informações a enviar</div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;padding:8px 10px;background:var(--bg2);border-radius:8px">
+        <input type="checkbox" id="wac-nome" checked> Nome do produto
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;padding:8px 10px;background:var(--bg2);border-radius:8px">
+        <input type="checkbox" id="wac-preco" checked> Preço
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;padding:8px 10px;background:var(--bg2);border-radius:8px">
+        <input type="checkbox" id="wac-foto" ${produtos.some(p=>p.foto_url)?'checked':''}> Foto (link)
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer;padding:8px 10px;background:var(--bg2);border-radius:8px">
+        <input type="checkbox" id="wac-desc"> Descrição
+      </label>
+    </div>
+  </div>
+  <div>
+    <label style="font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--text3);display:block;margin-bottom:4px">
+      Celular do cliente (opcional)
+    </label>
+    <input class="input" id="wac-tel" placeholder="(xx) xxxxx-xxxx"
+      onkeydown="if(event.key==='Enter')WA.enviarCatalogo('${empresaNome}')">
+    <div style="font-size:11px;color:var(--text3);margin-top:4px">Se não informado, abre o WhatsApp para escolher o contato</div>
+  </div>
+</div>
+<div class="modal-actions" style="margin-top:8px">
+  <button class="btn btn-primary" style="background:#25D366;border-color:#25D366"
+    onclick="WA.enviarCatalogo('${empresaNome}')">
+    ${WA_ICON} Abrir WhatsApp
+  </button>
+  <button class="btn btn-ghost" onclick="Modal.close()">Cancelar</button>
+</div>`, `Compartilhar produto${produtos.length > 1 ? 's' : ''} via WhatsApp`);
+    setTimeout(() => document.getElementById('wac-tel')?.focus(), 80);
+  },
+
+  enviarCatalogo(empresaNome) {
+    const produtos = WA._catalogoProdutos;
+    const usarNome  = document.getElementById('wac-nome')?.checked ?? true;
+    const usarPreco = document.getElementById('wac-preco')?.checked ?? true;
+    const usarFoto  = document.getElementById('wac-foto')?.checked ?? true;
+    const usarDesc  = document.getElementById('wac-desc')?.checked ?? false;
+    const telRaw    = document.getElementById('wac-tel')?.value?.trim().replace(/\D/g, '') || '';
+
+    let msg = `🏪 *${empresaNome || 'Vargas'}*\n\n`;
+    produtos.forEach((p, i) => {
+      if (i > 0) msg += '\n─────────────\n\n';
+      if (usarNome)  msg += `📦 *${p.nome}*\n`;
+      if (usarPreco) msg += `💰 *R$ ${fmtMoney(p.preco_venda)}*\n`;
+      if (usarDesc && p.descricao) msg += `📝 ${p.descricao}\n`;
+      if (usarFoto && p.foto_url)  msg += `🖼️ ${p.foto_url}\n`;
+    });
+    msg += '\n_Qualquer dúvida, estamos à disposição!_ 😊';
+
+    if (!telRaw) { Toast.show('Informe o celular do cliente para enviar via WhatsApp.', 'error'); return; }
+    const tel = `55${telRaw}`;
+    Modal.close();
+    window.pdv.whatsapp.enviar('catalogo', null, tel, {
+      produtos,
+      opcoes: { nome: usarNome, preco: usarPreco, foto: usarFoto, desc: usarDesc }
+    }).then(r => {
+      if (r?.sucesso || r?.ok || r?.dados?.ok) Toast.show('Mensagem enviada via WhatsApp!', 'success');
+      else Toast.show('Falha ao enviar: ' + (r?.erro || r?.dados?.erro || 'erro desconhecido'), 'error');
+    }).catch(e => Toast.show('Erro ao enviar: ' + e.message, 'error'));
   },
 };
 
@@ -1068,14 +1276,14 @@ const Vendas = {
         <td style="display:flex;gap:4px;flex-wrap:wrap;min-width:120px">
           ${nuvem
             ? `<button class="btn btn-ghost btn-sm" onclick="Vendas.imprimirCloud(${JSON.stringify(v).replace(/"/g,'&quot;')})" title="Imprimir">🖨️</button>
-               ${!cancelada ? `<button class="btn btn-ghost btn-sm" style="color:#25D366" title="Enviar por WhatsApp" onclick="${v.cliente_telefone ? `WA.abrirModal('Enviar cupom via WhatsApp','${(v.cliente_telefone||'').replace(/'/g,"\\'")}','venda','${id}',WA._vendas['${id}'])` : `WA.abrirModalCapturaCliente('venda','${id}','${(v.cliente_nome||'').replace(/'/g,"\\'")}',WA._vendas['${id}'])` }">📱</button>` : ''}`
+               ${!cancelada ? `<button class="btn btn-ghost btn-sm" style="color:#25D366" title="Enviar por WhatsApp" onclick="${v.cliente_telefone ? `WA.abrirModal('Enviar cupom via WhatsApp','${(v.cliente_telefone||'').replace(/'/g,"\\'")}','venda','${id}',WA._vendas['${id}'])` : `WA.abrirModalCapturaCliente('venda','${id}','${(v.cliente_nome||'').replace(/'/g,"\\'")}',WA._vendas['${id}'])` }">${WA_ICON}</button>` : ''}`
             : `<button class="btn btn-ghost btn-sm" onclick="Vendas.imprimir('${id}')" title="Imprimir">🖨️</button>
                ${!cancelada && podePermissao('editar_venda') ? `<button class="btn btn-ghost btn-sm" style="color:var(--accent)" onclick="Vendas.editarNoPDV('${id}')">✏️</button>` : ''}
                ${!cancelada && v.nfce_emitida
                  ? `<span class="badge badge-green" title="NFC-e emitida · Chave: ${v.nfce_chave || ''}">✅ NFC-e</span>
                     ${v.nfce_url_pdf ? `<button class="btn btn-ghost btn-sm" style="color:var(--green);font-size:10px" onclick="window.open('${v.nfce_url_pdf}','_blank')" title="Ver DANFE">📄 DANFE</button>` : ''}`
                  : !cancelada ? `<button class="btn btn-ghost btn-sm" style="color:var(--green);font-size:10px" onclick="Vendas.emitirNFCe('${id}')" title="Emitir NFC-e">🧾 NFC-e</button>` : ''}
-               ${!cancelada ? `<button class="btn btn-ghost btn-sm" style="color:#25D366" title="Enviar por WhatsApp" onclick="${v.cliente_telefone ? `WA.abrirModal('Enviar cupom via WhatsApp','${(v.cliente_telefone||'').replace(/'/g,"\\'")}','venda','${id}',WA._vendas['${id}'])` : `WA.abrirModalCapturaCliente('venda','${id}','${(v.cliente_nome||'').replace(/'/g,"\\'")}',WA._vendas['${id}'])` }">📱</button>` : ''}
+               ${!cancelada ? `<button class="btn btn-ghost btn-sm" style="color:#25D366" title="Enviar por WhatsApp" onclick="${v.cliente_telefone ? `WA.abrirModal('Enviar cupom via WhatsApp','${(v.cliente_telefone||'').replace(/'/g,"\\'")}','venda','${id}',WA._vendas['${id}'])` : `WA.abrirModalCapturaCliente('venda','${id}','${(v.cliente_nome||'').replace(/'/g,"\\'")}',WA._vendas['${id}'])` }">${WA_ICON}</button>` : ''}
                ${!cancelada ? `<button class="btn btn-danger btn-sm" onclick="Vendas.cancelar('${id}')">Cancelar</button>` : ''}`}
         </td>
       </tr>`;
@@ -1640,7 +1848,7 @@ const Faltas = (() => {
         <td>
           <button class="btn btn-ghost" style="font-size:11px;padding:3px 8px"
             onclick="Faltas.abrirWhatsApp('${f.cliente_telefone || ''}', '${(f.produto_nome || '').replace(/'/g, "\\'")}')">
-            📱 WA
+            ${WA_ICON} WA
           </button>
         </td>
       </tr>`;
