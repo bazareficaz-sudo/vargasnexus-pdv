@@ -852,6 +852,10 @@ const vendedores = {
 
 // ─── CONTAS A RECEBER (Fiado / Carteira) ─────────────────────────
 const contasReceber = {
+  limparTodos() {
+    db.prepare(`DELETE FROM contas_receber`).run();
+  },
+
   upsertBatch(lista) {
     const stmt = db.prepare(`
       INSERT OR REPLACE INTO contas_receber

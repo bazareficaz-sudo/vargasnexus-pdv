@@ -572,6 +572,7 @@ async function syncForcarCarteira() {
   if (creditos.length > 0) db.creditosCliente.upsertBatch(creditos);
 
   const contas = await api.sincronizarContasReceber();
+  db.contasReceber.limparTodos();
   if (contas.length > 0) db.contasReceber.upsertBatch(contas);
 
   console.log(`[SYNC] Carteira forçada: ${clientes.length} clientes, ${creditos.length} créditos, ${contas.length} contas`);
