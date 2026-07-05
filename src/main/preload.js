@@ -106,6 +106,7 @@ contextBridge.exposeInMainWorld('pdv', {
   // Carteira de Clientes
   carteira: {
     sincronizar:   ()                                    => ipcRenderer.invoke('carteira:sincronizar'),
+    diagnostico:   ()                                    => ipcRenderer.invoke('carteira:diagnostico'),
     resumo:        ()                                    => ipcRenderer.invoke('carteira:resumo'),
     listar:        (query)                               => ipcRenderer.invoke('carteira:listar', query),
     ultimoPgto:    (id)                                  => ipcRenderer.invoke('carteira:ultimoPgto', id),

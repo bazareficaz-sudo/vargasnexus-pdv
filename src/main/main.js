@@ -808,6 +808,12 @@ ipcMain.handle('print:ping', async (_, url) => {
 
 // Carteira de Clientes
 ipcMain.handle('carteira:sincronizar', async () => sync.syncForcarCarteira());
+ipcMain.handle('carteira:diagnostico', () => {
+  const total = db.db().prepare('SELECT COUNT(*) as n, SUM(valor) as s FROM contas_receber WHERE status="pendente"').get();
+  const porCliente = db.db().prepare('SELECT cliente_id, cliente_nome, COUNT(*) as n, SUM(valor) as s FROM contas_receber WHERE status="pendente" GROUP BY cliente_id ORDER BY s DESC LIMIT 20').all();
+  const clientes = db.db().prepare('SELECT remote_id, nome FROM clientes WHERE remote_id IS NOT NULL').all();
+  return { total, porCliente, clientes };
+});
 ipcMain.handle('carteira:resumo', () => db.creditosCliente.resumoGeral());
 ipcMain.handle('carteira:listar', (_, query) => db.creditosCliente.listarCarteira(query || ''));
 ipcMain.handle('carteira:ultimoPgto', (_, remoteId) => db.creditosCliente.ultimoPagamento(remoteId));
