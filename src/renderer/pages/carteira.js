@@ -519,10 +519,10 @@ ${blocoCredito}
   // ─── Sincronizar (força re-sync de clientes + créditos + contas, sem lock) ───────────
   async function sincronizar() {
     Toast.show('Sincronizando carteira...', 'info');
-    await window.pdv.carteira.sincronizar();
+    const r = await window.pdv.carteira.sincronizar();
     await _carregarTotais();
     await _carregarLista();
-    Toast.show('Carteira atualizada', 'success');
+    Toast.show(`Carteira atualizada — ${r.contas} contas, ${r.clientes} clientes`, 'success');
   }
 
   return { render, init, buscar, ordenar, filtrarSaldo, abrirContas, abrirReceber, sincronizar,
