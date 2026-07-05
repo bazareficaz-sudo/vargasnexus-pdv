@@ -801,6 +801,7 @@ ipcMain.handle('print:ping', async (_, url) => {
 });
 
 // Carteira de Clientes
+ipcMain.handle('carteira:sincronizar', async () => sync.syncForcarCarteira());
 ipcMain.handle('carteira:resumo', () => db.creditosCliente.resumoGeral());
 ipcMain.handle('carteira:listar', (_, query) => db.creditosCliente.listarCarteira(query || ''));
 ipcMain.handle('carteira:ultimoPgto', (_, remoteId) => db.creditosCliente.ultimoPagamento(remoteId));

@@ -561,4 +561,19 @@ function stopAutoSync() {
   if (syncInterval) clearInterval(syncInterval);
 }
 
-module.exports = { startAutoSync, stopAutoSync, syncNow, syncFila, getStatus, checkOnline, syncUpProdutos, syncForcarClientes };
+async function syncForcarCarteira() {
+  // Re-sync completo de clientes + créditos, sem lock isSyncing
+  const clientes = await api.sincronizarClientes(null);
+  if (clientes.length > 0) db.clientes.upsertBatch(clientes.map(mapCliente));
+
+  const creditos = await api.sincronizarCreditosCliente();
+  if (creditos.length > 0) db.creditosCliente.upsertBatch(creditos);
+
+  const contas = await api.sincronizarContasReceber();
+  if (contas.length > 0) db.contasReceber.upsertBatch(contas);
+
+  console.log(`[SYNC] Carteira forçada: ${clientes.length} clientes, ${creditos.length} créditos, ${contas.length} contas`);
+  return { clientes: clientes.length, creditos: creditos.length, contas: contas.length };
+}
+
+module.exports = { startAutoSync, stopAutoSync, syncNow, syncFila, getStatus, checkOnline, syncUpProdutos, syncForcarClientes, syncForcarCarteira };
