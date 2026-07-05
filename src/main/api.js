@@ -223,12 +223,9 @@ async function sincronizarContasReceber() {
   const todos = [];
   const limit = 200;
   let skip = 0;
-  const usuario = store.get('auth.usuario') || {};
-  // Mesmo padrão de filtro de sincronizarClientes: respeita unificar_estoque
+  // Sem filtro de empresa_id: terminais diferentes podem gravar com empresa_ids
+  // distintos, mas todas as contas pendentes pertencem à mesma loja/cliente.
   const query = { status: 'pendente' };
-  if (!usuario.unificar_estoque && usuario.empresa_estoque_id) {
-    query.empresa_id = usuario.empresa_estoque_id;
-  }
   while (true) {
     const res = await get('/entities/ContaReceber', { q: query, limit, skip, sort_by: 'vencimento' });
     const items = Array.isArray(res) ? res : (res.results || []);
