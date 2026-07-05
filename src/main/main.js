@@ -504,6 +504,12 @@ ipcMain.handle('ia:lote', async (_, produtos) => ia.enriquecerLote(produtos));
 ipcMain.handle('ia:status', () => ({ configurado: !!ia.getApiKey() }));
 ipcMain.handle('ia:buscarImagem', async (_, nome, ean) => ia.buscarImagemProduto(nome, ean));
 
+ipcMain.handle('vendas:repararClientes', async (event) => {
+  return api.repararClienteNasVendas(db, (n, total, numero, nome) => {
+    event.sender.send('vendas:reparo-progresso', { n, total, numero, nome });
+  });
+});
+
 // ─── Marketplace (multi-conta, multi-canal) ────────────────────────
 ipcMain.handle('mkt:listarContas', (_, canal) => {
   const shopeeContas = shopee.listarContas(canal === 'tiktok' ? null : canal) || [];

@@ -1062,6 +1062,7 @@ const Vendas = {
       <input type="checkbox" id="venda-todos-terminais" onchange="Vendas.toggleTodos(this.checked)" style="cursor:pointer">
       Todos os terminais
     </label>` : ''}
+    <button class="btn btn-ghost btn-sm" title="Corrigir nome do cliente nas vendas enviadas ao Base44 sem identificação" onclick="Vendas.repararClientes()" style="white-space:nowrap">🔧 Reparar Clientes</button>
     <input class="input" id="venda-busca-produto" type="text" placeholder="🔍 Buscar por produto..." style="min-width:200px" oninput="Vendas.load()">
     <input class="input" id="venda-data" type="date" value="${new Date().toISOString().split('T')[0]}" onchange="Vendas.load()">
   </div>
@@ -1498,6 +1499,31 @@ const Vendas = {
           ${danfeUrl ? `<button class="btn btn-primary" onclick="window.open('${danfeUrl}','_blank')">📄 Abrir DANFE</button>` : ''}
         </div>
       </div>`, 'NFC-e Emitida');
+  },
+
+  async repararClientes() {
+    const ok = await window.pdv.app.confirm(
+      'Isso vai atualizar o nome do cliente em todas as vendas e contas a receber no Base44 que foram enviadas sem identificação.\n\nPode demorar alguns minutos. Continuar?'
+    );
+    if (!ok) return;
+
+    const progDiv = document.createElement('div');
+    progDiv.style.cssText = 'position:fixed;bottom:80px;right:24px;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px 16px;font-size:13px;z-index:9999;min-width:260px;box-shadow:0 4px 12px rgba(0,0,0,.2)';
+    progDiv.id = 'reparo-prog';
+    progDiv.textContent = 'Iniciando reparo...';
+    document.body.appendChild(progDiv);
+
+    try {
+      const result = await window.pdv.vendas.repararClientes(({ n, total, numero, nome }) => {
+        const el = document.getElementById('reparo-prog');
+        if (el) el.textContent = `🔧 Reparando ${n}/${total} — Venda #${numero} (${nome})`;
+      });
+      document.getElementById('reparo-prog')?.remove();
+      Toast.show(`✅ Reparo concluído: ${result.corrigidas}/${result.total} vendas corrigidas${result.erros.length ? ` | ${result.erros.length} erros` : ''}`, 'success');
+    } catch (e) {
+      document.getElementById('reparo-prog')?.remove();
+      Toast.show('Erro no reparo: ' + e.message, 'error');
+    }
   }
 };
 

@@ -860,6 +860,52 @@ async function sincronizarAnunciosBase44(contaInfo, anunciosLocais, onProgress) 
   return { enviados: n, erros, total: anunciosLocais.length };
 }
 
+async function repararClienteNasVendas(db, onProgresso) {
+  // Busca todas as vendas locais com cliente_id e remote_id
+  const vendas = db.db().prepare(`
+    SELECT v.remote_id AS venda_remote_id, v.numero,
+           c.remote_id AS cliente_remote_id, c.nome AS cliente_nome
+    FROM vendas v
+    JOIN clientes c ON c.id = v.cliente_id
+    WHERE v.remote_id IS NOT NULL
+      AND v.sync_status = 'synced'
+      AND c.remote_id IS NOT NULL
+  `).all();
+
+  let corrigidas = 0;
+  const erros = [];
+
+  for (const v of vendas) {
+    try {
+      // Atualiza a Venda no Base44 com cliente_nome e cliente_id corretos
+      await put(`/entities/Venda/${v.venda_remote_id}`, {
+        cliente_id:   v.cliente_remote_id,
+        cliente_nome: v.cliente_nome,
+      });
+
+      // Atualiza as ContaReceber ligadas a esta venda (origem = venda_remote_id)
+      const contasRes = await get('/entities/ContaReceber', {
+        q: JSON.stringify({ venda_id: v.venda_remote_id }),
+        limit: 20,
+      });
+      const contas = Array.isArray(contasRes) ? contasRes : (contasRes.results || []);
+      for (const conta of contas) {
+        await put(`/entities/ContaReceber/${conta.id}`, {
+          cliente_id:   v.cliente_remote_id,
+          cliente_nome: v.cliente_nome,
+        });
+      }
+
+      corrigidas++;
+      if (onProgresso) onProgresso(corrigidas, vendas.length, v.numero, v.cliente_nome);
+    } catch (e) {
+      erros.push({ numero: v.numero, erro: e.message });
+    }
+  }
+
+  return { total: vendas.length, corrigidas, erros };
+}
+
 module.exports = {
   registrarFalta,
   atualizarFalta,
@@ -905,6 +951,7 @@ module.exports = {
   getOrcamentoCloud,
   registrarNfceVenda,
   chamarPdvProxy,
+  repararClienteNasVendas,
 };
 
 // ─── pdvProxy — gateway server-side (WhatsApp, etc.) ────────────────────────
