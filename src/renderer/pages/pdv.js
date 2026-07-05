@@ -1394,15 +1394,14 @@ const PDV = (() => {
   }
 
   async function _salvarNovoCliente() {
-    const nome = document.getElementById('nc-nome')?.value.trim();
+    const nome     = document.getElementById('nc-nome')?.value.trim();
+    const cpf_cnpj = document.getElementById('nc-cpf')?.value.trim() || null;
+    const telefone = document.getElementById('nc-tel')?.value.trim() || null;
     if (!nome) { Toast.show('Informe o nome do cliente', 'warning'); return; }
     try {
-      const c = await window.pdv.clientes.salvar({
-        nome,
-        cpf_cnpj: document.getElementById('nc-cpf')?.value.trim() || null,
-        telefone: document.getElementById('nc-tel')?.value.trim() || null,
-      });
-      selectedClient = c;
+      const id = await window.pdv.clientes.salvar({ nome, cpf_cnpj, telefone });
+      // salvar retorna apenas o id — montar objeto completo para selectedClient
+      selectedClient = { id, nome, cpf_cnpj, telefone, limite_credito: 0, saldo_credito: 0, saldo_devedor: 0 };
       renderClientBar();
       Modal.close();
       Toast.show(`Cliente "${nome}" cadastrado`, 'success');
