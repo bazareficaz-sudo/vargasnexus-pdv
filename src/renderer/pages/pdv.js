@@ -113,6 +113,9 @@ const PDV = (() => {
       </div>
     </div>
 
+    <!-- Sugestões de produtos (visível quando há itens no carrinho) -->
+    <div id="pdv-sugestoes-wrap" style="display:none;flex-shrink:0;padding:0 16px 10px"></div>
+
     <!-- Saúde da Venda (visível quando há itens no carrinho) -->
     <div id="pdv-saude-wrap" style="display:none;overflow-y:auto;flex-shrink:0"></div>
 
@@ -211,6 +214,27 @@ const PDV = (() => {
 .remove-btn:hover{color:var(--red)}
 .cart-item-entrega{border-color:var(--accent)!important;background:var(--accent-bg)!important}
 .entrega-ativo{border-color:var(--accent)!important;background:var(--accent-bg)!important;color:var(--accent)!important}
+
+.sugestoes-label{font-size:10px;text-transform:uppercase;letter-spacing:.8px;color:var(--text3);margin-bottom:6px}
+.sugestoes-chips{display:flex;flex-wrap:wrap;gap:6px}
+.sugestao-chip{
+  display:flex;align-items:center;gap:6px;
+  background:var(--bg3);border:1px solid var(--border2);
+  border-radius:20px;padding:5px 10px 5px 8px;cursor:pointer;
+  transition:all .15s;max-width:200px
+}
+.sugestao-chip:hover{border-color:var(--accent);background:var(--accent-bg)}
+.sugestao-chip-emoji{font-size:16px;flex-shrink:0}
+.sugestao-chip-info{display:flex;flex-direction:column;min-width:0;flex:1}
+.sugestao-chip-nome{font-size:11px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sugestao-chip-preco{font-size:10px;color:var(--accent);font-weight:700}
+.sugestao-chip-add{
+  width:20px;height:20px;border-radius:50%;
+  background:var(--accent);color:#fff;border:none;cursor:pointer;
+  font-size:14px;display:flex;align-items:center;justify-content:center;
+  flex-shrink:0;transition:transform .1s
+}
+.sugestao-chip-add:hover{transform:scale(1.15)}
 
 .pdv-right{display:flex;flex-direction:column;background:var(--bg2);overflow:hidden}
 .pdv-totals{padding:18px 20px;border-bottom:1px solid var(--border);flex-shrink:0}
@@ -516,6 +540,7 @@ const PDV = (() => {
   function renderCart() {
     const el = document.getElementById('pdv-cart');
     if (!el) return;
+    renderSugestoes();
     if (cart.length === 0) {
       el.innerHTML = `<div class="empty-state" style="padding:30px 0">
         <div class="icon">🛒</div><h3>Carrinho vazio</h3>
@@ -544,6 +569,56 @@ const PDV = (() => {
         <button class="remove-btn" onclick="PDV.removeItem('${item.produto_id}')">✕</button>
       </div>`).join('');
     _atualizarBadgeEntregas();
+  }
+
+  // ─── Sugestões ────────────────────────────────────────────────
+  async function renderSugestoes() {
+    const wrap = document.getElementById('pdv-sugestoes-wrap');
+    if (!wrap) return;
+    if (cart.length === 0) { wrap.style.display = 'none'; return; }
+
+    const ids = cart.filter(i => !i.devolucao).map(i => i.produto_id);
+    const clienteId = selectedClient?.id || null;
+
+    const [porCarrinho, porCliente] = await Promise.all([
+      window.pdv.sugestoes.porCarrinho(ids),
+      clienteId ? window.pdv.sugestoes.porCliente(clienteId, ids) : Promise.resolve([]),
+    ]);
+
+    // Mescla: prioriza comprados pelo cliente, complementa com associação de carrinho
+    const vistos = new Set(ids);
+    const merged = [];
+    for (const s of [...porCliente, ...porCarrinho]) {
+      if (!vistos.has(s.id)) { merged.push(s); vistos.add(s.id); }
+      if (merged.length >= 6) break;
+    }
+
+    if (merged.length === 0) { wrap.style.display = 'none'; return; }
+
+    const label = clienteId && porCliente.length > 0
+      ? `💡 ${selectedClient.nome.split(' ')[0]} costuma levar`
+      : '💡 Frequentemente levam junto';
+
+    wrap.style.display = 'block';
+    wrap.innerHTML = `
+      <div class="sugestoes-label">${label}</div>
+      <div class="sugestoes-chips">
+        ${merged.map(s => `
+          <div class="sugestao-chip" onclick="PDV.adicionarSugestao('${s.id}')" title="${s.nome}">
+            <span class="sugestao-chip-emoji">${s.emoji || '📦'}</span>
+            <div class="sugestao-chip-info">
+              <span class="sugestao-chip-nome">${s.nome}</span>
+              <span class="sugestao-chip-preco">R$ ${fmtMoney(s.preco)}</span>
+            </div>
+            <button class="sugestao-chip-add" onclick="event.stopPropagation();PDV.adicionarSugestao('${s.id}')">+</button>
+          </div>`).join('')}
+      </div>`;
+  }
+
+  async function adicionarSugestao(produtoId) {
+    const produto = await window.pdv.produtos.getById(produtoId);
+    if (!produto) return;
+    addToCart(produto, 1);
   }
 
   // ─── Totais ───────────────────────────────────────────────────
@@ -1431,6 +1506,7 @@ const PDV = (() => {
   function selectClient(c) {
     selectedClient = c;
     renderClientBar();
+    renderSugestoes();
     Modal.close();
   }
 
@@ -1798,7 +1874,7 @@ const PDV = (() => {
 
   return { render, init, onSearch, onSearchKey,
     selecionarProduto, fecharQtyPanel, qpKeyDown, confirmarQtyPreco,
-    addToCart, changeQty, removeItem, clearCart,
+    addToCart, changeQty, removeItem, clearCart, adicionarSugestao,
     toggleEntregar, _selecionarTurno, entrarModoEdicao, cancelarEdicao,
     setPayment, calcTroco, finalizarVenda, abrirPagamento, updateTotals,
     _selectPay, _calcTrocoModal, _confirmarPagamento,

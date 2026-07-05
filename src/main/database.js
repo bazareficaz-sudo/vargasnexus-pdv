@@ -1736,11 +1736,57 @@ const orcamentos = {
   },
 };
 
+// ─── SUGESTÕES DE PRODUTOS ────────────────────────────────────────
+const sugestoes = {
+  // Produtos frequentemente comprados junto com os itens do carrinho
+  porCarrinho(produtoIds) {
+    if (!produtoIds || produtoIds.length === 0) return [];
+    const placeholders = produtoIds.map(() => '?').join(',');
+    return db.prepare(`
+      SELECT p.id, p.nome, p.emoji, p.preco_venda as preco,
+             COUNT(*) as frequencia
+      FROM venda_itens vi
+      JOIN vendas v ON v.id = vi.venda_id
+      JOIN venda_itens vi2 ON vi2.venda_id = v.id
+      JOIN produtos p ON p.id = vi2.produto_id
+      WHERE vi.produto_id IN (${placeholders})
+        AND vi2.produto_id NOT IN (${placeholders})
+        AND v.status = 'finalizada'
+        AND p.ativo = 1
+      GROUP BY vi2.produto_id
+      ORDER BY frequencia DESC
+      LIMIT 6
+    `).all(...produtoIds, ...produtoIds);
+  },
+
+  // Produtos que o cliente costuma comprar (não estão no carrinho)
+  porCliente(clienteId, produtoIdsNoCarrinho) {
+    if (!clienteId) return [];
+    const excluir = produtoIdsNoCarrinho || [];
+    const placeholders = excluir.length > 0 ? excluir.map(() => '?').join(',') : "'__nenhum__'";
+    return db.prepare(`
+      SELECT p.id, p.nome, p.emoji, p.preco_venda as preco,
+             COUNT(*) as frequencia
+      FROM venda_itens vi
+      JOIN vendas v ON v.id = vi.venda_id
+      JOIN produtos p ON p.id = vi.produto_id
+      WHERE v.cliente_id = ?
+        AND vi.produto_id NOT IN (${placeholders})
+        AND v.status = 'finalizada'
+        AND p.ativo = 1
+      GROUP BY vi.produto_id
+      ORDER BY frequencia DESC
+      LIMIT 6
+    `).all(clienteId, ...excluir);
+  },
+};
+
 module.exports = {
   initialize,
   db: () => db,
   produtos,
   clientes,
+  sugestoes,
   vendedores,
   contasReceber,
   creditosCliente,

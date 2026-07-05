@@ -10,6 +10,12 @@ contextBridge.exposeInMainWorld('pdv', {
     getAll: () => ipcRenderer.invoke('config:getAll'),
   },
 
+  // Sugestões de produtos
+  sugestoes: {
+    porCarrinho: (ids) => ipcRenderer.invoke('sugestoes:porCarrinho', ids),
+    porCliente:  (clienteId, ids) => ipcRenderer.invoke('sugestoes:porCliente', clienteId, ids),
+  },
+
   // Produtos
   produtos: {
     buscar: (query) => ipcRenderer.invoke('produtos:buscar', query),
