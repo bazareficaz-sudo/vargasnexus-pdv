@@ -221,16 +221,17 @@ async function receberCreditoCliente(remoteId, saldoNovo, novoStatus, observacao
 
 async function sincronizarContasReceber() {
   const todos = [];
-  const limit = 200;
+  // Base44 limita ContaReceber a ~40 registros por chamada independente do limit.
+  // Usar limit=40 para que a condição de parada (items.length < limit) funcione corretamente.
+  const limit = 40;
   let skip = 0;
-  // Sem filtro de status — Base44 pode não suportar $nin.
-  // Filtragem feita localmente no SQLite (NOT IN 'pago','cancelado','quitado').
   while (true) {
-    const res = await get('/entities/ContaReceber', { limit, skip, sort_by: 'vencimento' });
+    const res = await get('/entities/ContaReceber', { limit, skip });
     const items = Array.isArray(res) ? res : (res.results || []);
     todos.push(...items);
     if (items.length < limit) break;
     skip += items.length;
+    await new Promise(r => setTimeout(r, 100));
   }
   return todos;
 }
