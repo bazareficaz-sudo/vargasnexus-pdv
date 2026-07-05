@@ -223,11 +223,10 @@ async function sincronizarContasReceber() {
   const todos = [];
   const limit = 200;
   let skip = 0;
-  // Busca todos os status não pagos — Base44 usa 'pendente', 'vencido',
-  // 'em_atraso', 'atrasado' etc. para contas "em aberto"
-  const query = { status: { $nin: ['pago', 'cancelado', 'quitado'] } };
+  // Sem filtro de status — Base44 pode não suportar $nin.
+  // Filtragem feita localmente no SQLite (NOT IN 'pago','cancelado','quitado').
   while (true) {
-    const res = await get('/entities/ContaReceber', { q: query, limit, skip, sort_by: 'vencimento' });
+    const res = await get('/entities/ContaReceber', { limit, skip, sort_by: 'vencimento' });
     const items = Array.isArray(res) ? res : (res.results || []);
     todos.push(...items);
     if (items.length < limit) break;
