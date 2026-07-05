@@ -861,49 +861,81 @@ async function sincronizarAnunciosBase44(contaInfo, anunciosLocais, onProgress) 
 }
 
 async function repararClienteNasVendas(db, onProgresso) {
-  // Busca todas as vendas locais com cliente_id e remote_id
-  const vendas = db.db().prepare(`
-    SELECT v.remote_id AS venda_remote_id, v.numero,
-           c.remote_id AS cliente_remote_id, c.nome AS cliente_nome
-    FROM vendas v
-    JOIN clientes c ON c.id = v.cliente_id
-    WHERE v.remote_id IS NOT NULL
-      AND v.sync_status = 'synced'
-      AND c.remote_id IS NOT NULL
+  // Abordagem: busca clientes locais com remote_id, depois corrige no Base44
+  // todas as ContaReceber desse cliente que estão com cliente_nome errado.
+  // Isso funciona mesmo quando as vendas locais não têm cliente_id preenchido.
+  const clientes = db.db().prepare(`
+    SELECT remote_id, nome FROM clientes WHERE remote_id IS NOT NULL AND nome IS NOT NULL
   `).all();
 
   let corrigidas = 0;
+  let total = 0;
   const erros = [];
 
-  for (const v of vendas) {
+  for (let ci = 0; ci < clientes.length; ci++) {
+    const cli = clientes[ci];
     try {
-      // Atualiza a Venda no Base44 com cliente_nome e cliente_id corretos
-      await put(`/entities/Venda/${v.venda_remote_id}`, {
-        cliente_id:   v.cliente_remote_id,
-        cliente_nome: v.cliente_nome,
-      });
-
-      // Atualiza as ContaReceber ligadas a esta venda (origem = venda_remote_id)
-      const contasRes = await get('/entities/ContaReceber', {
-        q: JSON.stringify({ venda_id: v.venda_remote_id }),
-        limit: 20,
-      });
-      const contas = Array.isArray(contasRes) ? contasRes : (contasRes.results || []);
-      for (const conta of contas) {
-        await put(`/entities/ContaReceber/${conta.id}`, {
-          cliente_id:   v.cliente_remote_id,
-          cliente_nome: v.cliente_nome,
+      // Busca TODAS as ContaReceber deste cliente no Base44
+      const limit = 200;
+      let skip = 0;
+      const contasDoCli = [];
+      while (true) {
+        const res = await get('/entities/ContaReceber', {
+          q: JSON.stringify({ cliente_id: cli.remote_id }),
+          limit, skip,
         });
+        const items = Array.isArray(res) ? res : (res.results || []);
+        contasDoCli.push(...items);
+        if (items.length < limit) break;
+        skip += items.length;
       }
 
-      corrigidas++;
-      if (onProgresso) onProgresso(corrigidas, vendas.length, v.numero, v.cliente_nome);
+      total += contasDoCli.length;
+
+      // Corrige as que têm cliente_nome errado (null, vazio ou "Cliente")
+      for (const conta of contasDoCli) {
+        const nomeErrado = !conta.cliente_nome || conta.cliente_nome.trim() === '' || conta.cliente_nome === 'Cliente';
+        if (!nomeErrado) continue;
+        try {
+          await put(`/entities/ContaReceber/${conta.id}`, { cliente_nome: cli.nome });
+          corrigidas++;
+          if (onProgresso) onProgresso(corrigidas, total, conta.descricao || conta.id, cli.nome);
+        } catch (e) {
+          erros.push({ conta: conta.id, erro: e.message });
+        }
+      }
+
+      // Também corrige as Vendas com cliente_nome errado
+      const vendasDoCli = [];
+      skip = 0;
+      while (true) {
+        const res = await get('/entities/Venda', {
+          q: JSON.stringify({ cliente_id: cli.remote_id }),
+          limit, skip,
+        });
+        const items = Array.isArray(res) ? res : (res.results || []);
+        vendasDoCli.push(...items);
+        if (items.length < limit) break;
+        skip += items.length;
+      }
+
+      for (const venda of vendasDoCli) {
+        const nomeErrado = !venda.cliente_nome || venda.cliente_nome.trim() === '' || venda.cliente_nome === 'Cliente';
+        if (!nomeErrado) continue;
+        try {
+          await put(`/entities/Venda/${venda.id}`, { cliente_nome: cli.nome });
+          corrigidas++;
+          if (onProgresso) onProgresso(corrigidas, total, `Venda #${venda.numero}`, cli.nome);
+        } catch (e) {
+          erros.push({ venda: venda.numero, erro: e.message });
+        }
+      }
     } catch (e) {
-      erros.push({ numero: v.numero, erro: e.message });
+      erros.push({ cliente: cli.nome, erro: e.message });
     }
   }
 
-  return { total: vendas.length, corrigidas, erros };
+  return { total, corrigidas, erros };
 }
 
 module.exports = {
