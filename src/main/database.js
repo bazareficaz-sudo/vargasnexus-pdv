@@ -866,9 +866,13 @@ const contasReceber = {
     `);
     const t = db.transaction(items => {
       for (const c of items) {
+        // Base44 pode retornar cliente_id como objeto {id, nome} ou string UUID
+        const clienteId = c.cliente_id
+          ? (typeof c.cliente_id === 'object' ? c.cliente_id.id : c.cliente_id)
+          : null;
         stmt.run(
           c.id, c.empresa_id || null,
-          c.cliente_id || null, c.cliente_nome || null,
+          clienteId, c.cliente_nome || null,
           c.valor || 0, c.descricao || null,
           c.origem || 'carteira', c.status || 'pendente',
           c.vencimento || null, c.data_pagamento || null, c.forma_recebimento || null,
@@ -925,9 +929,12 @@ const creditosCliente = {
     `);
     const t = db.transaction(items => {
       for (const c of items) {
+        const clienteId = c.cliente_id
+          ? (typeof c.cliente_id === 'object' ? c.cliente_id.id : c.cliente_id)
+          : null;
         stmt.run(
           c.id, c.empresa_id || null,
-          c.cliente_id || null, c.cliente_nome || null, c.cliente_telefone || null,
+          clienteId, c.cliente_nome || null, c.cliente_telefone || null,
           c.venda_origem_id || null, c.venda_origem_numero || null,
           c.valor_original || 0, c.saldo_atual ?? c.valor_original ?? 0,
           c.status || 'aberto', c.origem || null, c.observacao || null,
