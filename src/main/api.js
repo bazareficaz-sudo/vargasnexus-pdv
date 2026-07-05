@@ -223,9 +223,9 @@ async function sincronizarContasReceber() {
   const todos = [];
   const limit = 200;
   let skip = 0;
-  // Sem filtro de empresa_id: terminais diferentes podem gravar com empresa_ids
-  // distintos, mas todas as contas pendentes pertencem à mesma loja/cliente.
-  const query = { status: 'pendente' };
+  // Busca todos os status não pagos — Base44 usa 'pendente', 'vencido',
+  // 'em_atraso', 'atrasado' etc. para contas "em aberto"
+  const query = { status: { $nin: ['pago', 'cancelado', 'quitado'] } };
   while (true) {
     const res = await get('/entities/ContaReceber', { q: query, limit, skip, sort_by: 'vencimento' });
     const items = Array.isArray(res) ? res : (res.results || []);

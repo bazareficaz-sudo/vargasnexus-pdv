@@ -890,7 +890,7 @@ const contasReceber = {
     return db.prepare(`
       SELECT id, valor, descricao, origem, status, vencimento, data_pagamento, referencia, observacao, created_date
       FROM contas_receber
-      WHERE cliente_id = ? AND status = 'pendente'
+      WHERE cliente_id = ? AND status NOT IN ('pago', 'cancelado', 'quitado')
       ORDER BY vencimento ASC, created_date ASC
     `).all(clienteRemoteId);
   },
@@ -1032,7 +1032,7 @@ const creditosCliente = {
           MIN(vencimento)       AS vencimento_mais_antigo,
           MAX(vencimento)       AS ultimo_vencimento
         FROM contas_receber
-        WHERE status = 'pendente'
+        WHERE status NOT IN ('pago', 'cancelado', 'quitado')
         GROUP BY cliente_id
       ) cr ON cr.cliente_id = c.remote_id
       LEFT JOIN (
