@@ -1,6 +1,6 @@
 {
   "name": "pdv-vargas",
-  "version": "1.7.13",
+  "version": "1.7.14",
   "description": "PDV Vargas — Terminal de Vendas Offline-First",
   "main": "src/main/main.js",
   "scripts": {
