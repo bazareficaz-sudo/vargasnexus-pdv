@@ -562,11 +562,13 @@ function stopAutoSync() {
 }
 
 async function syncForcarCarteira() {
-  // Re-sync completo de clientes + créditos, sem lock isSyncing
+  // Re-sync completo: limpa créditos locais obsoletos antes de re-inserir
+  // (créditos cancelados/ajustados no Base44 não voltam no sync incremental)
   const clientes = await api.sincronizarClientes(null);
   if (clientes.length > 0) db.clientes.upsertBatch(clientes.map(mapCliente));
 
   const creditos = await api.sincronizarCreditosCliente();
+  db.creditosCliente.limparTodos();
   if (creditos.length > 0) db.creditosCliente.upsertBatch(creditos);
 
   const contas = await api.sincronizarContasReceber();

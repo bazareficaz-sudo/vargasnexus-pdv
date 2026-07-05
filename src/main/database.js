@@ -906,6 +906,11 @@ const contasReceber = {
 
 // ─── CRÉDITOS CLIENTE (Crédito Loja / Devoluções) ─────────────────
 const creditosCliente = {
+  limparTodos() {
+    // Usado no re-sync forçado: remove registros obsoletos antes de re-inserir
+    db.prepare(`DELETE FROM creditos_cliente`).run();
+  },
+
   upsertBatch(lista) {
     const stmt = db.prepare(`
       INSERT OR REPLACE INTO creditos_cliente
