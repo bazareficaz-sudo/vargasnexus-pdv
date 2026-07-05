@@ -408,6 +408,13 @@ ipcMain.handle('whatsapp:enviar', async (_, tipo, id, telefone, dadosExtras) => 
       total: totalOrc, validade: orc.validade, observacao: orc.observacao,
       // sem id — força o cloud a usar estes dados em vez de buscar no Base44
     };
+  } else if (tipo === 'mensagem_direta') {
+    // Texto livre — reutiliza o fluxo de orçamento mas com mensagem pré-formatada
+    const mensagem = dadosExtras?.mensagem_texto;
+    if (!mensagem) throw new Error('mensagem_texto obrigatório para mensagem_direta');
+    params.tipo = 'orcamento';
+    params.mensagem_texto = mensagem;
+    params.orcamento_data = { numero: 'MSG', itens: [], total: 0 };
   } else {
     // dadosExtras tem prioridade (vendas de outros terminais não existem no banco local)
     const venda = dadosExtras || db.vendas.getById(id);

@@ -274,6 +274,8 @@ const Carteira = (() => {
           </div>`;
         }).join('');
 
+    const clienteJson = JSON.stringify(cliente).replace(/"/g,'&quot;');
+    const contasJson  = JSON.stringify(contas).replace(/"/g,'&quot;');
     Modal.open(`
 <div style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center">
   <div>
@@ -288,7 +290,8 @@ const Carteira = (() => {
 <div style="max-height:380px;overflow-y:auto">${linhas}</div>
 <div class="modal-actions">
   <button class="btn btn-ghost" onclick="Modal.close()">Fechar</button>
-  ${contas.length > 0 && podePermissao('receber_contas_clientes') ? `<button class="btn btn-primary" onclick="Carteira.abrirReceber(${JSON.stringify(cliente).replace(/"/g,'&quot;')})">✅ Receber tudo</button>` : ''}
+  ${contas.length > 0 ? `<button class="btn btn-ghost" style="color:var(--green)" onclick="Carteira.enviarCobrancaWhatsApp(${clienteJson},${contasJson})">📲 Cobrar via WhatsApp</button>` : ''}
+  ${contas.length > 0 && podePermissao('receber_contas_clientes') ? `<button class="btn btn-primary" onclick="Carteira.abrirReceber(${clienteJson})">✅ Receber tudo</button>` : ''}
 </div>`, `Contas a Receber — ${cliente.nome}`);
   }
 
@@ -483,6 +486,36 @@ ${blocoCredito}
     }
   }
 
+  // ─── Enviar cobrança via WhatsApp ───────────────────────────────
+  async function enviarCobrancaWhatsApp(cliente, contas) {
+    const tel = cliente.telefone?.replace(/\D/g, '');
+    if (!tel) {
+      Toast.show('Cliente sem telefone cadastrado', 'warning');
+      return;
+    }
+
+    const empresaNome = (await window.pdv.config.get('empresa_nome')) || 'Vargas';
+    const linhasContas = contas.map(ct => {
+      const data = ct.vencimento
+        ? new Date(ct.vencimento + 'T00:00:00').toLocaleDateString('pt-BR')
+        : ct.criado_em
+          ? new Date(ct.criado_em).toLocaleDateString('pt-BR')
+          : '—';
+      const desc = ct.descricao ? ` (${ct.descricao})` : '';
+      return `📅 ${data}${desc} — *R$ ${fmt(ct.valor)}*`;
+    }).join('\n');
+
+    const total = contas.reduce((s, c) => s + (c.valor || 0), 0);
+    const mensagem = `🏪 *${empresaNome}*\n\nOlá, *${cliente.nome}*! 😊\n\nSeu extrato de contas em aberto:\n\n${linhasContas}\n\n💰 *Total em aberto: R$ ${fmt(total)}*\n\nPara quitar, entre em contato conosco.`;
+
+    try {
+      await window.pdv.whatsapp.enviar('mensagem_direta', null, tel, { mensagem_texto: mensagem });
+      Toast.show('Cobrança enviada via WhatsApp ✅', 'success');
+    } catch (e) {
+      Toast.show('Erro ao enviar: ' + e.message, 'error');
+    }
+  }
+
   // ─── Sincronizar (força sync para atualizar dados) ───────────────
   async function sincronizar() {
     Toast.show('Sincronizando carteira...', 'info');
@@ -493,6 +526,7 @@ ${blocoCredito}
   }
 
   return { render, init, buscar, ordenar, filtrarSaldo, abrirContas, abrirReceber, sincronizar,
+           enviarCobrancaWhatsApp,
            _confirmarReceber, _receberConta, _atualizarBotaoParcial,
            _confirmarContaIndividual, _confirmarUsarCredito };
 })();
