@@ -516,10 +516,12 @@ ${blocoCredito}
     }
   }
 
-  // ─── Sincronizar (força sync para atualizar dados) ───────────────
+  // ─── Sincronizar (força re-sync completo de clientes para pegar ajustes de crédito) ───
   async function sincronizar() {
-    Toast.show('Sincronizando carteira...', 'info');
-    await window.pdv.sync.now();
+    Toast.show('Sincronizando clientes...', 'info');
+    // Re-sync completo de clientes (ignora updated_date) para garantir que ajustes
+    // de crédito feitos no Base44 reflitam mesmo sem alteração no updated_date do Cliente
+    await window.pdv.clientes.syncForcar();
     await _carregarTotais();
     await _carregarLista();
     Toast.show('Carteira atualizada', 'success');
