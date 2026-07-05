@@ -593,17 +593,25 @@ const PDV = (() => {
       if (merged.length >= 6) break;
     }
 
-    if (merged.length === 0) { wrap.style.display = 'none'; return; }
+    // Fallback: produtos mais vendidos no geral
+    let label = '💡 Frequentemente levam junto';
+    let fonte = merged;
+    if (merged.length === 0) {
+      fonte = await window.pdv.sugestoes.maisVendidos(ids);
+      label = clienteId && porCliente.length === 0
+        ? `⭐ Mais vendidos — ${selectedClient.nome.split(' ')[0]} ainda não tem histórico`
+        : '⭐ Mais vendidos';
+    } else if (clienteId && porCliente.length > 0) {
+      label = `💡 ${selectedClient.nome.split(' ')[0]} costuma levar`;
+    }
 
-    const label = clienteId && porCliente.length > 0
-      ? `💡 ${selectedClient.nome.split(' ')[0]} costuma levar`
-      : '💡 Frequentemente levam junto';
+    if (fonte.length === 0) { wrap.style.display = 'none'; return; }
 
     wrap.style.display = 'block';
     wrap.innerHTML = `
       <div class="sugestoes-label">${label}</div>
       <div class="sugestoes-chips">
-        ${merged.map(s => `
+        ${fonte.map(s => `
           <div class="sugestao-chip" onclick="PDV.adicionarSugestao('${s.id}')" title="${s.nome}">
             <span class="sugestao-chip-emoji">${s.emoji || '📦'}</span>
             <div class="sugestao-chip-info">

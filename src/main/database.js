@@ -1779,6 +1779,25 @@ const sugestoes = {
       LIMIT 6
     `).all(clienteId, ...excluir);
   },
+
+  // Fallback: produtos mais vendidos no geral (excluindo os do carrinho)
+  maisVendidos(produtoIdsNoCarrinho) {
+    const excluir = produtoIdsNoCarrinho || [];
+    const placeholders = excluir.length > 0 ? excluir.map(() => '?').join(',') : "'__nenhum__'";
+    return db.prepare(`
+      SELECT p.id, p.nome, p.emoji, p.preco_venda as preco,
+             COUNT(*) as frequencia
+      FROM venda_itens vi
+      JOIN vendas v ON v.id = vi.venda_id
+      JOIN produtos p ON p.id = vi.produto_id
+      WHERE vi.produto_id NOT IN (${placeholders})
+        AND v.status = 'finalizada'
+        AND p.ativo = 1
+      GROUP BY vi.produto_id
+      ORDER BY frequencia DESC
+      LIMIT 6
+    `).all(...excluir);
+  },
 };
 
 module.exports = {

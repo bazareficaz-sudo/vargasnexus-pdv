@@ -169,6 +169,7 @@ ipcMain.handle('config:getAll', () => store.store);
 // Sugestões
 ipcMain.handle('sugestoes:porCarrinho', (_, ids) => db.sugestoes.porCarrinho(ids));
 ipcMain.handle('sugestoes:porCliente', (_, clienteId, ids) => db.sugestoes.porCliente(clienteId, ids));
+ipcMain.handle('sugestoes:maisVendidos', (_, ids) => db.sugestoes.maisVendidos(ids));
 
 // Produtos
 ipcMain.handle('produtos:buscar', (_, query) => db.produtos.buscar(query));
