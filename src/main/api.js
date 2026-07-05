@@ -501,9 +501,32 @@ async function autenticarPDV(login, senha) {
     store.set('auth.empresa_fiscal_id',  usuario.empresa_fiscal_id);
     store.set('auth.empresa_estoque_id', usuario.empresa_estoque_id);
     store.set('auth.deposito_id',        usuario.deposito_id);
+
+    // Salvar cache para login offline — guarda hash por login
+    const cacheKey = `auth.cache.${login}`;
+    store.set(cacheKey, { senhaHash, usuario, token: u.id });
+
     return { token: u.id, usuario };
   } catch (err) {
-    return { erro: 'Erro de conexão: ' + err.message };
+    // Sem internet — tentar login com cache local
+    const cacheKey = `auth.cache.${login}`;
+    const cache = store.get(cacheKey);
+    if (cache) {
+      const crypto = require('crypto');
+      const senhaHash = crypto.createHash('sha256').update(senha).digest('hex');
+      if (cache.senhaHash === senhaHash) {
+        // Restaurar sessão do cache
+        store.set('auth.token',              cache.token);
+        store.set('auth.usuario',            cache.usuario);
+        store.set('auth.empresa_id',         cache.usuario.empresa_id);
+        store.set('auth.empresa_fiscal_id',  cache.usuario.empresa_fiscal_id);
+        store.set('auth.empresa_estoque_id', cache.usuario.empresa_estoque_id);
+        store.set('auth.deposito_id',        cache.usuario.deposito_id);
+        return { token: cache.token, usuario: cache.usuario, offline: true };
+      }
+      return { erro: 'Senha incorreta (modo offline)' };
+    }
+    return { erro: 'Sem conexão e sem login salvo. Conecte à internet para o primeiro acesso.' };
   }
 }
 

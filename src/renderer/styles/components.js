@@ -61,6 +61,10 @@ const Login = {
       if (res?.token) {
         await App.showApp();
         App.navigate('pdv');
+        if (res.offline) {
+          // Pequeno aviso não-bloqueante — login pelo cache local
+          setTimeout(() => Toast.show('⚠️ Sem internet — operando em modo offline com dados salvos', 'warning', 6000), 800);
+        }
       } else {
         errEl.textContent = res?.erro || 'Operador ou senha inválidos';
         errEl.style.display = 'block';
