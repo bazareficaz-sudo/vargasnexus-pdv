@@ -58,7 +58,7 @@ contextBridge.exposeInMainWorld('pdv', {
     totaisHoje: () => ipcRenderer.invoke('vendas:totaisHoje'),
     listarCloud: (data) => ipcRenderer.invoke('vendas:listarCloud', data),
     atualizarCliente: (id, clienteId, nome, tel) => ipcRenderer.invoke('vendas:atualizarCliente', id, clienteId, nome, tel),
-    repararClientes: (cb) => { ipcRenderer.on('vendas:reparo-progresso', (_, d) => cb     atualizarCliente: (id, clienteId, nome, tel) => ipcRenderer.invoke('vendas:atualizarCliente', id, clienteId, nome, tel),    atualizarCliente: (id, clienteId, nome, tel) => ipcRenderer.invoke('vendas:atualizarCliente', id, clienteId, nome, tel), cb(d)); return ipcRenderer.invoke('vendas:repararClientes'); },
+    repararClientes: (cb) => { ipcRenderer.on('vendas:reparo-progresso', (_, d) => cb && cb(d)); return ipcRenderer.invoke('vendas:repararClientes'); },
   },
 
   // Orçamentos
