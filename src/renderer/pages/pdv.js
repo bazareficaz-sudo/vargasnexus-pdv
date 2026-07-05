@@ -1039,7 +1039,8 @@ const PDV = (() => {
     const cfgAll = await window.pdv.config.getAll();
 
     const venda = {
-      cliente_id: selectedClient?.id || null,
+      cliente_id:   selectedClient?.id   || null,
+      cliente_nome: selectedClient?.nome || null,
       // Empresa de estoque (movimentação de saldo)
       empresa_id:          cfgAll?.['auth.usuario']?.empresa_estoque_id  || cfgAll?.['auth.empresa_id'] || null,
       deposito_id:         cfgAll?.['auth.usuario']?.deposito_id          || null,

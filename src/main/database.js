@@ -1068,12 +1068,12 @@ const vendas = {
       // Inserir venda
       db.prepare(`
         INSERT INTO vendas
-        (id, numero, cliente_id, empresa_id, deposito_id, operador_id, operador_nome,
+        (id, numero, cliente_id, cliente_nome, empresa_id, deposito_id, operador_id, operador_nome,
          vendedor_id, vendedor_nome, vendedor_codigo,
          status, subtotal, desconto, total, forma_pagamento, valor_pago, troco, observacao, created_at, sync_status)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       `).run(id, numero,
-        venda.cliente_id || null, venda.empresa_id || null,
+        venda.cliente_id || null, venda.cliente_nome || null, venda.empresa_id || null,
         venda.deposito_id || null, venda.operador_id || null, venda.operador_nome || null,
         venda.vendedor_id || null, venda.vendedor_nome || null, venda.vendedor_codigo || null,
         'concluida', venda.subtotal, venda.desconto || 0, venda.total,
@@ -1196,7 +1196,7 @@ const vendas = {
 
   getById(id) {
     const venda = db.prepare(`
-      SELECT v.*, c.remote_id as cliente_remote_id
+      SELECT v.*, c.remote_id as cliente_remote_id, c.nome as cliente_nome, c.telefone as cliente_telefone
       FROM vendas v
       LEFT JOIN clientes c ON c.id = v.cliente_id
       WHERE v.id = ?
