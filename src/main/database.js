@@ -458,6 +458,7 @@ function runMigrations() {
       desconto REAL DEFAULT 0, total REAL NOT NULL,
       FOREIGN KEY (orcamento_id) REFERENCES orcamentos(id)
     )`,
+    'ALTER TABLE vendas ADD COLUMN cliente_nome TEXT',
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* coluna já existe */ }
