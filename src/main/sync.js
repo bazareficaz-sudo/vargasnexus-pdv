@@ -94,6 +94,7 @@ async function syncNow(win) {
     await syncDownConfigDesconto();
     await syncDownConfigTermometro();
     await syncDownFaltas();
+    await syncDownOrcamentos();
 
     // Atualizar timestamps
     const agora = new Date().toISOString();
@@ -283,6 +284,18 @@ async function syncDownFaltas() {
     }
   } catch (err) {
     console.warn('[SYNC] Faltas: erro (não crítico):', err.message);
+  }
+}
+
+async function syncDownOrcamentos() {
+  try {
+    const orcamentos = await api.sincronizarOrcamentos();
+    if (orcamentos.length > 0) {
+      db.orcamentos.upsertBatch(orcamentos);
+      console.log(`[SYNC] Orçamentos: ${orcamentos.length} sincronizados de todos os terminais`);
+    }
+  } catch (err) {
+    console.warn('[SYNC] Orçamentos: erro (não crítico):', err.message);
   }
 }
 

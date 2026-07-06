@@ -1696,6 +1696,38 @@ const orcamentos = {
     `).all(...params);
   },
 
+  // Importa orçamentos de outros terminais vindos do cloud
+  upsertBatch(orcamentos) {
+    const upsert = db.prepare(`
+      INSERT INTO orcamentos
+        (id, remote_id, numero, status, cliente_id, cliente_nome, cliente_telefone,
+         vendedor_nome, forma_pagamento, validade_dias, subtotal, desconto, total,
+         observacao, created_at, synced_at, sync_status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced')
+      ON CONFLICT(id) DO UPDATE SET
+        status          = excluded.status,
+        cliente_nome    = excluded.cliente_nome,
+        cliente_telefone= excluded.cliente_telefone,
+        total           = excluded.total,
+        synced_at       = excluded.synced_at,
+        sync_status     = 'synced'
+      WHERE sync_status = 'synced'
+    `);
+    const now = new Date().toISOString();
+    const run = db.transaction((items) => {
+      for (const o of items) {
+        upsert.run(
+          o.id, o.remote_id, o.numero, o.status,
+          o.cliente_id || null, o.cliente_nome || null, o.cliente_telefone || null,
+          o.vendedor_nome || null, o.forma_pagamento || null, o.validade_dias || 7,
+          o.subtotal || 0, o.desconto || 0, o.total || 0,
+          o.observacao || null, o.created_at, now
+        );
+      }
+    });
+    run(orcamentos);
+  },
+
   getById(id) {
     const orc = db.prepare('SELECT * FROM orcamentos WHERE id = ?').get(id);
     if (!orc) return null;

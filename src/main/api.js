@@ -624,7 +624,9 @@ async function getOrcamentoCloud(remoteId) {
 }
 
 async function listarOrcamentosCloud(filtros = {}) {
-  const q = { empresa_id: EMPRESA_ID };
+  // Sem filtro de empresa_id — a API key já limita ao escopo desta empresa.
+  // Assim todos os terminais enxergam orçamentos uns dos outros.
+  const q = {};
   if (filtros.status) q.status = filtros.status;
   const res = await get('/entities/Orcamento', {
     q: JSON.stringify(q), limit: 500,
@@ -647,6 +649,34 @@ async function listarOrcamentosCloud(filtros = {}) {
     vendedor_nome:    o.vendedor_nome || null,
     created_at:       o.created_date || o.created_at || new Date().toISOString(),
     _origem:          'cloud',
+  }));
+}
+
+async function sincronizarOrcamentos() {
+  // Baixa orçamentos ativos de todos os terminais para o SQLite local
+  const q = { status: { $in: ['enviado', 'pendente', 'visualizado'] } };
+  const res = await get('/entities/Orcamento', {
+    q: JSON.stringify(q), limit: 500,
+    sort: JSON.stringify({ created_date: -1 }),
+  });
+  const lista = Array.isArray(res) ? res : (res.results || res.data || []);
+  return lista.map(o => ({
+    id:               o._id || o.id,
+    remote_id:        o._id || o.id,
+    numero:           o.numero || 0,
+    status:           o.status || 'pendente',
+    cliente_id:       o.cliente_id || null,
+    cliente_nome:     o.cliente_nome || null,
+    cliente_telefone: o.cliente_telefone || null,
+    vendedor_nome:    o.vendedor_nome || null,
+    forma_pagamento:  o.forma_pagamento || null,
+    validade_dias:    o.validade_dias || 7,
+    subtotal:         o.subtotal || 0,
+    desconto:         o.desconto || 0,
+    total:            o.total || 0,
+    observacao:       o.observacao || null,
+    itens:            JSON.stringify(o.itens || []),
+    created_at:       o.created_date || o.created_at || new Date().toISOString(),
   }));
 }
 
@@ -1003,6 +1033,7 @@ module.exports = {
   mapearAnuncioBase44,
   getIdProdutoGenerico,
   sincronizarOrcamento,
+  sincronizarOrcamentos,
   atualizarStatusOrcamento,
   listarOrcamentosCloud,
   getOrcamentoCloud,
