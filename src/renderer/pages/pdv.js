@@ -80,6 +80,9 @@ const PDV = (() => {
         <p>Busque ou escaneie um produto para começar</p>
       </div>
     </div>
+
+    <!-- Sugestões de produtos (painel esquerdo, abaixo do carrinho) -->
+    <div id="pdv-sugestoes-wrap" style="display:none;flex-shrink:0;padding:8px 16px 10px;border-top:1px solid var(--border)"></div>
   </div>
 
   <!-- Coluna direita: totais -->
@@ -112,9 +115,6 @@ const PDV = (() => {
         <span id="pdv-total" class="text-accent font-syne">R$ 0,00</span>
       </div>
     </div>
-
-    <!-- Sugestões de produtos (visível quando há itens no carrinho) -->
-    <div id="pdv-sugestoes-wrap" style="display:none;flex-shrink:0;padding:0 16px 10px"></div>
 
     <!-- Saúde da Venda (visível quando há itens no carrinho) -->
     <div id="pdv-saude-wrap" style="display:none;overflow-y:auto;flex-shrink:0"></div>
@@ -236,7 +236,7 @@ const PDV = (() => {
 }
 .sugestao-chip-add:hover{transform:scale(1.15)}
 
-.pdv-right{display:flex;flex-direction:column;background:var(--bg2);overflow:hidden}
+.pdv-right{display:flex;flex-direction:column;background:var(--bg2);overflow:hidden;min-height:0}
 .pdv-totals{padding:18px 20px;border-bottom:1px solid var(--border);flex-shrink:0}
 .pdv-total-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;font-size:14px}
 .pdv-total-row:last-child{margin-bottom:0}
