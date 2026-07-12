@@ -14,6 +14,13 @@ autoUpdater.logger.transports.file.level = 'info';
 autoUpdater.autoDownload = true;        // Baixa automaticamente em background
 autoUpdater.autoInstallOnAppQuit = true; // Instala quando fechar
 
+// Token de leitura para repositório privado no GitHub
+// Permissão mínima: Contents → Read-only no repo sistemavargas
+const GH_READ_TOKEN = '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';
+if (GH_READ_TOKEN && GH_READ_TOKEN !== 'COLOCAR_TOKEN_AQUI') {
+  autoUpdater.requestHeaders = { Authorization: `token ${GH_READ_TOKEN}` };
+}
+
 function init(win) {
   mainWindowRef = win;
 
