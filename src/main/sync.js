@@ -176,30 +176,27 @@ function mapCliente(c) {
 }
 
 async function syncDownProdutos() {
-  const ultimaSync = store.get('sync.ultima_sync_produtos') || null;
-  const incremental = !!ultimaSync;
-
-  emitir(mainWindowRef, 'sync:update', {
-    ...syncStatus,
-    progresso: incremental ? 'Verificando atualizações de produtos...' : 'Baixando catálogo completo...'
-  });
+  emitir(mainWindowRef, 'sync:update', { ...syncStatus, progresso: 'Sincronizando produtos...' });
 
   let totalSalvos = 0;
 
-  await api.sincronizarProdutos(ultimaSync, (lote, total) => {
+  // Sem filtro incremental: sempre baixa todos os produtos.
+  // Movimentações de estoque no Base44 não atualizam updated_date,
+  // então qualquer filtro por data perderia alterações de estoque/preço.
+  await api.sincronizarProdutos(null, (lote, total) => {
     db.produtos.upsertBatch(lote.map(mapProduto));
     totalSalvos = total;
     if (total % 500 === 0 || lote.length < 200) {
-      emitir(mainWindowRef, 'sync:update', { ...syncStatus, progresso: `Produtos: ${total} atualizados...` });
+      emitir(mainWindowRef, 'sync:update', { ...syncStatus, progresso: `Produtos: ${total} sincronizados...` });
     }
   });
 
-  if (totalSalvos > 0 || !ultimaSync) {
-    store.set('sync.ultima_sync_produtos', new Date().toISOString());
-    console.log(`[SYNC] Produtos: ${totalSalvos} ${incremental ? 'atualizados' : 'sincronizados'}`);
-  } else {
-    console.log('[SYNC] Produtos: nenhuma atualização desde', ultimaSync);
-  }
+  store.set('sync.ultima_sync_produtos', new Date().toISOString());
+  console.log(`[SYNC] Produtos: ${totalSalvos} sincronizados`);
+}
+
+async function syncForcarProdutos() {
+  return syncDownProdutos();
 }
 
 async function syncDownClientes() {
@@ -592,4 +589,4 @@ async function syncForcarCarteira() {
   return { clientes: clientes.length, creditos: creditos.length, contas: contas.length };
 }
 
-module.exports = { startAutoSync, stopAutoSync, syncNow, syncFila, getStatus, checkOnline, syncUpProdutos, syncForcarClientes, syncForcarCarteira };
+module.exports = { startAutoSync, stopAutoSync, syncNow, syncFila, getStatus, checkOnline, syncUpProdutos, syncForcarClientes, syncForcarCarteira, syncForcarProdutos };

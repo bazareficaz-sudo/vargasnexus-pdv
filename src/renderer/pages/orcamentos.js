@@ -7,6 +7,7 @@ const Orcamentos = (() => {
   let _searchTimeout = null;
   let _cliTimeout    = null;
   let _periodoCustom = false;
+  let _orcamentoEditando = null; // { id, numero } quando em modo edição
 
   // Navegação por teclado na busca de produto
   let _searchHighlight = -1;
@@ -165,6 +166,7 @@ const Orcamentos = (() => {
   <td onclick="event.stopPropagation()"><div style="display:flex;gap:4px">
     <button class="btn btn-ghost btn-sm" onclick="Orcamentos.verDetalhes('${o.id}')">👁️</button>
     <button class="btn btn-ghost btn-sm" style="color:#25D366" title="Enviar por WhatsApp" onclick="${waBtn}">${WA_ICON}</button>
+    ${!isCloud&&(o.status==='pendente'||o.status==='aprovado')?`<button class="btn btn-ghost btn-sm" title="Editar orçamento" onclick="Orcamentos.abrirEdicao('${o.id}')">✏️</button>`:''}
     ${!isCloud&&(o.status==='pendente'||o.status==='aprovado')?`<button class="btn btn-ghost btn-sm" title="Converter em venda" onclick="Orcamentos.converterEmVenda('${o.id}')">🛒</button>`:''}
     ${!isCloud&&o.status!=='cancelado'&&o.status!=='convertido'?`<button class="btn btn-ghost btn-sm" onclick="Orcamentos.cancelar('${o.id}')">🗑️</button>`:''}
   </div></td>
@@ -189,26 +191,62 @@ const Orcamentos = (() => {
   function abrirNovo() {
     _cart = []; _cliente = null; _qtyItem = null;
     _searchHighlight = -1; _searchItems = [];
+    _orcamentoEditando = null;
     _modoNovo = true;
     document.getElementById('orc-root').innerHTML = _renderFormNovo();
     _initForm();
   }
 
+  async function abrirEdicao(id) {
+    const orc = await window.pdv.orcamentos.getById(id);
+    if (!orc) { Toast.show('Orçamento não encontrado', 'error'); return; }
+    if (orc.status === 'cancelado' || orc.status === 'convertido') {
+      Toast.show('Este orçamento não pode ser editado', 'error'); return;
+    }
+    Modal.close();
+    _orcamentoEditando = { id: orc.id, numero: orc.numero };
+    _cliente = orc.cliente_id ? { id: orc.cliente_id, nome: orc.cliente_nome, telefone: orc.cliente_telefone } : null;
+    _cart = (orc.itens || []).map(i => ({
+      produto_id: i.produto_id, produto_nome: i.produto_nome,
+      produto_sku: i.produto_sku || null, emoji: i.emoji || '📦',
+      quantidade: i.quantidade, preco_unitario: i.preco_unitario,
+      desconto: i.desconto || 0, total: i.total,
+    }));
+    _qtyItem = null; _searchHighlight = -1; _searchItems = [];
+    _modoNovo = true;
+    document.getElementById('orc-root').innerHTML = _renderFormNovo();
+    _initForm();
+    // Preencher campos da direita com dados do orçamento
+    setTimeout(() => {
+      const validadeEl = document.getElementById('orc-validade');
+      if (validadeEl) validadeEl.value = orc.validade_dias || 7;
+      const descontoEl = document.getElementById('orc-desconto');
+      if (descontoEl) descontoEl.value = orc.desconto || 0;
+      const obsEl = document.getElementById('orc-obs');
+      if (obsEl) obsEl.value = orc.observacao || '';
+      if (orc.forma_pagamento) _selecionarPagamento(orc.forma_pagamento);
+      _recalcTotals();
+    }, 50);
+  }
+
   function fecharNovo() {
+    _orcamentoEditando = null;
     _modoNovo = false;
     document.getElementById('orc-root').innerHTML = _renderLista();
     load();
   }
 
   function _renderFormNovo() {
+    const titulo = _orcamentoEditando ? `Editar Orçamento #${_orcamentoEditando.numero}` : 'Novo Orçamento';
+    const btnLabel = _orcamentoEditando ? '💾 Salvar Edição' : '💾 Salvar Orçamento';
     return `
 <div class="page-header">
   <div style="display:flex;align-items:center;gap:12px">
     <button class="btn btn-ghost btn-sm" onclick="Orcamentos.fecharNovo()">← Voltar</button>
-    <div class="page-title">Novo Orçamento</div>
+    <div class="page-title">${titulo}</div>
   </div>
   <div class="page-actions">
-    <button class="btn btn-primary" onclick="Orcamentos.salvar()">💾 Salvar Orçamento</button>
+    <button class="btn btn-primary" onclick="Orcamentos.salvar()">${btnLabel}</button>
   </div>
 </div>
 
@@ -410,7 +448,7 @@ const Orcamentos = (() => {
     </div>
 
     <div style="padding:14px 16px">
-      <button class="btn btn-primary btn-lg" style="width:100%" onclick="Orcamentos.salvar()">💾 Salvar Orçamento</button>
+      <button class="btn btn-primary btn-lg" style="width:100%" onclick="Orcamentos.salvar()">${_orcamentoEditando ? '💾 Salvar Edição' : '💾 Salvar Orçamento'}</button>
     </div>
   </div>
 </div>
@@ -425,6 +463,20 @@ const Orcamentos = (() => {
   }
 
   function _initForm() {
+    // Se editando, preenche carrinho e cliente já carregados no estado
+    if (_cart.length) { _renderCart(); _recalcTotals(); }
+    if (_cliente) {
+      const box = document.getElementById('orc-cliente-box');
+      if (box) box.innerHTML = `
+<div style="display:flex;justify-content:space-between;align-items:center">
+  <div>
+    <div style="font-weight:600;font-size:13px">${_cliente.nome}</div>
+    <div style="font-size:11px;color:var(--text3)">${_cliente.telefone||'Sem telefone'}</div>
+  </div>
+  <button onclick="Orcamentos._limparCliente()"
+    style="background:none;border:none;cursor:pointer;color:var(--text3);font-size:14px">✕</button>
+</div>`;
+    }
     document.getElementById('orc-prod-search')?.focus();
   }
 
@@ -855,18 +907,27 @@ const Orcamentos = (() => {
     btns.forEach(b => { b.disabled=true; b.textContent='Salvando...'; });
 
     try {
-      const result = await window.pdv.orcamentos.registrar(orc);
-      Toast.show(`Orçamento #${result.numero} salvo!`, 'success');
-      _modoNovo = false;
-      document.getElementById('orc-root').innerHTML = _renderLista();
-      load();
-      // Oferecer envio por WhatsApp se cliente tiver telefone
-      if (_cliente?.telefone) {
-        _abrirModalWhatsApp(result.id, _cliente.telefone);
+      if (_orcamentoEditando) {
+        await window.pdv.orcamentos.atualizar(_orcamentoEditando.id, orc);
+        Toast.show(`Orçamento #${_orcamentoEditando.numero} atualizado!`, 'success');
+        _orcamentoEditando = null;
+        _modoNovo = false;
+        document.getElementById('orc-root').innerHTML = _renderLista();
+        load();
+      } else {
+        const result = await window.pdv.orcamentos.registrar(orc);
+        Toast.show(`Orçamento #${result.numero} salvo!`, 'success');
+        _modoNovo = false;
+        document.getElementById('orc-root').innerHTML = _renderLista();
+        load();
+        // Oferecer envio por WhatsApp se cliente tiver telefone
+        if (_cliente?.telefone) {
+          _abrirModalWhatsApp(result.id, _cliente.telefone);
+        }
       }
     } catch (err) {
       Toast.show('Erro ao salvar: ' + err.message, 'error');
-      btns.forEach(b => { b.disabled=false; b.textContent='💾 Salvar Orçamento'; });
+      btns.forEach(b => { b.disabled=false; b.textContent=_orcamentoEditando?'💾 Salvar Edição':'💾 Salvar Orçamento'; });
     }
   }
 
@@ -877,10 +938,12 @@ const Orcamentos = (() => {
   // ─── Detalhes ────────────────────────────────────────────────────
   async function verDetalhes(id) {
     // id pode ser local UUID ou remote_id do Base44
+    let isCloudOnly = false;
     let orc = await window.pdv.orcamentos.getById(id);
     if (!orc) {
       // Buscar no cloud (orçamento de outro terminal)
       orc = await window.pdv.orcamentos.getByIdCloud(id);
+      isCloudOnly = true;
     }
     if (!orc) { Toast.show('Orçamento não encontrado', 'error'); return; }
 
@@ -892,7 +955,7 @@ const Orcamentos = (() => {
     const badge = { pendente:'<span class="badge badge-yellow">Pendente</span>', aprovado:'<span class="badge badge-green">Aprovado</span>', convertido:'<span class="badge" style="background:var(--accent-bg);color:var(--accent)">Convertido</span>', cancelado:'<span class="badge badge-red">Cancelado</span>', expirado:'<span class="badge" style="background:var(--bg3);color:var(--text3)">Expirado</span>' }[st] || `<span class="badge">${st}</span>`;
 
     const descItens = (orc.itens||[]).reduce((s,i)=>s+(i.desconto||0), 0);
-    const podeAcionar = orc.status !== 'cancelado' && orc.status !== 'convertido';
+    const podeAcionar = !isCloudOnly && orc.status !== 'cancelado' && orc.status !== 'convertido';
 
     Modal.open(`
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
@@ -947,6 +1010,7 @@ ${orc.observacao?`<div style="background:var(--bg3);border-radius:8px;padding:10
 <div class="modal-actions" style="gap:8px">
   ${podeAcionar?`
   <button class="btn btn-primary" onclick="Orcamentos.converterEmVenda('${orc.id}');Modal.close()">🛒 Converter em Venda</button>
+  <button class="btn btn-ghost" onclick="Orcamentos.abrirEdicao('${orc.id}')">✏️ Editar</button>
   <button class="btn btn-ghost" onclick="Orcamentos.cancelar('${orc.id}');Modal.close()">🗑️ Cancelar</button>`:''}
   <button class="btn btn-ghost" style="color:#25D366"
     onclick="${orc.cliente_telefone ? `WA.abrirModal('Enviar orçamento via WhatsApp','${(orc.cliente_telefone||'').replace(/'/g,"\\'")}','orcamento','${orc.id}')` : `WA.abrirModalCapturaCliente('orcamento','${orc.id}','${(orc.cliente_nome||'').replace(/'/g,"\\'")}')` }">${WA_ICON} WhatsApp</button>
@@ -975,35 +1039,12 @@ ${orc.observacao?`<div style="background:var(--bg3);border-radius:8px;padding:10
 
   // ─── Impressão ────────────────────────────────────────────────────
   async function _imprimirOrcamento(id) {
-    const orc = await window.pdv.orcamentos.getById(id);
-    if (!orc) return;
-    const venc = new Date(orc.created_at);
-    venc.setDate(venc.getDate() + (orc.validade_dias || 7));
-    const config = await window.pdv.config.getAll();
-    const empresa = config?.['auth.usuario']?.empresa_nome || '';
-    const descItens = (orc.itens||[]).reduce((s,i)=>s+(i.desconto||0), 0);
-    const linhas = [
-      { tipo:'titulo', texto:'ORÇAMENTO' },
-      { tipo:'subtitulo', texto:empresa },
-      { tipo:'separador' },
-      { tipo:'par', label:'Nº', valor:String(orc.numero) },
-      { tipo:'par', label:'Data', valor:_fmtData(orc.created_at) },
-      { tipo:'par', label:'Validade', valor:_fmtData(venc.toISOString()) },
-      ...(orc.cliente_nome?[{tipo:'par',label:'Cliente',valor:orc.cliente_nome}]:[]),
-      { tipo:'par', label:'Pagamento', valor:_fmtForma(orc.forma_pagamento) },
-      { tipo:'separador' },
-      ...(orc.itens||[]).map(i=>({ tipo:'item', nome:i.produto_nome, qtd:i.quantidade, preco:i.preco_unitario, total:i.total, desconto:i.desconto })),
-      { tipo:'separador' },
-      ...(descItens>0?[{tipo:'par',label:'Desc. itens',valor:`- R$ ${fmtMoney(descItens)}`}]:[]),
-      ...(orc.desconto>0?[{tipo:'par',label:'Desc. geral',valor:`- R$ ${fmtMoney(orc.desconto)}`}]:[]),
-      { tipo:'total', label:'TOTAL', valor:`R$ ${fmtMoney(orc.total)}` },
-      ...(orc.observacao?[{tipo:'separador'},{tipo:'texto',texto:orc.observacao}]:[]),
-      { tipo:'separador' },
-      { tipo:'centro', texto:`Válido até ${_fmtData(venc.toISOString())}` },
-    ];
+    let orc = await window.pdv.orcamentos.getById(id);
+    if (!orc) orc = await window.pdv.orcamentos.getByIdCloud(id);
+    if (!orc) { Toast.show('Orçamento não encontrado', 'error'); return; }
     try {
-      await window.pdv.print.local({ tipo:'orcamento', linhas });
-    } catch { Toast.show('Impressora não configurada', 'error'); }
+      await window.pdv.print.orcamento(orc);
+    } catch (e) { Toast.show('Erro ao imprimir: ' + e.message, 'error'); }
   }
 
   // ─── Helpers ─────────────────────────────────────────────────────
@@ -1012,7 +1053,7 @@ ${orc.observacao?`<div style="background:var(--bg3);border-radius:8px;padding:10
 
   return {
     render, init, load, onPeriodoChange,
-    abrirNovo, fecharNovo, salvar,
+    abrirNovo, abrirEdicao, fecharNovo, salvar,
     verDetalhes, converterEmVenda, cancelar,
     _onSearch, _onSearchKey, _selecionarProduto,
     _qpKey, _qpCalcDesc, _sugerirDescItem, _fecharQtyPanel, _confirmarItem,

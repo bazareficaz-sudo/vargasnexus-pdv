@@ -78,6 +78,7 @@ contextBridge.exposeInMainWorld('pdv', {
     atualizarCliente:(id, clienteId, nome, tel) => ipcRenderer.invoke('orcamentos:atualizarCliente', id, clienteId, nome, tel),
     listarCloud:     (filtros)    => ipcRenderer.invoke('orcamentos:listarCloud', filtros),
     getByIdCloud:    (remoteId)   => ipcRenderer.invoke('orcamentos:getByIdCloud', remoteId),
+    atualizar:       (id, dados)  => ipcRenderer.invoke('orcamentos:atualizar', id, dados),
   },
 
   // Estoque
@@ -141,6 +142,7 @@ contextBridge.exposeInMainWorld('pdv', {
     serverStatus:  ()       => ipcRenderer.invoke('print:server:status'),
     listar:        ()       => ipcRenderer.invoke('print:listar'),
     ping:          (url)   => ipcRenderer.invoke('print:ping', url),
+    orcamento:     (orc)   => ipcRenderer.invoke('print:orcamento', orc),
   },
 
   // Cloudflare Tunnel

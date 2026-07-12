@@ -594,6 +594,10 @@ async function atualizarStatusOrcamento(remoteId, status) {
   return put(`/entities/Orcamento/${remoteId}`, { status });
 }
 
+async function atualizarOrcamento(remoteId, dados) {
+  return put(`/entities/Orcamento/${remoteId}`, dados);
+}
+
 async function getOrcamentoCloud(remoteId) {
   const o = await get(`/entities/Orcamento/${remoteId}`);
   if (!o) return null;
@@ -1035,6 +1039,7 @@ module.exports = {
   sincronizarOrcamento,
   sincronizarOrcamentos,
   atualizarStatusOrcamento,
+  atualizarOrcamento,
   listarOrcamentosCloud,
   getOrcamentoCloud,
   registrarNfceVenda,

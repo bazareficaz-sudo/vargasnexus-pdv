@@ -25,6 +25,8 @@ const App = (() => {
     renderNavUser();
     const navCarteira = document.getElementById('nav-carteira');
     if (navCarteira) navCarteira.style.display = podePermissao('receber_contas_clientes') ? 'flex' : 'none';
+    const navMarketplace = document.getElementById('nav-marketplace');
+    if (navMarketplace) navMarketplace.style.display = podePermissao('ver_marketplace') ? 'flex' : 'none';
     _initApp();
     // Mostrar launcher em vez de ir direto para o PDV
     showLauncher();
@@ -293,8 +295,9 @@ function podePermissao(key) {
   if (window.PDV_PERMS[key] === true) return true;
   // Aliases entre nomes usados no código e nomes configurados no Base44
   const aliases = {
-    editar_venda:  ['editar_pedido'],
-    editar_pedido: ['editar_venda'],
+    editar_venda:    ['editar_pedido'],
+    editar_pedido:   ['editar_venda'],
+    ver_marketplace: ['marketplace', 'acesso_marketplace', 'visualizar_marketplace'],
   };
   return (aliases[key] || []).some(alt => window.PDV_PERMS[alt] === true);
 }

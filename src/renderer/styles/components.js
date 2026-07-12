@@ -888,6 +888,15 @@ const WA = {
       await window.pdv.whatsapp.enviar(tipo, id, telefone || null, dadosExtras || null);
       Toast.show('WhatsApp enviado com sucesso!', 'success');
       Modal.close();
+      // Registrar telefone usado no orçamento para futuras consultas e envios
+      if (tipo === 'orcamento' && id && telefone) {
+        try {
+          const orc = await window.pdv.orcamentos.getById(id);
+          if (orc && orc.cliente_telefone !== telefone) {
+            await window.pdv.orcamentos.atualizarCliente(id, orc.cliente_id || null, orc.cliente_nome || null, telefone);
+          }
+        } catch { /* silencioso */ }
+      }
     } catch (e) {
       Toast.show('Erro ao enviar WhatsApp: ' + (e.message || e), 'error');
     }
@@ -1597,7 +1606,10 @@ const Launcher = {
     const hora = new Date().getHours();
     const saudacao = hora < 12 ? 'Bom dia' : hora < 18 ? 'Boa tarde' : 'Boa noite';
 
-    const cards = this._modulos.map(m => {
+    const modulosVisiveis = this._modulos.filter(m =>
+      m.id !== 'marketplace' || podePermissao('ver_marketplace')
+    );
+    const cards = modulosVisiveis.map(m => {
       const ativo = m.status === 'ativo';
       const tags = m.tags.map(t => `<span style="
         font-size:9px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;
@@ -2080,8 +2092,8 @@ const Faltas = (() => {
     };
     await window.pdv.faltas.registrar(falta);
     Modal.close();
-    App.toast('Falta registrada!', 'success');
-    await carregar();
+    App.toast('✅ Falta registrada!', 'success');
+    if (document.getElementById('faltas-tbody')) await carregar();
   }
 
   function abrirWhatsApp(telefone, produto) {

@@ -349,6 +349,22 @@ ipcMain.handle('orcamentos:marcarConvertido', async (_, id) => {
   }
   return { ok: true };
 });
+ipcMain.handle('orcamentos:atualizar', async (_, id, dados) => {
+  db.orcamentos.atualizar(id, dados);
+  const orc = db.orcamentos.getById(id);
+  if (orc?.remote_id) {
+    try {
+      await api.atualizarOrcamento(orc.remote_id, {
+        cliente_id: dados.cliente_id, cliente_nome: dados.cliente_nome,
+        cliente_telefone: dados.cliente_telefone, forma_pagamento: dados.forma_pagamento,
+        validade_dias: dados.validade_dias, subtotal: dados.subtotal,
+        desconto: dados.desconto, total: dados.total, observacao: dados.observacao,
+        itens: dados.itens,
+      });
+    } catch(e) { console.warn('[ORC] Erro ao atualizar cloud:', e.message); }
+  }
+  return { ok: true };
+});
 
 // WhatsApp via pdvProxy
 ipcMain.handle('whatsapp:enviar', async (_, tipo, id, telefone, dadosExtras) => {
@@ -746,12 +762,8 @@ ipcMain.handle('sync:now', async () => {
   return result;
 });
 ipcMain.handle('sync:fullProdutos', async () => {
-  // Sobe alterações locais ANTES de limpar o timestamp e re-baixar tudo
-  const Store = require('electron-store');
-  const s = new Store();
   await sync.syncUpProdutos();
-  s.delete('sync.ultima_sync_produtos');
-  return await sync.syncNow(mainWindow);
+  return await sync.syncForcarProdutos();
 });
 ipcMain.handle('sync:pendentes', () => db.sync.getPendentes());
 
@@ -767,6 +779,28 @@ ipcMain.handle('auth:logout', () => {
 // Impressão
 ipcMain.handle('print:local', async (_, dados) => {
   return printServer.adicionarNaFila(dados);
+});
+ipcMain.handle('print:orcamento', async (_, orc) => {
+  const html = printServer.gerarHtmlOrcamento({
+    ...orc,
+    empresa_nome: store.get('auth.usuario.empresa_nome') || '',
+    vendedor_nome: orc.vendedor_nome || store.get('auth.usuario.nome') || '',
+  });
+  return new Promise((resolve, reject) => {
+    const win = new BrowserWindow({ show: false, webPreferences: { nodeIntegration: false } });
+    win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+    win.webContents.once('did-finish-load', () => {
+      win.webContents.print({ silent: false, printBackground: true }, (success, reason) => {
+        win.destroy();
+        if (success) resolve({ ok: true });
+        else resolve({ ok: false, reason });
+      });
+    });
+    win.webContents.once('did-fail-load', (_, code, desc) => {
+      win.destroy();
+      reject(new Error(desc));
+    });
+  });
 });
 ipcMain.handle('print:entrega', async (_, dados) => {
   const html = printServer.gerarHtmlCupomEntrega(dados);

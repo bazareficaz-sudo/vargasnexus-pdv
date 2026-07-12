@@ -408,6 +408,123 @@ async function listarImpressoras(win) {
   }
 }
 
+// ─── HTML A4 para orçamento (diálogo de impressão do Windows) ───────────────
+
+function gerarHtmlOrcamento(dados) {
+  const { numero, empresa_nome = '', vendedor_nome = '', cliente_nome = '',
+          cliente_telefone = '', forma_pagamento = '', validade_dias = 7,
+          subtotal = 0, desconto = 0, total = 0, observacao = '',
+          itens = [], created_at } = dados;
+
+  const fmt   = v => Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const data  = created_at ? new Date(created_at).toLocaleDateString('pt-BR') : new Date().toLocaleDateString('pt-BR');
+  const venc  = (() => {
+    const d = created_at ? new Date(created_at) : new Date();
+    d.setDate(d.getDate() + (validade_dias || 7));
+    return d.toLocaleDateString('pt-BR');
+  })();
+  const formaMap = { dinheiro:'Dinheiro', pix:'PIX', credito:'Cartão de Crédito',
+    debito:'Cartão de Débito', boleto:'Boleto', outros:'A Combinar', carteira:'Crédito Loja' };
+  const formaTxt = formaMap[forma_pagamento] || forma_pagamento || '—';
+  const descItens = itens.reduce((s, i) => s + (Number(i.desconto) || 0), 0);
+
+  const linhasItens = itens.map((i, idx) => `
+    <tr class="${idx % 2 === 0 ? 'par' : ''}">
+      <td>${i.produto_nome || ''}</td>
+      <td class="c">${Number(i.quantidade)}</td>
+      <td class="r">R$ ${fmt(i.preco_unitario)}</td>
+      <td class="r" style="color:#c0392b">${Number(i.desconto) > 0 ? '− R$ ' + fmt(i.desconto) : '—'}</td>
+      <td class="r fw">R$ ${fmt(i.total)}</td>
+    </tr>`).join('');
+
+  return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: Arial, sans-serif; font-size: 11pt; color: #222; padding: 20mm 18mm; }
+  h1 { font-size: 22pt; color: #2c7a4b; margin-bottom: 2px; }
+  .empresa { font-size: 13pt; font-weight: bold; color: #333; }
+  .subtitulo { font-size: 9pt; color: #777; margin-bottom: 14px; }
+  hr { border: none; border-top: 1.5px solid #ddd; margin: 12px 0; }
+  hr.thick { border-top: 2.5px solid #2c7a4b; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
+  .bloco { background: #f7f7f7; border-radius: 6px; padding: 10px 14px; }
+  .bloco .label { font-size: 8pt; text-transform: uppercase; letter-spacing: .5px; color: #888; margin-bottom: 3px; }
+  .bloco .val { font-size: 11pt; font-weight: bold; }
+  .bloco .sub { font-size: 9pt; color: #666; }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+  thead tr { background: #2c7a4b; color: #fff; }
+  thead th { padding: 7px 10px; font-size: 9pt; text-align: left; }
+  th.c, td.c { text-align: center; }
+  th.r, td.r { text-align: right; }
+  td { padding: 6px 10px; font-size: 10pt; border-bottom: 1px solid #eee; }
+  tr.par td { background: #fafafa; }
+  .fw { font-weight: bold; }
+  .totals { margin-top: 12px; }
+  .totals table { width: 260px; margin-left: auto; }
+  .totals td { border: none; padding: 3px 6px; font-size: 10.5pt; }
+  .totals .total-row td { font-size: 14pt; font-weight: bold; color: #2c7a4b; border-top: 2px solid #2c7a4b; padding-top: 6px; }
+  .obs { background: #fffbe6; border: 1px solid #f0d060; border-radius: 6px; padding: 10px 14px; font-size: 10pt; color: #555; margin-top: 14px; }
+  .rodape { margin-top: 20px; text-align: center; font-size: 8.5pt; color: #999; border-top: 1px solid #ddd; padding-top: 10px; }
+  @media print { body { padding: 10mm; } }
+</style>
+</head>
+<body>
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px">
+    <div>
+      <div class="empresa">${empresa_nome}</div>
+      <h1>ORÇAMENTO #${numero}</h1>
+      <div class="subtitulo">Emitido em ${data} · Válido até ${venc} · Vendedor: ${vendedor_nome || '—'}</div>
+    </div>
+  </div>
+
+  <hr class="thick">
+
+  <div class="grid2">
+    <div class="bloco">
+      <div class="label">Cliente</div>
+      <div class="val">${cliente_nome || 'Sem cliente'}</div>
+      ${cliente_telefone ? `<div class="sub">${cliente_telefone}</div>` : ''}
+    </div>
+    <div class="bloco">
+      <div class="label">Forma de Pagamento</div>
+      <div class="val">${formaTxt}</div>
+      <div class="sub">Validade: ${venc}</div>
+    </div>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Produto</th>
+        <th class="c">Qtd</th>
+        <th class="r">Unit.</th>
+        <th class="r">Desconto</th>
+        <th class="r">Total</th>
+      </tr>
+    </thead>
+    <tbody>${linhasItens}</tbody>
+  </table>
+
+  <div class="totals">
+    <table>
+      ${descItens > 0 ? `<tr><td>Desconto em itens</td><td class="r" style="color:#c0392b">− R$ ${fmt(descItens)}</td></tr>` : ''}
+      ${Number(desconto) > 0 ? `<tr><td>Desconto geral</td><td class="r" style="color:#c0392b">− R$ ${fmt(desconto)}</td></tr>` : ''}
+      <tr class="total-row"><td>TOTAL</td><td class="r">R$ ${fmt(total)}</td></tr>
+    </table>
+  </div>
+
+  ${observacao ? `<div class="obs">📝 ${observacao}</div>` : ''}
+
+  <div class="rodape">
+    ${empresa_nome} · Orçamento válido até ${venc} · Sujeito a alteração de preços sem aviso prévio.
+  </div>
+</body>
+</html>`;
+}
+
 module.exports = {
   start, stop, isRunning,
   imprimirLocal, adicionarNaFila,
@@ -415,4 +532,5 @@ module.exports = {
   listarImpressoras,
   gerarHtmlCupom,
   gerarHtmlCupomEntrega,
+  gerarHtmlOrcamento,
 };

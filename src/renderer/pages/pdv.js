@@ -282,11 +282,14 @@ const PDV = (() => {
     searchTimeout = setTimeout(async () => {
       searchResults = await window.pdv.produtos.buscar(val);
       if (!searchResults.length) {
-        box.innerHTML = `<div style="padding:14px 16px;text-align:center">
-          <div style="color:var(--text3);margin-bottom:10px">Nenhum produto encontrado</div>
-          <button class="btn btn-ghost" style="font-size:11px"
-            onclick="Faltas.abrirNovaFalta({nome:'${val.replace(/'/g,"\\'")}'}); document.getElementById('pdv-results').style.display='none'">
-            📋 Registrar como Falta
+        const valSafe = val.replace(/'/g, "\\'");
+        box.innerHTML = `<div style="padding:16px;text-align:center">
+          <div style="color:var(--text3);font-size:13px;margin-bottom:12px">
+            Nenhum produto encontrado para "<strong style="color:var(--text)">${val}</strong>"
+          </div>
+          <button class="btn btn-primary" style="font-size:12px;gap:6px"
+            onclick="Faltas.abrirNovaFalta({nome:'${valSafe}'}); document.getElementById('pdv-results').style.display='none'">
+            📋 Registrar como Falta / Encomenda
           </button>
         </div>`;
       } else {
@@ -294,18 +297,20 @@ const PDV = (() => {
         const rows = searchResults.map((p, i) => {
           const semEstoque = p.estoque <= 0 && !permiteEstoqueNeg;
           const estoqueHtml = p.estoque <= 0
-            ? (semEstoque ? '<span style="color:var(--red)">❌ 0</span>' : `<span style="color:var(--yellow)">⚠️ ${p.estoque}</span>`)
+            ? (semEstoque ? '<span style="color:var(--red);font-weight:600">❌ Sem estoque</span>' : `<span style="color:var(--yellow)">⚠️ ${p.estoque}</span>`)
             : `<span style="color:var(--green)">${p.estoque}</span>`;
+          const prodJson = JSON.stringify({nome: p.nome, sku: p.sku||'', id: p.id}).replace(/"/g,'&quot;');
           const faltaBtn = semEstoque
-            ? `<button class="btn btn-ghost" style="font-size:9px;padding:1px 5px;margin-left:4px"
-                onclick="event.stopPropagation();Faltas.abrirNovaFalta(${JSON.stringify({nome:p.nome,sku:p.sku||'',id:p.id}).replace(/"/g,'&quot;')});document.getElementById('pdv-results').style.display='none'">
-                📋</button>` : '';
+            ? `<button class="btn btn-ghost btn-sm" style="font-size:10px;padding:2px 7px;margin-left:6px;color:var(--accent);border-color:var(--accent)"
+                title="Registrar como falta/encomenda"
+                onclick="event.stopPropagation();Faltas.abrirNovaFalta(${prodJson});document.getElementById('pdv-results').style.display='none'">
+                📋 Anotar falta</button>` : '';
           return `<tr class="search-item ${semEstoque ? 'out-of-stock' : ''}" id="si-${i}"
             onclick="${!semEstoque ? `PDV.selecionarProduto(${JSON.stringify(p).replace(/"/g, '&quot;')})` : ''}">
             <td class="si-cod">${p.sku || '—'}</td>
             <td><div class="si-nome">${p.emoji ? p.emoji + ' ' : ''}${p.nome}</div><div class="si-sub">${p.ean ? 'EAN: ' + p.ean : ''}</div></td>
             <td class="si-marca">${p.marca || '—'}</td>
-            <td class="si-estoque">${estoqueHtml}${faltaBtn}</td>
+            <td class="si-estoque" style="white-space:nowrap">${estoqueHtml}${faltaBtn}</td>
             <td class="si-preco">R$ ${fmtMoney(p.preco_venda)}</td>
           </tr>`;
         }).join('');
@@ -314,7 +319,7 @@ const PDV = (() => {
             <th style="width:80px">SKU</th>
             <th>Produto</th>
             <th style="width:110px">Marca</th>
-            <th style="width:80px;text-align:center">Estoque</th>
+            <th style="width:180px;text-align:left">Estoque</th>
             <th style="width:100px;text-align:right">Preço</th>
           </tr></thead>
           <tbody>${rows}</tbody>

@@ -1753,6 +1753,31 @@ const orcamentos = {
     db.prepare(`UPDATE orcamentos SET status = 'convertido', sync_status = 'pending' WHERE id = ?`).run(id);
   },
 
+  atualizar(id, dados) {
+    db.prepare(`
+      UPDATE orcamentos SET
+        cliente_id = ?, cliente_nome = ?, cliente_telefone = ?,
+        forma_pagamento = ?, validade_dias = ?,
+        subtotal = ?, desconto = ?, total = ?,
+        observacao = ?, sync_status = 'pending'
+      WHERE id = ?
+    `).run(
+      dados.cliente_id || null, dados.cliente_nome || null, dados.cliente_telefone || null,
+      dados.forma_pagamento || null, dados.validade_dias || 7,
+      dados.subtotal || 0, dados.desconto || 0, dados.total || 0,
+      dados.observacao || null, id
+    );
+    // Substituir itens
+    db.prepare('DELETE FROM orcamento_itens WHERE orcamento_id = ?').run(id);
+    const ins = db.prepare(`INSERT INTO orcamento_itens
+      (id, orcamento_id, produto_id, produto_nome, produto_sku, quantidade, preco_unitario, desconto, total)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    for (const item of (dados.itens || [])) {
+      ins.run(uuidv4(), id, item.produto_id || null, item.produto_nome, item.produto_sku || null,
+        item.quantidade, item.preco_unitario, item.desconto || 0, item.total);
+    }
+  },
+
   // Monta payload de sync resolvendo remote_ids dos produtos
   payloadSync(id) {
     const orc = this.getById(id);
