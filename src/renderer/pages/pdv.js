@@ -128,6 +128,7 @@ const PDV = (() => {
           ['F3', 'Selecionar cliente'],
           ['F8', 'Limpar carrinho'],
           ['F9', 'Pagamento / Finalizar'],
+          ['F12', 'Anotar falta (na busca)'],
           ['↑ ↓', 'Navegar resultados'],
           ['Enter', 'Selecionar / Confirmar'],
           ['Tab', 'Próximo campo'],
@@ -355,10 +356,82 @@ const PDV = (() => {
       } else if (searchResults.length === 1) {
         selecionarProduto(searchResults[0]);
       }
+    } else if (e.key === 'F12') {
+      e.preventDefault();
+      // Anotar falta do produto destacado (ou primeiro resultado)
+      const idx = searchHighlight >= 0 ? searchHighlight : 0;
+      if (searchResults[idx]) {
+        const p = searchResults[idx];
+        _abrirModalFaltaPDV({ nome: p.nome, sku: p.sku || '', id: p.id });
+      } else if (document.getElementById('pdv-search')?.value.trim()) {
+        _abrirModalFaltaPDV({ nome: document.getElementById('pdv-search').value.trim() });
+      }
     } else if (e.key === 'Escape') {
       document.getElementById('pdv-results').style.display = 'none';
       searchHighlight = -1;
     }
+  }
+
+  // ─── Modal rápido de Falta a partir do PDV ───────────────────
+  function _abrirModalFaltaPDV(produto) {
+    document.getElementById('pdv-results').style.display = 'none';
+    Modal.open(`
+      <div style="display:flex;flex-direction:column;gap:12px;min-width:320px">
+        <div style="background:var(--bg3);padding:10px 14px;border-radius:8px;font-size:13px">
+          <div style="font-weight:600;color:var(--text)">${produto.nome}</div>
+          ${produto.sku ? `<div style="font-size:11px;color:var(--text3);margin-top:2px">SKU: ${produto.sku}</div>` : ''}
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div>
+            <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">Quantidade</label>
+            <input id="fpdv-qty" class="input" type="number" min="1" step="1" value="1"
+              style="font-size:16px;font-weight:700;text-align:center"
+              onkeydown="if(event.key==='Enter'){PDV._confirmarFaltaPDV(${JSON.stringify(produto).replace(/"/g,'&quot;')})}">
+          </div>
+          <div>
+            <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">WhatsApp (opcional)</label>
+            <input id="fpdv-wa" class="input" placeholder="(00) 00000-0000"
+              onkeydown="if(event.key==='Enter'){PDV._confirmarFaltaPDV(${JSON.stringify(produto).replace(/"/g,'&quot;')})}">
+          </div>
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">Nome do cliente (opcional)</label>
+          <input id="fpdv-nome" class="input" placeholder="Nome para contato"
+            onkeydown="if(event.key==='Enter'){PDV._confirmarFaltaPDV(${JSON.stringify(produto).replace(/"/g,'&quot;')})}">
+        </div>
+        <div style="display:flex;gap:8px;margin-top:4px">
+          <button class="btn btn-ghost" style="flex:1" onclick="Modal.close()">Cancelar</button>
+          <button class="btn btn-primary" style="flex:2"
+            onclick="PDV._confirmarFaltaPDV(${JSON.stringify(produto).replace(/"/g,'&quot;')})">
+            📋 Registrar Falta
+          </button>
+        </div>
+      </div>`, '📋 Anotar Falta / Encomenda');
+    setTimeout(() => document.getElementById('fpdv-qty')?.select(), 50);
+  }
+
+  async function _confirmarFaltaPDV(produto) {
+    const qty = parseInt(document.getElementById('fpdv-qty')?.value) || 1;
+    const wa = document.getElementById('fpdv-wa')?.value.trim() || '';
+    const nome = document.getElementById('fpdv-nome')?.value.trim() || '';
+    Modal.close();
+    try {
+      await window.pdv.faltas.registrar({
+        produto_id: produto.id || null,
+        produto_nome: produto.nome,
+        produto_sku: produto.sku || '',
+        quantidade: qty,
+        cliente_nome: nome || null,
+        cliente_whatsapp: wa || null,
+        status: 'pendente',
+      });
+      Toast.show(`Falta registrada: ${produto.nome}`, 'success');
+      App.atualizarBadgeFaltas();
+    } catch (err) {
+      Toast.show('Erro ao registrar falta', 'error');
+    }
+    // Devolver foco ao PDV
+    setTimeout(() => document.getElementById('pdv-search')?.focus(), 100);
   }
 
   // ─── Painel de Qty/Preço (após selecionar produto) ────────────
@@ -1638,6 +1711,26 @@ const PDV = (() => {
     renderClientBar();
   }
 
+  // ─── Cursor invisível ao digitar ─────────────────────────────
+  function initCursorHide() {
+    let _cursorHideTimer = null;
+    let _cursorHidden = false;
+    document.addEventListener('keydown', (e) => {
+      // Apenas teclas que produzem texto ou são de navegação do PDV
+      if (e.ctrlKey || e.altKey || e.metaKey) return;
+      if (!_cursorHidden) {
+        document.body.style.cursor = 'none';
+        _cursorHidden = true;
+      }
+    });
+    document.addEventListener('mousemove', () => {
+      if (_cursorHidden) {
+        document.body.style.cursor = '';
+        _cursorHidden = false;
+      }
+    });
+  }
+
   // ─── Atalhos globais de teclado ──────────────────────────────
   function initKeyboard() {
     document.addEventListener('keydown', (e) => {
@@ -1877,6 +1970,7 @@ const PDV = (() => {
   function init() {
     SaudeVenda.init();
     initKeyboard();
+    initCursorHide();
     renderClientBar();
     // Restaurar carrinho se houver itens da sessão anterior
     if (cart.length > 0) {
@@ -1885,7 +1979,7 @@ const PDV = (() => {
     }
   }
 
-  return { render, init, onSearch, onSearchKey,
+  return { render, init, onSearch, onSearchKey, _abrirModalFaltaPDV, _confirmarFaltaPDV,
     selecionarProduto, fecharQtyPanel, qpKeyDown, confirmarQtyPreco,
     addToCart, changeQty, removeItem, clearCart, adicionarSugestao,
     toggleEntregar, _selecionarTurno, entrarModoEdicao, cancelarEdicao,
