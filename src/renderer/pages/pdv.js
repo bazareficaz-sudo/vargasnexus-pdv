@@ -1037,7 +1037,7 @@ const PDV = (() => {
     const c = selectedClient || {};
     const itens = _itensParaEntrega();
     const dados = {
-      empresa_nome:     (await window.pdv.config.get('auth.usuario'))?.empresa_nome || 'PDV Vargas',
+      empresa_nome:     (await window.pdv.config.get('auth.usuario'))?.empresa_nome || 'VargasNexus PDV',
       cliente_nome:     c.nome || document.getElementById('ent-telefone')?.value || '',
       cliente_telefone: document.getElementById('ent-telefone')?.value || '',
       cliente_doc:      document.getElementById('ent-doc')?.value || '',
@@ -1421,7 +1421,7 @@ const PDV = (() => {
       if (!auto) return;
       const dados = {
         numero,
-        empresa_nome: (await window.pdv.config.get('auth.usuario'))?.empresa_nome || 'PDV Vargas',
+        empresa_nome: (await window.pdv.config.get('auth.usuario'))?.empresa_nome || 'VargasNexus PDV',
         vendedor_nome: venda.vendedor_nome || null,
         cliente_nome: venda.cliente_nome || null,
         itens: (venda.itens || []).map(i => ({

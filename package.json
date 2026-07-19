@@ -1,7 +1,7 @@
 {
   "name": "pdv-vargas",
   "version": "1.7.20",
-  "description": "PDV Vargas — Terminal de Vendas Offline-First",
+  "description": "VargasNexus PDV — Terminal de Vendas Offline-First",
   "main": "src/main/main.js",
   "scripts": {
     "start": "electron .",
@@ -13,7 +13,7 @@
   },
   "build": {
     "appId": "com.vargas.pdv",
-    "productName": "PDV Vargas",
+    "productName": "VargasNexus PDV",
     "copyright": "Copyright © 2025 Sistema Vargas",
     "win": {
       "target": [
@@ -33,7 +33,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "PDV Vargas"
+      "shortcutName": "VargasNexus PDV"
     },
     "publish": {
       "provider": "github",

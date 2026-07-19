@@ -36,7 +36,7 @@ const Login = {
       <div id="l-error" style="color:var(--red);font-size:12px;margin-top:10px;text-align:center;display:none"></div>
     </div>
     <div id="login-version-footer" style="text-align:center;margin-top:16px;font-size:11px;color:var(--text3)">
-      PDV Vargas · Sistema Vargas
+      VargasNexus PDV · Sistema Vargas
     </div>
   </div>
 </div>`;
@@ -1380,7 +1380,7 @@ const Vendas = {
   async imprimir(id) {
     const venda = await window.pdv.vendas.getById(id);
     if (!venda) return;
-    const empresa_nome = (await window.pdv.config.get('auth.usuario'))?.empresa_nome || 'PDV Vargas';
+    const empresa_nome = (await window.pdv.config.get('auth.usuario'))?.empresa_nome || 'VargasNexus PDV';
     const dados = {
       numero: venda.numero, empresa_nome,
       vendedor_nome: venda.vendedor_nome || null,
@@ -1402,7 +1402,7 @@ const Vendas = {
   },
 
   async imprimirCloud(v) {
-    const empresa_nome = (await window.pdv.config.get('auth.usuario'))?.empresa_nome || 'PDV Vargas';
+    const empresa_nome = (await window.pdv.config.get('auth.usuario'))?.empresa_nome || 'VargasNexus PDV';
     const itens = (v.itens || []).map(i => ({ produto_nome: i.produto_nome, quantidade: i.quantidade, preco_unitario: i.preco_unitario, subtotal: i.subtotal || i.quantidade * i.preco_unitario }));
     const dados = {
       numero: v.numero, empresa_nome,

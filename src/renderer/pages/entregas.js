@@ -246,7 +246,7 @@ const Entregas = (() => {
     const e = await window.pdv.entregas.getById(id);
     if (!e) { Toast.show('Entrega não encontrada', 'error'); return; }
     const itens = Array.isArray(e.itens) ? e.itens : (e.itens ? JSON.parse(e.itens) : []);
-    const empresaNome = (await window.pdv.config.get('auth.usuario'))?.empresa_nome || 'PDV Vargas';
+    const empresaNome = (await window.pdv.config.get('auth.usuario'))?.empresa_nome || 'VargasNexus PDV';
     const dados = {
       empresa_nome:     empresaNome,
       cliente_nome:     e.cliente_nome || '',

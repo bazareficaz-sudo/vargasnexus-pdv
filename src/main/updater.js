@@ -52,7 +52,7 @@ function init(win) {
     dialog.showMessageBox(mainWindowRef, {
       type: 'info',
       title: 'Atualização pronta',
-      message: `PDV Vargas ${info.version} foi baixado.`,
+      message: `VargasNexus PDV ${info.version} foi baixado.`,
       detail: 'Clique em "Reiniciar agora" para aplicar a atualização, ou "Depois" para instalar quando fechar o app.',
       buttons: ['Reiniciar agora', 'Depois'],
       defaultId: 0,

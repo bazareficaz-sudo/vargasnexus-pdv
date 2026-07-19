@@ -103,14 +103,14 @@ function createTray() {
   if (!fs.existsSync(iconPath)) return;
   tray = new Tray(iconPath);
   const menu = Menu.buildFromTemplate([
-    { label: 'PDV Vargas', enabled: false },
+    { label: 'VargasNexus PDV', enabled: false },
     { type: 'separator' },
     { label: 'Abrir PDV', click: () => mainWindow?.show() },
     { label: 'Sincronizar agora', click: () => sync.syncNow(mainWindow) },
     { type: 'separator' },
     { label: 'Sair', click: () => app.quit() }
   ]);
-  tray.setToolTip('PDV Vargas');
+  tray.setToolTip('VargasNexus PDV');
   tray.setContextMenu(menu);
   tray.on('double-click', () => mainWindow?.show());
 }

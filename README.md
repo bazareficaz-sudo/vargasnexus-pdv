@@ -1,4 +1,4 @@
-# PDV Vargas — Terminal de Vendas Offline-First
+# VargasNexus PDV — Terminal de Vendas Offline-First
 
 Sistema PDV Desktop para Windows com sincronização bidirecional com Base44 (Sistema Vargas).
 
@@ -27,7 +27,7 @@ Sistema PDV Desktop para Windows com sincronização bidirecional com Base44 (Si
 
 ```bash
 # 1. Entrar na pasta do projeto
-cd pdv-vargas
+cd vargasnexus-pdv
 
 # 2. Instalar dependências
 npm install
@@ -39,7 +39,7 @@ npm start
 npm run build
 ```
 
-O instalador gerado fica em `dist/PDV Vargas Setup.exe`.
+O instalador gerado fica em `dist/VargasNexus PDV Setup.exe`.
 
 ---
 
@@ -79,7 +79,7 @@ Crie estas functions no painel do Base44 para o projeto Sistema Vargas:
 ## 📁 Estrutura do Projeto
 
 ```
-pdv-vargas/
+vargasnexus-pdv/
 ├── src/
 │   ├── main/                   # Processo principal (Node.js)
 │   │   ├── main.js             # Janela, IPC handlers, tray
@@ -160,12 +160,12 @@ npm run build
 ```
 
 Gera em `dist/`:
-- `PDV Vargas Setup 1.0.0.exe` — instalador NSIS
+- `VargasNexus PDV Setup 1.0.0.exe` — instalador NSIS
 
 Para rodar sem instalar:
 ```bash
 npm run build:dir
-# Executável em dist/win-unpacked/PDV Vargas.exe
+# Executável em dist/win-unpacked/VargasNexus PDV.exe
 ```
 
 ---
@@ -179,4 +179,4 @@ O electron-builder converte automaticamente para `.ico` no Windows.
 
 ## 📞 Suporte
 
-Sistema Vargas / Base44 — PDV Terminal v1.0
+Sistema Vargas / Base44 — VargasNexus PDV Terminal v1.0
