@@ -226,15 +226,16 @@ ipcMain.handle('creditos:criar', async (_, clienteRemoteId, clienteNome, cliente
     saldo_atual: valor,
     status: 'aberto',
     origem: 'devolucao',
+    operador_nome: usuario.nome || null,
     observacao: observacao || null,
   };
   try {
-    const res = await api.post('/entities/CreditoCliente', payload);
+    const res = await api.criarCreditoCliente(payload);
     if (res?.id) db.creditosCliente.upsertBatch([{ ...payload, id: res.id }]);
     return res;
   } catch (err) {
     console.error('[CREDITO] Erro ao criar crédito de devolução:', err.message);
-    // Salva local mesmo se Base44 falhar
+    // Salva local mesmo se Supabase falhar
     db.creditosCliente.upsertBatch([{ ...payload, id: require('uuid').v4() }]);
   }
 });

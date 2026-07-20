@@ -120,7 +120,7 @@ async function syncNow(win) {
 
 // ─── Download: Servidor → Local ───────────────────────────────────
 
-// Mapeia campos do Base44 → schema local SQLite
+// Mapeia campos do Supabase → schema local SQLite
 function mapProduto(p) {
   return {
     id:          p.id,
@@ -128,24 +128,24 @@ function mapProduto(p) {
     sku:         p.sku         || null,
     ean:         p.ean         || null,
     preco_venda: p.preco_venda || 0,
-    preco_custo: p.custo       || 0,
+    preco_custo: p.preco_custo || 0,
     unidade:     p.unidade     || 'UN',
     categoria:   p.categoria   || null,
     marca:       p.marca       || null,
-    foto_url:    p.imagem_url  || null,
+    foto_url:    p.foto_url    || null,
     ativo:          p.ativo !== false,
     disponivel_pdv: p.disponivel_pdv !== false,
-    permite_fracao: p.unidade === 'KG' || p.unidade === 'LT' || p.unidade === 'MT',
-    updated_at:     p.updated_date || new Date().toISOString(),
+    permite_fracao: !!p.permite_fracao || p.unidade === 'KG' || p.unidade === 'LT' || p.unidade === 'MT',
+    updated_at:     p.updated_at || new Date().toISOString(),
     estoque:        p.estoque      || 0,
     estoque_minimo: p.estoque_minimo || 0,
-    // Campos fiscais do Base44
+    // Campos fiscais
     ncm:       p.ncm       || null,
     cfop:      p.cfop      || null,
-    icms_cst:  p.csosn     || p.cst_icms || null,
-    icms_origem: parseInt(p.origem) || 0,
-    pis_cst:   p.cst_pis   || null,
-    cofins_cst:p.cst_cofins|| null,
+    icms_cst:  p.icms_cst  || null,
+    icms_origem: p.icms_origem ?? 0,
+    pis_cst:   p.pis_cst   || null,
+    cofins_cst:p.cofins_cst|| null,
   };
 }
 
@@ -171,7 +171,7 @@ function mapCliente(c) {
     saldo_devedor:    c.saldo_devedor   || 0,
     status_credito:   c.status_credito  || 'liberado',
     permite_carteira: c.permite_carteira || false,
-    updated_at:       c.updated_date    || new Date().toISOString(),
+    updated_at:       c.updated_at      || new Date().toISOString(),
   };
 }
 
@@ -234,7 +234,7 @@ async function syncDownVendedores() {
   try {
     const vendedores = await api.sincronizarVendedores();
     if (vendedores.length > 0) {
-      db.vendedores.upsertBatch(vendedores);
+      db.vendedores.upsertBatch(vendedores.map(v => ({ ...v, updated_date: v.updated_at || v.updated_date || null })));
       console.log(`[SYNC] Vendedores: ${vendedores.length} sincronizados`);
     }
   } catch (err) {
