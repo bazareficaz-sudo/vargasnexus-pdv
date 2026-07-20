@@ -13,10 +13,11 @@
   --text: #f0ede8;
   --text2: #9a9590;
   --text3: #5a5650;
-  --accent: #e8c547;
-  --accent2: #f5d660;
-  --accent-bg: #2a2200;
-  --accent-border: #3d3200;
+  --accent: #2e8eff;
+  --accent2: #29b6f6;
+  --accent-bg: #0d1f3d;
+  --accent-border: #163a66;
+  --accent-grad: linear-gradient(135deg, #1a3a8f 0%, #1565c0 55%, #00b4d8 100%);
   --green: #4ade80;
   --green-bg: #0d2016;
   --green-border: #1a3a26;
@@ -48,10 +49,11 @@
   --text:        #1a1814;
   --text2:       #5a554e;
   --text3:       #9a9590;
-  --accent:      #b8921a;
-  --accent2:     #d4a820;
-  --accent-bg:   #fdf6dc;
-  --accent-border: #f0dc8a;
+  --accent:      #1565c0;
+  --accent2:     #1e88e5;
+  --accent-bg:   #e8f1fc;
+  --accent-border: #bcdcfa;
+  --accent-grad: linear-gradient(135deg, #1a3a8f 0%, #1565c0 55%, #00b4d8 100%);
   --green:       #16a34a;
   --green-bg:    #dcfce7;
   --green-border:#bbf7d0;
@@ -98,6 +100,11 @@ html, body, #app {
   position: relative;
   z-index: 100;
 }
+.titlebar::after {
+  content: '';
+  position: absolute; left: 0; right: 0; bottom: -1px; height: 2px;
+  background: var(--accent-grad); opacity: .8;
+}
 .titlebar-left, .titlebar-right {
   display: flex;
   align-items: center;
@@ -107,8 +114,8 @@ html, body, #app {
 .titlebar-center { flex: 1; text-align: center; font-size: 12px; color: var(--text3); }
 .app-logo {
   width: 22px; height: 22px;
-  background: var(--accent);
-  color: #0f0f0f;
+  background: var(--accent-grad);
+  color: #fff;
   border-radius: 5px;
   display: flex; align-items: center; justify-content: center;
   font-family: 'Syne', sans-serif;
@@ -221,8 +228,8 @@ html, body, #app {
   font-family: 'DM Sans', sans-serif; transition: all .12s;
   white-space: nowrap;
 }
-.btn-primary { background: var(--accent); color: #0f0f0f; }
-.btn-primary:hover { background: var(--accent2); transform: translateY(-1px); }
+.btn-primary { background: var(--accent-grad); color: #fff; box-shadow: 0 2px 10px rgba(21,101,192,.35); }
+.btn-primary:hover { box-shadow: 0 4px 16px rgba(0,180,216,.45); transform: translateY(-1px); }
 .btn-ghost { background: transparent; color: var(--text2); border: 1px solid var(--border2); }
 .btn-ghost:hover { background: var(--bg3); color: var(--text); border-color: var(--border3); }
 .btn-danger { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border); }

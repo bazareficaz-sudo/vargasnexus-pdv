@@ -4,15 +4,17 @@ const WA_ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" wid
 const Login = {
   render() {
     return `
-<div style="height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg)">
+<div style="height:100vh;display:flex;align-items:center;justify-content:center;background:
+  radial-gradient(ellipse 900px 600px at 50% -10%, rgba(21,101,192,.18), transparent 60%),
+  var(--bg)">
   <div style="width:360px">
     <div style="text-align:center;margin-bottom:36px">
-      <img src="assets/logo.svg" alt="Sistema Vargas"
-        style="width:260px;max-width:100%;height:auto;margin:0 auto 12px;display:block">
+      <img src="assets/logo.png" alt="VargasNexus"
+        style="width:280px;max-width:100%;height:auto;margin:0 auto 16px;display:block;filter:drop-shadow(0 4px 20px rgba(0,140,220,.25))">
       <div style="color:var(--text2);font-size:13px;margin-top:4px">Terminal de Vendas · PDV</div>
       <div id="login-version" style="color:var(--text3);font-size:11px;margin-top:4px">v…</div>
     </div>
-    <div class="card">
+    <div class="card" style="border-top:2px solid transparent;border-image:var(--accent-grad) 1;box-shadow:var(--shadow-lg)">
       <div class="form-group">
         <label class="form-label">Operador</label>
         <input class="input" id="l-user" placeholder="login do operador" autocomplete="off">
