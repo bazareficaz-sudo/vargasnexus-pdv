@@ -1,6 +1,6 @@
 {
   "name": "pdv-vargas",
-  "version": "1.7.20",
+  "version": "1.8.0",
   "description": "VargasNexus PDV — Terminal de Vendas Offline-First",
   "main": "src/main/main.js",
   "scripts": {
@@ -38,7 +38,7 @@
     "publish": {
       "provider": "github",
       "owner": "bazareficaz-sudo",
-      "repo": "sistemavargas",
+      "repo": "vargasnexus-pdv",
       "releaseType": "release"
     },
     "files": [

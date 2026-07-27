@@ -56,7 +56,7 @@ async function sincronizarProdutos(ultimaSync = null, onBatch = null) {
   const todos = [];
 
   while (true) {
-    let query = supabase.from('produtos').select('*').eq('ativo', true).range(from, from + pageSize - 1).order('nome');
+    let query = supabase.from('produtos').select('*').eq('ativo', true).range(from, from + pageSize - 1).order('nome').order('id');
     if (empresaId) query = query.eq('empresa_id', empresaId);
     if (ultimaSync) query = query.gte('updated_at', ultimaSync);
 
@@ -176,7 +176,7 @@ async function registrarVenda(venda) {
 
 async function editarVenda(remoteId, itens, totais, forma_pagamento) {
   const itensPayload = itens.map(i => ({
-    produto_id: i.produto_id,
+    produto_id: i.produto_remote_id || i.produto_id,
     produto_nome: i.produto_nome,
     produto_sku: i.produto_sku || null,
     quantidade: i.quantidade,
@@ -295,7 +295,7 @@ async function sincronizarClientes(ultimaSync = null) {
   const clientes = [];
 
   while (true) {
-    let query = supabase.from('clientes').select('*').eq('ativo', true).range(from, from + pageSize - 1).order('nome');
+    let query = supabase.from('clientes').select('*').eq('ativo', true).range(from, from + pageSize - 1).order('nome').order('id');
     if (empresaId && !usuario.unificar_estoque) query = query.eq('empresa_id', empresaId);
     if (ultimaSync) query = query.gte('updated_at', ultimaSync);
     const { data, error } = await query;
@@ -506,6 +506,30 @@ async function sincronizarConfigTermometro() {
   return null;
 }
 
+// ─── Impressão em rede (URL do tunnel do terminal-caixa) ──────────────
+
+async function atualizarUrlImpressao(url) {
+  const usuario = store.get('auth.usuario') || {};
+  const empresaId = usuario.empresa_estoque_id || usuario.empresa_id;
+  if (!empresaId) return;
+  const { error } = await supabase.from('pdv_impressao').upsert({
+    empresa_id: empresaId,
+    print_server_url: url,
+    terminal_id: store.get('config.terminal_id') || null,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: 'empresa_id' });
+  if (error) console.warn('[IMPRESSAO] Erro ao publicar URL:', error.message);
+}
+
+async function buscarUrlImpressao() {
+  const usuario = store.get('auth.usuario') || {};
+  const empresaId = usuario.empresa_estoque_id || usuario.empresa_id;
+  if (!empresaId) return null;
+  const { data, error } = await supabase.from('pdv_impressao').select('print_server_url').eq('empresa_id', empresaId).maybeSingle();
+  if (error) { console.warn('[IMPRESSAO] Erro ao buscar URL:', error.message); return null; }
+  return data?.print_server_url || null;
+}
+
 // ─── Autenticação PDV ─────────────────────────────────────────────────
 
 async function autenticarPDV(login, senha) {
@@ -606,6 +630,8 @@ module.exports = {
   listarFaltasRemoto,
   sincronizarConfigDesconto,
   sincronizarConfigTermometro,
+  atualizarUrlImpressao,
+  buscarUrlImpressao,
   autenticarPDV,
 
   // Fora do escopo desta fase — stubs

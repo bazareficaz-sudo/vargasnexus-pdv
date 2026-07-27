@@ -273,7 +273,7 @@ ipcMain.handle('vendas:editar', async (_, id, novosItens, novosDados) => {
   // Re-sincronizar com Base44 se tiver remote_id
   if (vendaAtualizada?.remote_id) {
     try {
-      await api.editarVenda(vendaAtualizada.remote_id, novosItens, novosDados, novosDados.forma_pagamento);
+      await api.editarVenda(vendaAtualizada.remote_id, vendaAtualizada.itens, novosDados, novosDados.forma_pagamento);
     } catch (err) {
       console.warn('[VENDA] Erro ao sincronizar edição:', err.message);
     }
@@ -940,6 +940,11 @@ ipcMain.handle('entregas:getById', (_, id) => db.entregas.getById(id));
 ipcMain.handle('tunnel:start', async (_, porta) => {
   return tunnel.start(porta || store.get('config.print_server_porta') || 3001, (status) => {
     mainWindow?.webContents.send('tunnel:status', status);
+    // Publica a URL nova pro Supabase — os terminais de venda consultam
+    // isso a cada sincronização e se auto-configuram, sem digitar nada.
+    if (status.estado === 'ativo' && status.url) {
+      api.atualizarUrlImpressao(status.url).catch(() => {});
+    }
   });
 });
 ipcMain.handle('tunnel:stop', () => { tunnel.stop(); return { ok: true }; });

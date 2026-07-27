@@ -408,7 +408,9 @@ async function listarImpressoras(win) {
   }
 }
 
-// ─── HTML A4 para orçamento (diálogo de impressão do Windows) ───────────────
+// ─── HTML de orçamento — mesmo formato térmico do cupom de venda ────────────
+// (o antigo era em layout A4/Arial, impresso numa impressora térmica de 80mm
+// — o driver espremia tudo pra caber e ficava ilegível)
 
 function gerarHtmlOrcamento(dados) {
   const { numero, empresa_nome = '', vendedor_nome = '', cliente_nome = '',
@@ -428,99 +430,82 @@ function gerarHtmlOrcamento(dados) {
   const formaTxt = formaMap[forma_pagamento] || forma_pagamento || '—';
   const descItens = itens.reduce((s, i) => s + (Number(i.desconto) || 0), 0);
 
-  const linhasItens = itens.map((i, idx) => `
-    <tr class="${idx % 2 === 0 ? 'par' : ''}">
-      <td>${i.produto_nome || ''}</td>
-      <td class="c">${Number(i.quantidade)}</td>
-      <td class="r">R$ ${fmt(i.preco_unitario)}</td>
-      <td class="r" style="color:#c0392b">${Number(i.desconto) > 0 ? '− R$ ' + fmt(i.desconto) : '—'}</td>
-      <td class="r fw">R$ ${fmt(i.total)}</td>
-    </tr>`).join('');
+  const linhasItens = itens.map(i => {
+    const qtd  = Number(i.quantidade || 0);
+    const unit = Number(i.preco_unitario || 0);
+    const tot  = Number(i.total || 0);
+    return `
+      <tr><td colspan="2" class="prod-nome">${i.produto_nome || ''}</td></tr>
+      <tr>
+        <td class="prod-calc">${qtd} × R$ ${fmt(unit)}${Number(i.desconto) > 0 ? `<br><span class="desc-tag">desconto: − R$ ${fmt(i.desconto)}</span>` : ''}</td>
+        <td class="right prod-total">R$ ${fmt(tot)}</td>
+      </tr>`;
+  }).join('');
 
   return `<!DOCTYPE html>
 <html lang="pt-BR">
 <head>
 <meta charset="UTF-8">
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: Arial, sans-serif; font-size: 11pt; color: #222; padding: 20mm 18mm; }
-  h1 { font-size: 22pt; color: #2c7a4b; margin-bottom: 2px; }
-  .empresa { font-size: 13pt; font-weight: bold; color: #333; }
-  .subtitulo { font-size: 9pt; color: #777; margin-bottom: 14px; }
-  hr { border: none; border-top: 1.5px solid #ddd; margin: 12px 0; }
-  hr.thick { border-top: 2.5px solid #2c7a4b; }
-  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
-  .bloco { background: #f7f7f7; border-radius: 6px; padding: 10px 14px; }
-  .bloco .label { font-size: 8pt; text-transform: uppercase; letter-spacing: .5px; color: #888; margin-bottom: 3px; }
-  .bloco .val { font-size: 11pt; font-weight: bold; }
-  .bloco .sub { font-size: 9pt; color: #666; }
-  table { width: 100%; border-collapse: collapse; margin-top: 8px; }
-  thead tr { background: #2c7a4b; color: #fff; }
-  thead th { padding: 7px 10px; font-size: 9pt; text-align: left; }
-  th.c, td.c { text-align: center; }
-  th.r, td.r { text-align: right; }
-  td { padding: 6px 10px; font-size: 10pt; border-bottom: 1px solid #eee; }
-  tr.par td { background: #fafafa; }
-  .fw { font-weight: bold; }
-  .totals { margin-top: 12px; }
-  .totals table { width: 260px; margin-left: auto; }
-  .totals td { border: none; padding: 3px 6px; font-size: 10.5pt; }
-  .totals .total-row td { font-size: 14pt; font-weight: bold; color: #2c7a4b; border-top: 2px solid #2c7a4b; padding-top: 6px; }
-  .obs { background: #fffbe6; border: 1px solid #f0d060; border-radius: 6px; padding: 10px 14px; font-size: 10pt; color: #555; margin-top: 14px; }
-  .rodape { margin-top: 20px; text-align: center; font-size: 8.5pt; color: #999; border-top: 1px solid #ddd; padding-top: 10px; }
-  @media print { body { padding: 10mm; } }
+  @page { size: 72mm auto; margin: 4mm 3mm; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 12pt; color: #000; background: #fff;
+    width: 72mm; margin: 0; padding: 0;
+  }
+  .center { text-align: center; }
+  .right  { text-align: right; }
+  .bold   { font-weight: bold; }
+  .sm     { font-size: 10pt; }
+  .lg     { font-size: 17pt; }
+  .sep    { border: none; border-top: 1px dashed #000; margin: 8px 0; }
+  .sep2   { border: none; border-top: 2px solid #000; margin: 8px 0; }
+  table   { width: 100%; border-collapse: collapse; }
+  td      { vertical-align: top; padding: 2px 0; }
+  .prod-nome  { font-size: 13pt; font-weight: bold; padding-top: 8px; }
+  .prod-calc  { font-size: 11pt; color: #333; }
+  .prod-total { font-size: 13pt; font-weight: bold; }
+  .desc-tag   { color: #c0392b; font-size: 10pt; }
+  .label-row td { font-size: 11pt; padding-top: 3px; }
+  .total-row td { font-size: 18pt; font-weight: bold; padding-top: 10px; }
 </style>
 </head>
 <body>
-  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px">
-    <div>
-      <div class="empresa">${empresa_nome}</div>
-      <h1>ORÇAMENTO #${numero}</h1>
-      <div class="subtitulo">Emitido em ${data} · Válido até ${venc} · Vendedor: ${vendedor_nome || '—'}</div>
-    </div>
-  </div>
+  <div class="center bold lg">${empresa_nome || 'ORÇAMENTO'}</div>
+  <div class="center bold" style="font-size:14pt;letter-spacing:1px;margin-top:4px">ORÇAMENTO #${numero}</div>
+  <div class="center sm" style="margin-top:4px">Emitido em ${data} · Válido até ${venc}</div>
+  ${vendedor_nome ? `<div class="center sm">Vendedor: ${vendedor_nome}</div>` : ''}
+  ${cliente_nome  ? `<div class="center sm">Cliente: ${cliente_nome}</div>` : ''}
+  ${cliente_telefone ? `<div class="center sm">${cliente_telefone}</div>` : ''}
 
-  <hr class="thick">
+  <hr class="sep2">
 
-  <div class="grid2">
-    <div class="bloco">
-      <div class="label">Cliente</div>
-      <div class="val">${cliente_nome || 'Sem cliente'}</div>
-      ${cliente_telefone ? `<div class="sub">${cliente_telefone}</div>` : ''}
-    </div>
-    <div class="bloco">
-      <div class="label">Forma de Pagamento</div>
-      <div class="val">${formaTxt}</div>
-      <div class="sub">Validade: ${venc}</div>
-    </div>
-  </div>
+  <table>${linhasItens}</table>
+
+  <hr class="sep">
 
   <table>
-    <thead>
-      <tr>
-        <th>Produto</th>
-        <th class="c">Qtd</th>
-        <th class="r">Unit.</th>
-        <th class="r">Desconto</th>
-        <th class="r">Total</th>
-      </tr>
-    </thead>
-    <tbody>${linhasItens}</tbody>
+    ${(descItens > 0 || Number(desconto) > 0) ? `
+    <tr class="label-row"><td>Subtotal</td><td class="right">R$ ${fmt(subtotal)}</td></tr>
+    ${descItens > 0 ? `<tr class="label-row"><td>Desconto nos itens</td><td class="right desc-tag">− R$ ${fmt(descItens)}</td></tr>` : ''}
+    ${Number(desconto) > 0 ? `<tr class="label-row"><td>Desconto geral</td><td class="right desc-tag">− R$ ${fmt(desconto)}</td></tr>` : ''}
+    ` : ''}
+    <tr class="total-row"><td>TOTAL</td><td class="right">R$ ${fmt(total)}</td></tr>
   </table>
 
-  <div class="totals">
-    <table>
-      ${descItens > 0 ? `<tr><td>Desconto em itens</td><td class="r" style="color:#c0392b">− R$ ${fmt(descItens)}</td></tr>` : ''}
-      ${Number(desconto) > 0 ? `<tr><td>Desconto geral</td><td class="r" style="color:#c0392b">− R$ ${fmt(desconto)}</td></tr>` : ''}
-      <tr class="total-row"><td>TOTAL</td><td class="r">R$ ${fmt(total)}</td></tr>
-    </table>
+  <hr class="sep">
+
+  <div class="sm" style="margin-top:2px">
+    <strong>Forma de pagamento:</strong> ${formaTxt}<br>
+    <strong>Validade da proposta:</strong> até ${venc}
   </div>
 
-  ${observacao ? `<div class="obs">📝 ${observacao}</div>` : ''}
+  ${observacao ? `<hr class="sep"><div class="sm">📝 ${observacao}</div>` : ''}
 
-  <div class="rodape">
-    ${empresa_nome} · Orçamento válido até ${venc} · Sujeito a alteração de preços sem aviso prévio.
-  </div>
+  <hr class="sep">
+  <div class="center sm" style="margin-top:6px">Sujeito a alteração de preços sem aviso prévio.</div>
+  <div class="center bold" style="margin-top:6px">Obrigado pela preferência!</div>
 </body>
 </html>`;
 }

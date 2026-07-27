@@ -9,6 +9,7 @@ const PDV = (() => {
   let dadosEntrega = null;  // preenchido na etapa "Agendar Entrega"
   let modoEdicao = null;    // { vendaId, numero, remote_id } — null = venda nova
   let _ultimaVenda = null;  // { numero, remoteId, venda } — usado pelos botões do comprovante
+  let vendasEmEspera = [];  // atendimentos pausados — persistidos em config.pdv.vendasEmEspera
 
   // ─── Render ────────────────────────────────────────────────────
   function render() {
@@ -16,6 +17,7 @@ const PDV = (() => {
 <div class="pdv-layout">
   <!-- Coluna esquerda: busca + produto -->
   <div class="pdv-left">
+    <div class="pdv-espera-bar" id="pdv-espera-bar" style="display:none"></div>
     <div class="pdv-search-wrap">
       <input class="input input-lg pdv-search" id="pdv-search"
         placeholder="🔍  F2 · Nome, SKU ou EAN do produto..."
@@ -126,6 +128,7 @@ const PDV = (() => {
         ${[
           ['F2', 'Buscar produto'],
           ['F3', 'Selecionar cliente'],
+          ['F7', 'Colocar em espera'],
           ['F8', 'Limpar carrinho'],
           ['F9', 'Pagamento / Finalizar'],
           ['F12', 'Anotar falta (na busca)'],
@@ -146,11 +149,12 @@ const PDV = (() => {
 
     <!-- Botões de ação -->
     <div class="pdv-actions">
-      <button class="btn btn-ghost" onclick="PDV.clearCart()" style="flex:1">🗑 Limpar</button>
-      <button class="btn btn-ghost" id="btn-orc" onclick="PDV.salvarComoOrcamento()" style="flex:1" disabled title="Salvar como orçamento sem baixar estoque">
-        📝 Orçamento
+      <button class="btn btn-ghost pdv-action-icon" onclick="PDV.colocarEmEspera()" title="Colocar em espera (F7)">⏸</button>
+      <button class="btn btn-ghost pdv-action-icon" onclick="PDV.clearCart()" title="Limpar carrinho (F8)">🗑</button>
+      <button class="btn btn-ghost pdv-action-icon" id="btn-orc" onclick="PDV.salvarComoOrcamento()" disabled title="Salvar como orçamento sem baixar estoque">
+        📝
       </button>
-      <button class="btn btn-primary btn-lg" id="btn-finalizar" onclick="PDV.finalizarVenda()" style="flex:2" disabled>
+      <button class="btn btn-primary btn-lg" id="btn-finalizar" onclick="PDV.finalizarVenda()" style="flex:1" disabled>
         F9 — Finalizar
       </button>
     </div>
@@ -268,6 +272,28 @@ const PDV = (() => {
   padding:16px 20px;border-top:1px solid var(--border);
   display:flex;gap:8px;flex-shrink:0
 }
+.pdv-actions .btn{min-width:0}
+.pdv-actions .btn-lg{padding:10px 8px;font-size:13px;overflow:hidden;text-overflow:ellipsis}
+.pdv-action-icon{flex:0 0 auto;width:38px;padding:0!important;font-size:15px}
+
+.pdv-espera-bar{
+  display:flex;gap:6px;align-items:center;flex-wrap:wrap;
+  padding:8px 16px;border-bottom:1px solid var(--border);
+  background:var(--bg2);flex-shrink:0
+}
+.pdv-espera-label{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text3);margin-right:2px}
+.pdv-espera-chip{
+  display:flex;align-items:center;gap:6px;
+  background:var(--accent-bg);border:1px solid var(--accent-border);color:var(--accent);
+  border-radius:20px;padding:4px 6px 4px 12px;font-size:12px;cursor:pointer;
+  transition:transform .1s
+}
+.pdv-espera-chip:hover{transform:translateY(-1px)}
+.pdv-espera-chip .x{
+  width:16px;height:16px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  background:rgba(0,0,0,.15);font-size:10px;line-height:1
+}
+.pdv-espera-chip .x:hover{background:var(--red);color:#fff}
 </style>`;
   }
 
@@ -613,6 +639,97 @@ const PDV = (() => {
     renderCart();
     updateTotals();
     renderClientBar();
+  }
+
+  // ─── Vendas em espera (pausar atendimento sem perder o pedido) ────
+  function _snapshotEspera(label, numero) {
+    return {
+      id: 'espera_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+      numero, label,
+      cart: JSON.parse(JSON.stringify(cart)),
+      selectedClient, vendedorAtual, dadosEntrega, payMethod, valorPago, modoEdicao,
+      desconto: getDesconto(),
+      criadoEm: new Date().toISOString(),
+    };
+  }
+
+  async function _persistirEsperas() {
+    try { await window.pdv.config.set('pdv.vendasEmEspera', vendasEmEspera); } catch {}
+  }
+
+  async function carregarEsperas() {
+    try { vendasEmEspera = (await window.pdv.config.get('pdv.vendasEmEspera')) || []; } catch { vendasEmEspera = []; }
+    renderEspera();
+  }
+
+  async function colocarEmEspera(silencioso = false) {
+    if (cart.length === 0) {
+      if (!silencioso) Toast.show('Carrinho vazio — nada para colocar em espera', 'warning');
+      return;
+    }
+    const numero = vendasEmEspera.reduce((max, v) => Math.max(max, v.numero || 0), 0) + 1;
+    vendasEmEspera.push(_snapshotEspera(`Atendimento ${numero}`, numero));
+    await _persistirEsperas();
+    clearCart();
+    renderEspera();
+    if (!silencioso) Toast.show('Atendimento colocado em espera', 'info');
+  }
+
+  function renderEspera() {
+    const bar = document.getElementById('pdv-espera-bar');
+    if (!bar) return;
+    if (vendasEmEspera.length === 0) { bar.style.display = 'none'; bar.innerHTML = ''; return; }
+    bar.style.display = 'flex';
+    bar.innerHTML = `<span class="pdv-espera-label">⏸ Em espera</span>` + vendasEmEspera.map(v => `
+      <span class="pdv-espera-chip" onclick="PDV.retomarEspera('${v.id}')" title="Retomar ${v.label}">
+        ${v.label}${v.selectedClient ? ' · ' + v.selectedClient.nome.split(' ')[0] : ''}
+        <span class="x" onclick="event.stopPropagation();PDV.descartarEspera('${v.id}')" title="Descartar">✕</span>
+      </span>`).join('');
+  }
+
+  async function retomarEspera(id) {
+    const v = vendasEmEspera.find(x => x.id === id);
+    if (!v) return;
+    // Guarda o atendimento atual em espera também, se houver, em vez de perdê-lo
+    if (cart.length > 0) await colocarEmEspera(true);
+    vendasEmEspera = vendasEmEspera.filter(x => x.id !== id);
+    await _persistirEsperas();
+
+    cart = v.cart || [];
+    selectedClient = v.selectedClient || null;
+    vendedorAtual = v.vendedorAtual || null;
+    dadosEntrega = v.dadosEntrega || null;
+    payMethod = v.payMethod || 'dinheiro';
+    valorPago = v.valorPago || 0;
+    modoEdicao = v.modoEdicao || null;
+
+    const elDesc = document.getElementById('pdv-desconto');
+    if (elDesc) elDesc.value = v.desconto || 0;
+
+    const banner = document.getElementById('pdv-edicao-banner');
+    const label  = document.getElementById('pdv-edicao-label');
+    if (modoEdicao) {
+      if (banner) banner.style.display = 'flex';
+      if (label)  label.textContent = `✏️ Editando Venda #${modoEdicao.numero}`;
+    } else if (banner) {
+      banner.style.display = 'none';
+    }
+
+    renderCart();
+    updateTotals();
+    renderClientBar();
+    renderEspera();
+    Toast.show(`${v.label} retomado`, 'success');
+  }
+
+  async function descartarEspera(id) {
+    const v = vendasEmEspera.find(x => x.id === id);
+    if (!v) return;
+    const ok = await window.pdv.dialog.confirm(`Descartar "${v.label}"? Os itens desse atendimento serão perdidos.`);
+    if (!ok) return;
+    vendasEmEspera = vendasEmEspera.filter(x => x.id !== id);
+    await _persistirEsperas();
+    renderEspera();
   }
 
   function renderCart() {
@@ -1770,6 +1887,13 @@ const PDV = (() => {
         return;
       }
 
+      // ── F7: colocar em espera ──────────────────────────────────
+      if (e.key === 'F7') {
+        e.preventDefault();
+        if (!modalAberto) colocarEmEspera();
+        return;
+      }
+
       // ── ESC no comprovante: fecha e volta para busca ──────────
       if (e.key === 'Escape' && modalAberto) {
         const temComprovante = document.querySelector('.modal-actions .btn-primary[onclick="Modal.close()"]');
@@ -1972,6 +2096,7 @@ const PDV = (() => {
     initKeyboard();
     initCursorHide();
     renderClientBar();
+    carregarEsperas();
     // Restaurar carrinho se houver itens da sessão anterior
     if (cart.length > 0) {
       renderCart();
@@ -1991,5 +2116,6 @@ const PDV = (() => {
     _abrirNovoCliente, _salvarNovoCliente,
     _reimprimir, _enviarImpressao, _emitirNFCeComprovante,
     verContaCliente, _receberCredito,
-    salvarComoOrcamento, carregarDoOrcamento };
+    salvarComoOrcamento, carregarDoOrcamento,
+    colocarEmEspera, retomarEspera, descartarEspera };
 })();

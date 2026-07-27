@@ -93,6 +93,7 @@ async function syncNow(win) {
     await syncDownContasReceber();
     await syncDownConfigDesconto();
     await syncDownConfigTermometro();
+    await syncDownUrlImpressao();
     await syncDownFaltas();
     await syncDownOrcamentos();
 
@@ -180,10 +181,15 @@ async function syncDownProdutos() {
 
   let totalSalvos = 0;
 
-  // Sem filtro incremental: sempre baixa todos os produtos.
-  // Movimentações de estoque no Base44 não atualizam updated_date,
-  // então qualquer filtro por data perderia alterações de estoque/preço.
-  await api.sincronizarProdutos(null, (lote, total) => {
+  // Sync incremental por updated_at — o Supabase tem um trigger que mantém
+  // esse campo em dia em qualquer UPDATE (entrada, inventário, preço, PDV
+  // etc.), então dá pra confiar nele. Se o banco local estiver vazio
+  // (primeira vez, ou depois de um reset), força sync completo.
+  const totalLocal = db.produtos.total();
+  const ultimaSync = totalLocal > 0 ? store.get('sync.ultima_sync_produtos') : null;
+  const inicioSync = new Date().toISOString();
+
+  await api.sincronizarProdutos(ultimaSync, (lote, total) => {
     db.produtos.upsertBatch(lote.map(mapProduto));
     totalSalvos = total;
     if (total % 500 === 0 || lote.length < 200) {
@@ -191,8 +197,8 @@ async function syncDownProdutos() {
     }
   });
 
-  store.set('sync.ultima_sync_produtos', new Date().toISOString());
-  console.log(`[SYNC] Produtos: ${totalSalvos} sincronizados`);
+  store.set('sync.ultima_sync_produtos', inicioSync);
+  console.log(`[SYNC] Produtos: ${totalSalvos} sincronizados${ultimaSync ? ' (incremental)' : ' (completo)'}`);
 }
 
 async function syncForcarProdutos() {
@@ -293,6 +299,21 @@ async function syncDownOrcamentos() {
     }
   } catch (err) {
     console.warn('[SYNC] Orçamentos: erro (não crítico):', err.message);
+  }
+}
+
+// Terminal-caixa não precisa disso — ele imprime local e é quem publica a
+// URL. Terminais de venda buscam a URL publicada e se auto-configuram.
+async function syncDownUrlImpressao() {
+  if (store.get('config.print_server_ativo') === true) return;
+  try {
+    const url = await api.buscarUrlImpressao();
+    if (url && url !== store.get('config.print_server_ip')) {
+      store.set('config.print_server_ip', url);
+      console.log('[SYNC] URL de impressão atualizada:', url);
+    }
+  } catch (err) {
+    console.warn('[SYNC] URL de impressão: erro (não crítico):', err.message);
   }
 }
 

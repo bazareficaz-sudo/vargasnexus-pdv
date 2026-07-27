@@ -1214,7 +1214,15 @@ const vendas = {
       WHERE v.id = ?
     `).get(id);
     if (!venda) return null;
-    venda.itens = db.prepare('SELECT * FROM venda_itens WHERE venda_id = ?').all(id);
+    // produto_id em venda_itens é o id local (SQLite) — resolve o remote_id real
+    // do produto (Supabase) aqui, do mesmo jeito que já é feito para cliente_remote_id
+    // acima e para orcamentos.getById mais abaixo neste arquivo.
+    venda.itens = db.prepare(`
+      SELECT vi.*, p.remote_id as produto_remote_id
+      FROM venda_itens vi
+      LEFT JOIN produtos p ON p.id = vi.produto_id
+      WHERE vi.venda_id = ?
+    `).all(id);
     return venda;
   },
 
