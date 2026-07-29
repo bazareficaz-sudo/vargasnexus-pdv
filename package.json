@@ -1,6 +1,6 @@
 {
   "name": "pdv-vargas",
-  "version": "1.8.0",
+  "version": "1.8.1",
   "description": "VargasNexus PDV — Terminal de Vendas Offline-First",
   "main": "src/main/main.js",
   "scripts": {
