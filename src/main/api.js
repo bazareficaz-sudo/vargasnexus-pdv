@@ -82,6 +82,32 @@ async function getProduto(id) {
   return data;
 }
 
+// Produto cadastrado no balcão (tela "Novo Produto") — ainda não existe no
+// Supabase. Sem isso, o produto nunca ganha remote_id e qualquer venda dele
+// vira um item "órfão" no Supabase (produto_id sem correspondência real).
+async function criarProdutoRemoto(produto) {
+  const usuario = store.get('auth.usuario') || {};
+  const empresaId = usuario.empresa_estoque_id || usuario.empresa_id;
+  const { data, error } = await supabase.from('produtos').insert({
+    empresa_id: empresaId,
+    nome: produto.nome,
+    sku: produto.sku || null,
+    ean: produto.ean || null,
+    preco_venda: produto.preco_venda || 0,
+    preco_custo: produto.preco_custo || 0,
+    unidade: produto.unidade || 'UN',
+    categoria: produto.categoria || null,
+    marca: produto.marca || null,
+    foto_url: produto.foto_url || null,
+    ativo: produto.ativo !== false,
+    disponivel_pdv: true,
+    permite_fracao: !!produto.permite_fracao,
+    estoque: produto.estoque || 0,
+  }).select('id').single();
+  if (error) throw new Error(error.message);
+  return { id: data.id };
+}
+
 async function atualizarProduto(remoteId, dados) {
   const payload = {};
   if (dados.ncm !== undefined) payload.ncm = dados.ncm;
@@ -113,7 +139,12 @@ async function registrarVenda(venda) {
   const usuario = store.get('auth.usuario') || {};
   const empresaId = usuario.empresa_estoque_id || usuario.empresa_id || venda.empresa_id;
   const itensPayload = (venda.itens || []).map(i => ({
-    produto_id: i.produto_remote_id || i.produto_id,
+    // Nunca usar i.produto_id (id local do SQLite) como fallback — isso
+    // manda um UUID que parece válido mas não existe no Supabase, gerando
+    // um item "órfão" sem bloquear o resto da venda. Sem remote_id ainda
+    // resolvido (produto criado offline, sync não rodou), fica null — o
+    // sistema web já trata null como "sem produto vinculado" corretamente.
+    produto_id: i.produto_remote_id || null,
     produto_nome: i.produto_nome,
     produto_sku: i.produto_sku || null,
     quantidade: i.quantidade,
@@ -176,7 +207,12 @@ async function registrarVenda(venda) {
 
 async function editarVenda(remoteId, itens, totais, forma_pagamento) {
   const itensPayload = itens.map(i => ({
-    produto_id: i.produto_remote_id || i.produto_id,
+    // Nunca usar i.produto_id (id local do SQLite) como fallback — isso
+    // manda um UUID que parece válido mas não existe no Supabase, gerando
+    // um item "órfão" sem bloquear o resto da venda. Sem remote_id ainda
+    // resolvido (produto criado offline, sync não rodou), fica null — o
+    // sistema web já trata null como "sem produto vinculado" corretamente.
+    produto_id: i.produto_remote_id || null,
     produto_nome: i.produto_nome,
     produto_sku: i.produto_sku || null,
     quantidade: i.quantidade,
@@ -607,6 +643,7 @@ module.exports = {
   sincronizarProdutos,
   getProduto,
   atualizarProduto,
+  criarProdutoRemoto,
   sincronizarEstoque,
   registrarVenda,
   editarVenda,

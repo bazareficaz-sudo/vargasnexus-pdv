@@ -521,9 +521,36 @@ async function recuperarVendasPendentes() {
   }
 }
 
-// ─── Upload: produtos alterados localmente → Base44 ──────────────
+// ─── Upload: produtos alterados/criados localmente → Supabase ─────
 async function syncUpProdutos() {
-  const pendentes = db.db().prepare(`
+  const dbb = db.db();
+  const now = new Date().toISOString();
+
+  // Produtos criados no balcão (sem remote_id ainda) — precisam existir no
+  // Supabase antes que uma venda desse produto possa referenciá-lo direito.
+  const novos = dbb.prepare(`
+    SELECT id, nome, sku, ean, preco_venda, preco_custo, unidade, categoria, marca, foto_url, ativo, permite_fracao
+    FROM produtos
+    WHERE sync_status = 'pending' AND remote_id IS NULL
+    LIMIT 50
+  `).all();
+
+  let criados = 0;
+  for (const p of novos) {
+    try {
+      const res = await api.criarProdutoRemoto(p);
+      dbb.prepare(`UPDATE produtos SET remote_id = ?, sync_status = 'synced', synced_at = ? WHERE id = ?`)
+        .run(res.id, now, p.id);
+      criados++;
+    } catch (err) {
+      console.error(`[SYNC] Produto "${p.nome}" erro ao criar no Supabase:`, err.message);
+      dbb.prepare(`UPDATE produtos SET sync_status = 'error' WHERE id = ?`).run(p.id);
+    }
+  }
+  if (criados) console.log(`[SYNC] Produtos: ${criados} criados no Supabase`);
+
+  // Produtos já existentes no Supabase com edição local pendente (fiscal, preço etc.)
+  const pendentes = dbb.prepare(`
     SELECT id, remote_id, nome, ncm, cfop, icms_cst, icms_origem,
            pis_cst, cofins_cst, disponivel_pdv, preco_venda, preco_custo,
            categoria, marca, unidade
@@ -534,22 +561,21 @@ async function syncUpProdutos() {
 
   if (!pendentes.length) return;
 
-  console.log(`[SYNC] Produtos: enviando ${pendentes.length} alterações para o Base44`);
-  const now = new Date().toISOString();
+  console.log(`[SYNC] Produtos: enviando ${pendentes.length} alterações para o Supabase`);
   let ok = 0;
 
   for (const p of pendentes) {
     try {
       await api.atualizarProduto(p.remote_id, p);
-      db.db().prepare(`UPDATE produtos SET sync_status = 'synced', synced_at = ? WHERE id = ?`)
+      dbb.prepare(`UPDATE produtos SET sync_status = 'synced', synced_at = ? WHERE id = ?`)
         .run(now, p.id);
       ok++;
     } catch(err) {
       console.error(`[SYNC] Produto "${p.nome}" erro:`, err.message);
-      db.db().prepare(`UPDATE produtos SET sync_status = 'error' WHERE id = ?`).run(p.id);
+      dbb.prepare(`UPDATE produtos SET sync_status = 'error' WHERE id = ?`).run(p.id);
     }
   }
-  if (ok) console.log(`[SYNC] Produtos: ${ok} atualizados no Base44`);
+  if (ok) console.log(`[SYNC] Produtos: ${ok} atualizados no Supabase`);
 }
 
 // ─── Sync leve: só envia a fila pendente (usado após cada venda) ──
@@ -561,9 +587,12 @@ async function syncFila(win) {
   if (!online) return;
 
   try {
+    // syncUpProdutos primeiro: se a venda que está na fila inclui um produto
+    // criado no balcão (ainda sem remote_id), ele precisa existir no
+    // Supabase antes da venda ser enviada, senão o item some sem produto.
+    await syncUpProdutos();
     await recuperarClientesPendentes();
     await processarFilaSync();
-    await syncUpProdutos();
     syncStatus.pendentes = db.sync.getPendentes().length;
     emitir(mainWindowRef, 'sync:update', syncStatus);
     console.log('[SYNC] Fila enviada após venda');
