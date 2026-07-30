@@ -463,6 +463,46 @@ function runMigrations() {
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* coluna já existe */ }
   }
+
+  limparProdutosBase44Legado();
+}
+
+// Máquinas que já tiveram o PDV Vargas (Base44) instalado antes deste app
+// compartilham o mesmo arquivo de banco local — isso deixa produtos
+// duplicados: a linha antiga (id do Base44, 24 caracteres hex, preço
+// desatualizado) convivendo com a linha nova do Supabase (UUID, 36
+// caracteres). O sync normal nunca limpa isso sozinho, porque só faz
+// upsert por remote_id, nunca remove o que sobrou de outro sistema.
+// Idempotente: depois da primeira limpeza não sobra nenhuma linha de
+// 24 caracteres, então roda sem custo real nas próximas inicializações.
+function limparProdutosBase44Legado() {
+  const antigos = db.prepare(`SELECT id FROM produtos WHERE LENGTH(remote_id) = 24`).all();
+  if (!antigos.length) return;
+
+  const ids = antigos.map(a => a.id);
+  const placeholders = ids.map(() => '?').join(',');
+  const referenciados = new Set(
+    db.prepare(`SELECT DISTINCT produto_id FROM venda_itens WHERE produto_id IN (${placeholders})`)
+      .all(...ids)
+      .map(r => r.produto_id)
+  );
+
+  const semHistorico = ids.filter(id => !referenciados.has(id));
+  const comHistorico = ids.filter(id => referenciados.has(id));
+
+  const delEstoque = db.prepare('DELETE FROM estoque WHERE produto_id = ?');
+  const delProduto = db.prepare('DELETE FROM produtos WHERE id = ?');
+  // Produto vendido antes (tem venda_itens local apontando pra ele) — não dá
+  // pra apagar sem quebrar o histórico dessa venda, então só desativa.
+  const desativarProduto = db.prepare('UPDATE produtos SET ativo = 0, disponivel_pdv = 0 WHERE id = ?');
+
+  const limpar = db.transaction(() => {
+    for (const id of semHistorico) { delEstoque.run(id); delProduto.run(id); }
+    for (const id of comHistorico) { delEstoque.run(id); desativarProduto.run(id); }
+  });
+  limpar();
+
+  console.log(`[DB] Limpeza catálogo legado Base44: ${semHistorico.length} removidos, ${comHistorico.length} desativados (histórico preservado)`);
 }
 
 function createIndexes() {
