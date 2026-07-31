@@ -526,6 +526,145 @@ async function listarFaltasRemoto() {
   return (data || []).map(f => ({ ...f, created_date: f.created_at }));
 }
 
+// ─── Orçamentos ─────────────────────────────────────────────────────
+// Schema real confirmado em pdv-vargas-web/src/components/pdv/PDVClient.tsx
+// (salvarOrcamento): orcamentos tem só empresa_id, cliente_id, cliente_nome,
+// operador_nome, status, subtotal, desconto, total, observacao, validade —
+// sem forma_pagamento/terminal_id/origem (campos do Base44 que não existem
+// aqui). numero é atribuído pelo Supabase, não é enviado no insert.
+
+function _validadeIso(validadeDias) {
+  if (!validadeDias) return null;
+  const d = new Date(Date.now() + validadeDias * 86400000);
+  return d.toISOString().slice(0, 10);
+}
+
+async function sincronizarOrcamento(payload) {
+  const { data: orc, error } = await supabase.from('orcamentos').insert({
+    empresa_id: payload.empresa_id,
+    cliente_nome: payload.cliente_nome || null,
+    operador_nome: payload.vendedor_nome || null,
+    status: 'aberto',
+    subtotal: payload.subtotal,
+    desconto: payload.desconto_total || payload.desconto || 0,
+    total: payload.total,
+    observacao: payload.observacao || null,
+    validade: _validadeIso(payload.validade_dias),
+  }).select().single();
+  if (error) throw new Error(error.message);
+
+  const itens = payload.itens || [];
+  if (itens.length) {
+    const { error: errItens } = await supabase.from('orcamento_itens').insert(itens.map(i => ({
+      orcamento_id: orc.id,
+      produto_id: i.produto_id || null,
+      produto_nome: i.produto_nome,
+      produto_sku: i.produto_sku || null,
+      quantidade: i.quantidade,
+      preco_unitario: i.preco_unitario,
+      desconto: i.desconto || 0,
+      total: i.subtotal ?? i.total,
+    })));
+    if (errItens) console.warn('[ORC] Erro ao inserir orcamento_itens:', errItens.message);
+  }
+
+  return { id: orc.id, numero: orc.numero };
+}
+
+async function atualizarStatusOrcamento(remoteId, status) {
+  const { error } = await supabase.from('orcamentos').update({ status }).eq('id', remoteId);
+  if (error) throw new Error(error.message);
+  return { ok: true };
+}
+
+async function atualizarOrcamento(remoteId, dados) {
+  const payload = {};
+  if (dados.cliente_nome !== undefined) payload.cliente_nome = dados.cliente_nome;
+  if (dados.subtotal !== undefined) payload.subtotal = dados.subtotal;
+  if (dados.desconto !== undefined) payload.desconto = dados.desconto;
+  if (dados.total !== undefined) payload.total = dados.total;
+  if (dados.observacao !== undefined) payload.observacao = dados.observacao;
+  if (dados.validade_dias !== undefined) payload.validade = _validadeIso(dados.validade_dias);
+  const { error } = await supabase.from('orcamentos').update(payload).eq('id', remoteId);
+  if (error) throw new Error(error.message);
+
+  if (dados.itens) {
+    await supabase.from('orcamento_itens').delete().eq('orcamento_id', remoteId);
+    if (dados.itens.length) {
+      await supabase.from('orcamento_itens').insert(dados.itens.map(i => ({
+        orcamento_id: remoteId,
+        produto_id: i.produto_remote_id || i.produto_id || null,
+        produto_nome: i.produto_nome,
+        produto_sku: i.produto_sku || null,
+        quantidade: i.quantidade,
+        preco_unitario: i.preco_unitario,
+        desconto: i.desconto || 0,
+        total: i.total,
+      })));
+    }
+  }
+  return { ok: true };
+}
+
+function _mapOrcamentoRemoto(o) {
+  return {
+    id: o.id,
+    remote_id: o.id,
+    numero: o.numero,
+    status: o.status || 'aberto',
+    cliente_id: o.cliente_id || null,
+    cliente_nome: o.cliente_nome || null,
+    cliente_telefone: null,
+    vendedor_nome: o.operador_nome || null,
+    forma_pagamento: null,
+    validade_dias: null,
+    subtotal: o.subtotal || 0,
+    desconto: o.desconto || 0,
+    total: o.total || 0,
+    observacao: o.observacao || null,
+    created_at: o.created_at,
+  };
+}
+
+// Baixa orçamentos de todos os terminais pro cache local (cabeçalho só —
+// os itens ficam disponíveis via getOrcamentoCloud/listarOrcamentosCloud).
+async function sincronizarOrcamentos() {
+  const usuario = store.get('auth.usuario') || {};
+  const empresaId = usuario.empresa_estoque_id || usuario.empresa_id;
+  let query = supabase.from('orcamentos').select('*').in('status', ['aberto']).order('created_at', { ascending: false }).limit(200);
+  if (empresaId) query = query.eq('empresa_id', empresaId);
+  const { data, error } = await query;
+  if (error) { console.warn('[Orcamentos]', error.message); return []; }
+  return (data || []).map(_mapOrcamentoRemoto);
+}
+
+async function listarOrcamentosCloud(filtros = {}) {
+  const usuario = store.get('auth.usuario') || {};
+  const empresaId = usuario.empresa_estoque_id || usuario.empresa_id;
+  let query = supabase.from('orcamentos').select('*').order('created_at', { ascending: false }).limit(500);
+  if (empresaId) query = query.eq('empresa_id', empresaId);
+  if (filtros?.status) query = query.eq('status', filtros.status);
+  const { data, error } = await query;
+  if (error) { console.warn('[Orcamentos]', error.message); return []; }
+  return (data || []).map(o => ({ ..._mapOrcamentoRemoto(o), _origem: 'cloud' }));
+}
+
+async function getOrcamentoCloud(remoteId) {
+  const { data: o, error } = await supabase.from('orcamentos').select('*').eq('id', remoteId).single();
+  if (error || !o) return null;
+  const { data: itens } = await supabase.from('orcamento_itens').select('*').eq('orcamento_id', remoteId);
+  return {
+    ..._mapOrcamentoRemoto(o),
+    itens: (itens || []).map(i => ({
+      produto_nome: i.produto_nome || '',
+      quantidade: i.quantidade || 1,
+      preco_unitario: i.preco_unitario || 0,
+      desconto: i.desconto || 0,
+      total: i.total || 0,
+    })),
+  };
+}
+
 // ─── Config (desconto / termômetro) ────────────────────────────────────
 
 async function sincronizarConfigDesconto() {
@@ -683,12 +822,12 @@ module.exports = {
   atualizarSeparacao: _naoDisponivel('Marketplace'),
   mapearAnuncioBase44: _naoDisponivel('Marketplace'),
   getIdProdutoGenerico: _naoDisponivel('Marketplace'),
-  sincronizarOrcamento: _naoDisponivel('Orçamentos'),
-  sincronizarOrcamentos: _naoDisponivel('Orçamentos'),
-  atualizarStatusOrcamento: _naoDisponivel('Orçamentos'),
-  atualizarOrcamento: _naoDisponivel('Orçamentos'),
-  listarOrcamentosCloud: _naoDisponivel('Orçamentos'),
-  getOrcamentoCloud: _naoDisponivel('Orçamentos'),
+  sincronizarOrcamento,
+  sincronizarOrcamentos,
+  atualizarStatusOrcamento,
+  atualizarOrcamento,
+  listarOrcamentosCloud,
+  getOrcamentoCloud,
   registrarNfceVenda: _naoDisponivel('NFC-e'),
   chamarPdvProxy: _naoDisponivel('WhatsApp'),
   repararClienteNasVendas: _naoDisponivel('Manutenção'),
