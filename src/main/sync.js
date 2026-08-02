@@ -372,6 +372,41 @@ async function syncDownConfigDesconto() {
   }
 }
 
+// ─── Orçamentos: monta o payload aceito por api.sincronizarOrcamento a
+// partir do retorno de db.orcamentos.payloadSync() (itens já com
+// produto_remote_id resolvido). Usado tanto pelo envio imediato (main.js)
+// quanto pelo reenvio via fila (abaixo), para não duplicar o mapeamento.
+function montarPayloadOrcamentoRemoto(orcPayload) {
+  const usuario = store.get('auth.usuario') || {};
+  return {
+    empresa_id: usuario.empresa_estoque_id || usuario.empresa_id || store.get('auth.empresa_id'),
+    numero: orcPayload.numero,
+    cliente_nome: orcPayload.cliente_nome || null,
+    vendedor_nome: orcPayload.vendedor_nome || usuario.nome || null,
+    subtotal: orcPayload.subtotal,
+    desconto_total: orcPayload.desconto || 0,
+    total: orcPayload.total,
+    observacao: orcPayload.observacao || null,
+    validade_dias: orcPayload.validade_dias || 7,
+    itens: orcPayload.itens.map(i => ({
+      produto_id: i.produto_remote_id || null,
+      produto_nome: i.produto_nome,
+      produto_sku: i.produto_sku || null,
+      quantidade: i.quantidade,
+      preco_unitario: i.preco_unitario,
+      desconto: i.desconto || 0,
+      subtotal: i.total,
+    })),
+  };
+}
+
+// Local usa 'pendente' como status inicial; no Supabase o valor equivalente
+// é 'aberto' (definido no insert de sincronizarOrcamento). Demais status
+// (cancelado, convertido) já usam o mesmo nome dos dois lados.
+function statusOrcamentoRemoto(statusLocal) {
+  return statusLocal === 'pendente' ? 'aberto' : statusLocal;
+}
+
 // ─── Upload: Local → Servidor (fila pendente) ─────────────────────
 async function processarFilaSync() {
   const pendentes = db.sync.getPendentes();
@@ -458,6 +493,24 @@ async function processarFilaSync() {
         if (mov) {
           await api.enviarMovimentacaoEstoque(mov);
           db.db().prepare("UPDATE movimentacoes_estoque SET sync_status = 'synced' WHERE id = ?").run(mov.id);
+        }
+      }
+
+      if (item.entidade === 'orcamento') {
+        const orc = db.orcamentos.getById(payload.orcamento_id);
+        if (orc) {
+          const orcPayload = db.orcamentos.payloadSync(orc.id);
+          if (item.operacao === 'create' && !orc.remote_id) {
+            const res = await api.sincronizarOrcamento(montarPayloadOrcamentoRemoto(orcPayload));
+            if (res?.id) db.orcamentos.atualizarRemoteId(orc.id, res.id);
+          } else if (item.operacao === 'update' && orc.remote_id) {
+            await api.atualizarStatusOrcamento(orc.remote_id, statusOrcamentoRemoto(orc.status));
+            await api.atualizarOrcamento(orc.remote_id, {
+              cliente_nome: orcPayload.cliente_nome, subtotal: orcPayload.subtotal, desconto: orcPayload.desconto,
+              total: orcPayload.total, observacao: orcPayload.observacao, validade_dias: orcPayload.validade_dias,
+              itens: orcPayload.itens,
+            });
+          }
         }
       }
 
@@ -657,4 +710,4 @@ async function syncForcarCarteira() {
   return { clientes: clientes.length, creditos: creditos.length, contas: contas.length };
 }
 
-module.exports = { startAutoSync, stopAutoSync, syncNow, syncFila, getStatus, checkOnline, syncUpProdutos, syncForcarClientes, syncForcarCarteira, syncForcarProdutos };
+module.exports = { startAutoSync, stopAutoSync, syncNow, syncFila, getStatus, checkOnline, syncUpProdutos, syncForcarClientes, syncForcarCarteira, syncForcarProdutos, montarPayloadOrcamentoRemoto };

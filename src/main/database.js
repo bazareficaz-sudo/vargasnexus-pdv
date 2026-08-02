@@ -1725,9 +1725,23 @@ const orcamentos = {
           item.quantidade, item.preco_unitario, item.desconto || 0, item.total
         );
       }
+      db.prepare(`INSERT INTO sync_queue (id, entidade, operacao, payload, created_at) VALUES (?,?,?,?,?)`)
+        .run(uuidv4(), 'orcamento', 'create', JSON.stringify({ orcamento_id: id }), now);
     })();
 
     return { id, numero };
+  },
+
+  // Garante retry via fila caso a tentativa imediata (feita por quem chamou)
+  // falhe ou o terminal esteja offline no momento da ação.
+  _enfileirarUpdate(id) {
+    const jaNaFila = db.prepare(
+      "SELECT id FROM sync_queue WHERE entidade='orcamento' AND operacao='update' AND payload LIKE ? AND processado=0"
+    ).get(`%"orcamento_id":"${id}"%`);
+    if (!jaNaFila) {
+      db.prepare(`INSERT INTO sync_queue (id, entidade, operacao, payload, created_at) VALUES (?,?,?,?,?)`)
+        .run(uuidv4(), 'orcamento', 'update', JSON.stringify({ orcamento_id: id }), new Date().toISOString());
+    }
   },
 
   listar(filtros = {}) {
@@ -1785,6 +1799,7 @@ const orcamentos = {
 
   cancelar(id) {
     db.prepare(`UPDATE orcamentos SET status = 'cancelado', sync_status = 'pending' WHERE id = ?`).run(id);
+    this._enfileirarUpdate(id);
   },
 
   atualizarRemoteId(id, remoteId) {
@@ -1795,10 +1810,12 @@ const orcamentos = {
   atualizarCliente(id, clienteId, nome, telefone) {
     db.prepare(`UPDATE orcamentos SET cliente_id=?, cliente_nome=?, cliente_telefone=?, sync_status='pending' WHERE id=?`)
       .run(clienteId || null, nome || null, telefone || null, id);
+    this._enfileirarUpdate(id);
   },
 
   marcarConvertido(id) {
     db.prepare(`UPDATE orcamentos SET status = 'convertido', sync_status = 'pending' WHERE id = ?`).run(id);
+    this._enfileirarUpdate(id);
   },
 
   atualizar(id, dados) {
@@ -1824,6 +1841,7 @@ const orcamentos = {
       ins.run(uuidv4(), id, item.produto_id || null, item.produto_nome, item.produto_sku || null,
         item.quantidade, item.preco_unitario, item.desconto || 0, item.total);
     }
+    this._enfileirarUpdate(id);
   },
 
   // Monta payload de sync resolvendo remote_ids dos produtos
