@@ -56,7 +56,11 @@ async function sincronizarProdutos(ultimaSync = null, onBatch = null) {
   const todos = [];
 
   while (true) {
-    let query = supabase.from('produtos').select('*').eq('ativo', true).range(from, from + pageSize - 1).order('nome').order('id');
+    // Sem filtro de ativo aqui: um produto que virou inativo no web
+    // precisa continuar aparecendo nesta consulta (o updated_at dele mudou)
+    // para que o terminal receba a baixa e pare de vender. Quem decide o
+    // que pode ser vendido é o filtro local (produtos.buscar), não este.
+    let query = supabase.from('produtos').select('*').range(from, from + pageSize - 1).order('nome').order('id');
     if (empresaId) query = query.eq('empresa_id', empresaId);
     if (ultimaSync) query = query.gte('updated_at', ultimaSync);
 
