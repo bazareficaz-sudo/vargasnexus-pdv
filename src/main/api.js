@@ -76,6 +76,16 @@ async function sincronizarProdutos(ultimaSync = null, onBatch = null) {
   return onBatch ? totalBaixados : todos;
 }
 
+async function contarProdutosRemoto() {
+  const usuario = store.get('auth.usuario') || {};
+  const empresaId = usuario.empresa_estoque_id || usuario.empresa_id;
+  let query = supabase.from('produtos').select('id', { count: 'exact', head: true }).eq('ativo', true);
+  if (empresaId) query = query.eq('empresa_id', empresaId);
+  const { count, error } = await query;
+  if (error) throw new Error(`Supabase produtos (count): ${error.message}`);
+  return count || 0;
+}
+
 async function getProduto(id) {
   const { data, error } = await supabase.from('produtos').select('*').eq('id', id).single();
   if (error) throw new Error(error.message);
@@ -780,6 +790,7 @@ async function autenticarPDV(login, senha) {
 module.exports = {
   ping,
   sincronizarProdutos,
+  contarProdutosRemoto,
   getProduto,
   atualizarProduto,
   criarProdutoRemoto,

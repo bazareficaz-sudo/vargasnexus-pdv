@@ -186,7 +186,25 @@ async function syncDownProdutos() {
   // etc.), então dá pra confiar nele. Se o banco local estiver vazio
   // (primeira vez, ou depois de um reset), força sync completo.
   const totalLocal = db.produtos.total();
-  const ultimaSync = totalLocal > 0 ? store.get('sync.ultima_sync_produtos') : null;
+  let ultimaSync = totalLocal > 0 ? store.get('sync.ultima_sync_produtos') : null;
+
+  // Rede de segurança: se o catálogo local ficou muito menor que o remoto
+  // (limpeza de dados legados, corrupção, etc.), o sync incremental nunca
+  // resgataria os produtos que sumiram localmente — o updated_at deles no
+  // servidor não mudou. Compara as contagens e força sync completo se a
+  // diferença for grande demais.
+  if (ultimaSync) {
+    try {
+      const totalRemoto = await api.contarProdutosRemoto();
+      if (totalRemoto > 0 && totalLocal < totalRemoto * 0.9) {
+        console.warn(`[SYNC] Catálogo local (${totalLocal}) muito menor que o remoto (${totalRemoto}) — forçando sync completo de produtos`);
+        ultimaSync = null;
+      }
+    } catch (e) {
+      console.warn('[SYNC] Falha ao checar contagem remota de produtos, mantendo sync incremental:', e.message);
+    }
+  }
+
   const inicioSync = new Date().toISOString();
 
   await api.sincronizarProdutos(ultimaSync, (lote, total) => {
