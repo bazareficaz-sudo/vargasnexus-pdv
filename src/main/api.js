@@ -30,8 +30,56 @@ async function ping() {
 
 // ─── Estoque (interno) ──────────────────────────────────────────────
 
-async function _ajustarEstoqueCAS(produtoId, delta) {
+// Resolve o depósito a usar para o ajuste por depósito e para o registro de
+// movimentação: o indicado explicitamente por quem chamou (ex: o depósito
+// onde a venda original aconteceu, pra devolução voltar pro mesmo lugar),
+// senão o do operador logado, senão o principal da empresa. Nunca inventa
+// um depósito — se nenhum existir, devolve null e quem chamou pula o ajuste.
+async function _resolverDepositoAjuste(depositoIdHint, empresaId) {
+  if (depositoIdHint) return depositoIdHint;
+  const usuario = store.get('auth.usuario') || {};
+  if (usuario.deposito_id) return usuario.deposito_id;
+  if (!empresaId) return null;
+  const { data: principal } = await supabase.from('depositos')
+    .select('id').eq('empresa_id', empresaId).eq('principal', true).maybeSingle();
+  return principal?.id || null;
+}
+
+// Espelha o ajuste de estoque na linha de produto_estoque do par
+// (produto, depósito) — é o que a tela de estoque por depósito do painel
+// web lê. Cria a linha se ainda não existir.
+async function _ajustarEstoqueDeposito(produtoId, delta, depositoId, empresaId) {
+  for (let tentativa = 0; tentativa < 5; tentativa++) {
+    const { data: linha } = await supabase.from('produto_estoque')
+      .select('id, quantidade').eq('produto_id', produtoId).eq('deposito_id', depositoId).maybeSingle();
+
+    if (!linha) {
+      const { error: errIns } = await supabase.from('produto_estoque').insert({
+        empresa_id: empresaId, deposito_id: depositoId, produto_id: produtoId, quantidade: delta,
+      });
+      if (!errIns) return;
+      continue; // outra escrita criou a linha entre o select e o insert — tenta de novo (agora como update)
+    }
+
+    const novaQuantidade = Number(linha.quantidade || 0) + delta;
+    const { data: atualizado } = await supabase.from('produto_estoque')
+      .update({ quantidade: novaQuantidade })
+      .eq('id', linha.id).eq('quantidade', linha.quantidade)
+      .select('id').maybeSingle();
+    if (atualizado) return;
+  }
+  console.warn('[ESTOQUE] Conflito de concorrência persistente em produto_estoque para produto', produtoId);
+}
+
+// contexto: { produtoNome, tipo ('venda'|'devolucao'), referenciaId,
+// referenciaTipo, depositoId, motivo, observacao }
+async function _ajustarEstoqueCAS(produtoId, delta, contexto = {}) {
   if (!produtoId) return;
+  const usuario = store.get('auth.usuario') || {};
+  const empresaId = usuario.empresa_estoque_id || usuario.empresa_id;
+  const depositoId = await _resolverDepositoAjuste(contexto.depositoId, empresaId);
+
+  let estoqueAnterior = null, estoqueNovo = null, venceu = false;
   for (let tentativa = 0; tentativa < 5; tentativa++) {
     const { data: produto } = await supabase.from('produtos').select('estoque').eq('id', produtoId).single();
     if (!produto) return;
@@ -40,9 +88,53 @@ async function _ajustarEstoqueCAS(produtoId, delta) {
       .update({ estoque: novoEstoque })
       .eq('id', produtoId).eq('estoque', produto.estoque)
       .select('id').maybeSingle();
-    if (atualizado) return;
+    if (atualizado) {
+      // Grava os valores da tentativa que VENCEU o CAS — se gravasse os da
+      // primeira tentativa e ela tivesse perdido para uma venda concorrente,
+      // o extrato de movimentação contaria uma história que não aconteceu.
+      estoqueAnterior = Number(produto.estoque || 0);
+      estoqueNovo = novoEstoque;
+      venceu = true;
+      break;
+    }
   }
-  console.warn('[ESTOQUE] Conflito de concorrência persistente para produto', produtoId);
+  if (!venceu) {
+    console.warn('[ESTOQUE] Conflito de concorrência persistente para produto', produtoId);
+    return;
+  }
+
+  // A partir daqui o estoque já foi baixado de verdade. Nada abaixo pode
+  // derrubar a venda — na pior hipótese perde-se só o rastro de auditoria.
+  if (depositoId) {
+    try {
+      await _ajustarEstoqueDeposito(produtoId, delta, depositoId, empresaId);
+    } catch (err) {
+      console.warn('[ESTOQUE] Falha ao ajustar produto_estoque (não bloqueia a venda):', err.message);
+    }
+  } else {
+    console.warn('[ESTOQUE] Sem depósito do operador nem principal da empresa — produto_estoque não ajustado para', produtoId);
+  }
+
+  try {
+    const { error: errMov } = await supabase.from('estoque_movimentacoes').insert({
+      empresa_id: empresaId,
+      deposito_id: depositoId,
+      produto_id: produtoId,
+      produto_nome: contexto.produtoNome || null,
+      tipo: contexto.tipo || (delta < 0 ? 'venda' : 'devolucao'),
+      quantidade: Math.abs(delta),
+      estoque_anterior: estoqueAnterior,
+      estoque_novo: estoqueNovo,
+      motivo: contexto.motivo || null,
+      referencia_id: contexto.referenciaId || null,
+      referencia_tipo: contexto.referenciaTipo || 'venda',
+      usuario: usuario.nome || null,
+      observacao: contexto.observacao || null,
+    });
+    if (errMov) console.warn('[ESTOQUE] Falha ao registrar estoque_movimentacoes (não bloqueia a venda):', errMov.message);
+  } catch (err) {
+    console.warn('[ESTOQUE] Falha ao registrar estoque_movimentacoes (não bloqueia a venda):', err.message);
+  }
 }
 
 // ─── Produtos ─────────────────────────────────────────────────────────
@@ -99,27 +191,29 @@ async function getProduto(id) {
 // Produto cadastrado no balcão (tela "Novo Produto") — ainda não existe no
 // Supabase. Sem isso, o produto nunca ganha remote_id e qualquer venda dele
 // vira um item "órfão" no Supabase (produto_id sem correspondência real).
+// INSERT direto em produtos foi revogado do anon — passa por
+// criar_produto_pdv (SECURITY DEFINER), ver supabase-rpc-pdv-vendas-produtos.sql.
 async function criarProdutoRemoto(produto) {
   const usuario = store.get('auth.usuario') || {};
   const empresaId = usuario.empresa_estoque_id || usuario.empresa_id;
-  const { data, error } = await supabase.from('produtos').insert({
-    empresa_id: empresaId,
-    nome: produto.nome,
-    sku: produto.sku || null,
-    ean: produto.ean || null,
-    preco_venda: produto.preco_venda || 0,
-    preco_custo: produto.preco_custo || 0,
-    unidade: produto.unidade || 'UN',
-    categoria: produto.categoria || null,
-    marca: produto.marca || null,
-    foto_url: produto.foto_url || null,
-    ativo: produto.ativo !== false,
-    disponivel_pdv: true,
-    permite_fracao: !!produto.permite_fracao,
-    estoque: produto.estoque || 0,
-  }).select('id').single();
+  const { data, error } = await supabase.rpc('criar_produto_pdv', {
+    p_empresa_id: empresaId,
+    p_nome: produto.nome,
+    p_sku: produto.sku || null,
+    p_ean: produto.ean || null,
+    p_preco_venda: produto.preco_venda || 0,
+    p_preco_custo: produto.preco_custo || 0,
+    p_unidade: produto.unidade || 'UN',
+    p_categoria: produto.categoria || null,
+    p_marca: produto.marca || null,
+    p_foto_url: produto.foto_url || null,
+    p_ativo: produto.ativo !== false,
+    p_permite_fracao: !!produto.permite_fracao,
+    p_estoque: produto.estoque || 0,
+  });
   if (error) throw new Error(error.message);
-  return { id: data.id };
+  const linha = Array.isArray(data) ? data[0] : data;
+  return { id: linha.id };
 }
 
 async function atualizarProduto(remoteId, dados) {
@@ -167,10 +261,12 @@ async function registrarVenda(venda) {
     subtotal: i.total,
   }));
 
+  const depositoIdVenda = usuario.deposito_id || venda.deposito_id || null;
+
   const { data: novaVenda, error } = await supabase.from('vendas').insert({
     empresa_id: empresaId,
     empresa_fiscal_id: usuario.empresa_fiscal_id || empresaId,
-    deposito_id: usuario.deposito_id || venda.deposito_id || null,
+    deposito_id: depositoIdVenda,
     numero: venda.numero,
     cliente_id: venda.cliente_remote_id || null,
     cliente_nome: venda.cliente_nome || null,
@@ -212,13 +308,20 @@ async function registrarVenda(venda) {
     if (errItens) console.warn('[VENDA] Erro ao inserir venda_itens:', errItens.message);
 
     for (const i of itensPayload) {
-      await _ajustarEstoqueCAS(i.produto_id, -Number(i.quantidade || 0));
+      await _ajustarEstoqueCAS(i.produto_id, -Number(i.quantidade || 0), {
+        produtoNome: i.produto_nome, tipo: 'venda',
+        referenciaId: novaVenda.id, referenciaTipo: 'venda',
+        depositoId: depositoIdVenda,
+      });
     }
   }
 
   return { id: novaVenda.id };
 }
 
+// UPDATE em vendas e DELETE em venda_itens foram revogados do anon — passa
+// por editar_venda_pdv (SECURITY DEFINER), que faz as duas coisas junto
+// com o insert dos itens novos numa função só. Ver supabase-rpc-pdv-vendas-produtos.sql.
 async function editarVenda(remoteId, itens, totais, forma_pagamento) {
   const itensPayload = itens.map(i => ({
     // Nunca usar i.produto_id (id local do SQLite) como fallback — isso
@@ -232,41 +335,50 @@ async function editarVenda(remoteId, itens, totais, forma_pagamento) {
     quantidade: i.quantidade,
     preco_unitario: i.preco_unitario,
     desconto: i.desconto || 0,
-    subtotal: i.total,
+    total: i.total,
   }));
 
-  const { error } = await supabase.from('vendas').update({
-    subtotal: totais.subtotal,
-    desconto: totais.desconto || 0,
-    desconto_total: totais.desconto || 0,
-    total: totais.total,
-    forma_pagamento,
-    valor_pago: totais.valor_pago || totais.total,
-    valor_recebido: totais.valor_pago || totais.total,
-    troco: totais.troco || 0,
-    itens: itensPayload,
-  }).eq('id', remoteId);
+  const { error } = await supabase.rpc('editar_venda_pdv', {
+    p_venda_id: remoteId,
+    p_subtotal: totais.subtotal,
+    p_desconto: totais.desconto || 0,
+    p_total: totais.total,
+    p_forma_pagamento: forma_pagamento,
+    p_valor_pago: totais.valor_pago || totais.total,
+    p_troco: totais.troco || 0,
+    p_itens: itensPayload,
+  });
   if (error) throw new Error(error.message);
-
-  await supabase.from('venda_itens').delete().eq('venda_id', remoteId);
-  if (itensPayload.length) {
-    await supabase.from('venda_itens').insert(
-      itensPayload.map(i => ({ venda_id: remoteId, ...i, total: i.subtotal, tipo: 'venda' }))
-    );
-  }
   return { ok: true };
 }
 
+// UPDATE em vendas foi revogado do anon — passa por cancelar_venda_pdv
+// (SECURITY DEFINER, ver supabase-rpc-pdv-vendas-produtos.sql), que só
+// marca 'cancelada' se ainda estiver 'concluida'. Por isso ela roda ANTES
+// de reverter o estoque, não depois: se a venda já tinha sido cancelada
+// (0 linhas voltam), não reverte o estoque de novo — a ordem antiga
+// (reverte primeiro, marca status depois) deixava o estoque já revertido
+// órfão de uma venda que continuava 'concluida' sempre que o UPDATE
+// falhasse, com risco real de reversão dupla numa segunda tentativa.
 async function cancelarVenda(remoteId, motivo) {
-  const { data: itens } = await supabase.from('venda_itens').select('produto_id, quantidade').eq('venda_id', remoteId);
-  for (const i of itens || []) {
-    await _ajustarEstoqueCAS(i.produto_id, Number(i.quantidade || 0));
-  }
-  const { error } = await supabase.from('vendas').update({
-    status: 'cancelada',
-    motivo_cancelamento: motivo,
-  }).eq('id', remoteId);
+  const { data: linhas, error } = await supabase.rpc('cancelar_venda_pdv', {
+    p_venda_id: remoteId, p_motivo: motivo || null,
+  });
   if (error) throw new Error(error.message);
+  if (!linhas || !linhas.length) {
+    // Já estava cancelada (ou a venda não existe) — nada a reverter.
+    return { ok: true, jaCancelada: true };
+  }
+  const depositoIdVenda = linhas[0].deposito_id || null;
+
+  const { data: itens } = await supabase.from('venda_itens').select('produto_id, produto_nome, quantidade').eq('venda_id', remoteId);
+  for (const i of itens || []) {
+    await _ajustarEstoqueCAS(i.produto_id, Number(i.quantidade || 0), {
+      produtoNome: i.produto_nome, tipo: 'devolucao',
+      referenciaId: remoteId, referenciaTipo: 'venda',
+      motivo, depositoId: depositoIdVenda,
+    });
+  }
   return { ok: true };
 }
 
@@ -723,19 +835,23 @@ async function buscarUrlImpressao() {
 
 async function autenticarPDV(login, senha) {
   try {
+    // Calculado localmente e usado pra duas coisas: (1) enviado como
+    // p_senha_hash pra autenticar_operador_pdv() comparar dentro do banco
+    // (a senha em texto puro nunca sai do terminal), e (2) guardado no
+    // cache OFFLINE local pra permitir login sem internet depois. A
+    // função já existe no Supabase (criada em supabase-fechar-acesso-publico.sql,
+    // rodada 1 do fechamento de privilégios) e nunca devolve senha_hash.
     const senhaHash = crypto.createHash('sha256').update(senha).digest('hex');
 
-    const { data: usuarios, error } = await supabase
-      .from('usuarios_pdv')
-      .select('*')
-      .eq('login', login)
-      .eq('ativo', true)
-      .limit(1);
+    const { data: linhas, error } = await supabase.rpc('autenticar_operador_pdv', {
+      p_login: login, p_senha_hash: senhaHash,
+    });
     if (error) throw new Error(error.message);
-    if (!usuarios || !usuarios.length) return { erro: 'Operador não encontrado' };
+    // Mesma mensagem genérica pra login inexistente e senha errada — dizer
+    // qual dos dois foi conta pra um estranho quais logins existem.
+    if (!linhas || !linhas.length) return { erro: 'Operador ou senha inválidos' };
 
-    const u = usuarios[0];
-    if (u.senha_hash !== senhaHash) return { erro: 'Senha incorreta' };
+    const u = linhas[0];
 
     let depositoNome = null;
     if (u.deposito_id) {
@@ -745,8 +861,10 @@ async function autenticarPDV(login, senha) {
 
     const usuario = {
       id: u.id,
-      nome: u.nome || u.login,
-      login: u.login,
+      // autenticar_operador_pdv() não devolve login — usa o parâmetro que
+      // o próprio operador digitou.
+      nome: u.nome || login,
+      login,
       cargo: u.cargo || 'Operador',
       empresa_id: u.empresa_id,
       empresa_nome: u.empresa_nome || 'VargasNexus PDV',

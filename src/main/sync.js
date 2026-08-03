@@ -28,6 +28,7 @@ let syncStatus = {
   em_andamento: false,
   pendentes: 0,
   erro: null,
+  ultimo_sync_produtos: null, // { modo: 'completo'|'incremental', total } — ver syncDownProdutos
 };
 
 function getStatus() { return { ...syncStatus }; }
@@ -216,7 +217,15 @@ async function syncDownProdutos() {
   });
 
   store.set('sync.ultima_sync_produtos', inicioSync);
-  console.log(`[SYNC] Produtos: ${totalSalvos} sincronizados${ultimaSync ? ' (incremental)' : ' (completo)'}`);
+  const modo = ultimaSync ? 'incremental' : 'completo';
+  console.log(`[SYNC] Produtos: ${totalSalvos} sincronizados (${modo})`);
+
+  // Fica disponível em getStatus() mesmo depois que "em_andamento" volta pra
+  // false — é o que deixa o operador perceber sozinho, na própria tela, se
+  // um catálogo veio incompleto (foi a ausência disso que deixou passar o
+  // incidente dos 192 produtos sem ninguém notar).
+  syncStatus.ultimo_sync_produtos = { modo, total: totalSalvos };
+  emitir(mainWindowRef, 'sync:update', syncStatus);
 }
 
 async function syncForcarProdutos() {

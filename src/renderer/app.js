@@ -176,6 +176,20 @@ const App = (() => {
       if (time) time.textContent = status.progresso;
     }
 
+    // Modo (completo/incremental) e quantidade do último sync de produtos —
+    // fica visível o tempo todo, não só durante o sync, pra o operador
+    // conseguir perceber sozinho se o catálogo veio incompleto.
+    const produtosInfo = document.getElementById('sync-produtos-info');
+    if (produtosInfo) {
+      if (status.ultimo_sync_produtos) {
+        const { modo, total } = status.ultimo_sync_produtos;
+        produtosInfo.textContent = `Produtos: ${modo} (${total} ${total === 1 ? 'item' : 'itens'})`;
+        produtosInfo.style.display = '';
+      } else {
+        produtosInfo.style.display = 'none';
+      }
+    }
+
     // Quando sync termina, recarregar config do SaudeVenda para pegar termômetro atualizado
     if (_syncEraAndamento && !status.em_andamento) {
       if (typeof SaudeVenda !== 'undefined') SaudeVenda.init();
