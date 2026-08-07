@@ -1264,13 +1264,13 @@ const Vendas = {
       const pgBadge = v.forma_pagamento === 'pix' ? 'badge-green' : v.forma_pagamento === 'dinheiro' ? 'badge-yellow' : 'badge-blue';
       const terminal = nuvem ? (v.terminal_id || '—') : 'Este terminal';
 
-      const syncBadge = nuvem
+      const naoSincronizada = !nuvem && !v.remote_id;
+      const syncBadge = (nuvem || v.remote_id
         ? '<span class="badge badge-green" title="Sincronizado">☁ Sync</span>'
-        : v.remote_id
-          ? '<span class="badge badge-green" title="Sincronizado">☁ Sync</span>'
-          : v.sync_status === 'pending'
-            ? '<span class="badge badge-yellow" title="Aguardando">⏳ Pendente</span>'
-            : '<span class="badge badge-red" title="Erro">✕ Erro</span>';
+        : v.sync_status === 'pending'
+          ? '<span class="badge badge-yellow" title="Aguardando">⏳ Pendente</span>'
+          : '<span class="badge badge-red" title="Erro">✕ Erro</span>')
+        + (naoSincronizada ? `<button class="btn btn-ghost btn-sm" style="padding:2px 6px;margin-left:4px" title="Tentar enviar de novo agora e ver o erro, se houver" onclick="Vendas.retentarSync('${id}')">🔄</button>` : '');
 
       return `<tr style="${sel ? 'background:var(--accent-soft,rgba(108,99,255,.08))' : ''}">
         <td><input type="checkbox" ${sel ? 'checked' : ''} ${cancelada ? 'disabled' : ''} onchange="Vendas.toggleSel('${id}',this)"></td>
@@ -1427,6 +1427,19 @@ const Vendas = {
     setTimeout(() => PDV.entrarModoEdicao(venda), 100);
   },
 
+  async retentarSync(id) {
+    Toast.show('Tentando enviar ao Supabase...', 'info');
+    const r = await window.pdv.vendas.retentarSync(id);
+    if (r.ok) {
+      Toast.show('Venda sincronizada!', 'success');
+    } else {
+      // Mostra o erro de verdade — é justamente o que a fila automática
+      // esconde depois de esgotar as tentativas sozinha.
+      Toast.show(`Falha ao sincronizar: ${r.erro}`, 'error', 8000);
+    }
+    await this.load();
+  },
+
   async cancelar(id) {
     const motivo = prompt('Motivo do cancelamento:');
     if (!motivo) return;
@@ -1571,33 +1584,6 @@ const Launcher = {
       tags: ['Shopee', 'Canais', 'Pedidos'],
       status: 'ativo',
       cor: '#f59e0b',
-    },
-    {
-      id: 'fiscal',
-      icon: '📄',
-      titulo: 'Fiscal / NF-e',
-      desc: 'Emissão de NF-e, relatórios fiscais e SPED',
-      tags: ['NF-e', 'SPED'],
-      status: 'breve',
-      cor: '#3b82f6',
-    },
-    {
-      id: 'financeiro',
-      icon: '💰',
-      titulo: 'Financeiro',
-      desc: 'Contas a receber, fluxo de caixa e DRE',
-      tags: ['Contas', 'Fluxo de Caixa'],
-      status: 'breve',
-      cor: '#10b981',
-    },
-    {
-      id: 'bi',
-      icon: '📈',
-      titulo: 'Relatórios & BI',
-      desc: 'Dashboard de métricas, metas e desempenho de vendas',
-      tags: ['Dashboard', 'Metas'],
-      status: 'breve',
-      cor: '#ec4899',
     },
   ],
 

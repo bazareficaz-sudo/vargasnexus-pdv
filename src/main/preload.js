@@ -60,6 +60,7 @@ contextBridge.exposeInMainWorld('pdv', {
     listar: (f) => ipcRenderer.invoke('vendas:listar', f),
     getById: (id) => ipcRenderer.invoke('vendas:getById', id),
     cancelar: (id, motivo) => ipcRenderer.invoke('vendas:cancelar', id, motivo),
+    retentarSync: (id) => ipcRenderer.invoke('vendas:retentarSync', id),
     editar:   (id, itens, dados) => ipcRenderer.invoke('vendas:editar', id, itens, dados),
     atualizarNfce: (id, dados) => ipcRenderer.invoke('vendas:atualizarNfce', id, dados),
     totaisHoje: () => ipcRenderer.invoke('vendas:totaisHoje'),

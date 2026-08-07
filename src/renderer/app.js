@@ -28,8 +28,12 @@ const App = (() => {
     const navMarketplace = document.getElementById('nav-marketplace');
     if (navMarketplace) navMarketplace.style.display = podePermissao('ver_marketplace') ? 'flex' : 'none';
     _initApp();
-    // Mostrar launcher em vez de ir direto para o PDV
-    showLauncher();
+    // Entra direto na Frente de Caixa — o launcher (tela de módulos) fica
+    // disponível pelo botão ⬡ na barra de título, não é mais o ponto de
+    // entrada automático.
+    document.getElementById('launcher-screen').style.display = 'none';
+    document.getElementById('main-layout').style.display = 'flex';
+    navigate('pdv');
   }
 
   function showLauncher() {

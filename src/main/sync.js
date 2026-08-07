@@ -416,6 +416,55 @@ function statusOrcamentoRemoto(statusLocal) {
   return statusLocal === 'pendente' ? 'aberto' : statusLocal;
 }
 
+// Envia ao servidor a criação de uma venda: resolve cliente_remote_id se
+// preciso e chama api.registrarVenda(). Extraído da fila automática pra
+// também ser chamado pelo retry manual (Vendas > 🔄 Retentar) — aquele
+// caminho precisa do erro de verdade, não pode ficar escondido atrás de
+// "tentativas esgotadas, desisto silenciosamente" como a fila faz.
+async function _sincronizarVendaCreate(vendaId) {
+  const venda = db.vendas.getById(vendaId);
+  if (!venda) throw new Error('Venda não encontrada localmente');
+  if (venda.status === 'cancelada') return null;
+  if (venda.remote_id) return venda.remote_id;
+
+  // Se há cliente local sem remote_id, tentar sincronizar agora antes da venda
+  if (venda.cliente_id && !venda.cliente_remote_id) {
+    const cli = db.db().prepare('SELECT * FROM clientes WHERE id = ?').get(venda.cliente_id);
+    if (cli && !cli.remote_id) {
+      try {
+        const cRes = await api.registrarCliente(cli);
+        if (cRes?.id) {
+          db.db().prepare('UPDATE clientes SET remote_id = ?, sync_status = ?, synced_at = ? WHERE id = ?')
+            .run(cRes.id, 'synced', new Date().toISOString(), cli.id);
+          venda.cliente_remote_id = cRes.id;
+          console.log(`[SYNC] Cliente "${cli.nome}" sincronizado antes da venda`);
+        }
+      } catch (e) {
+        // Não bloqueia a venda por causa do cliente — ela sobe sem vínculo,
+        // mas ao menos fica registrado o motivo (antes isso era silencioso).
+        console.warn(`[SYNC] Falha ao sincronizar cliente antes da venda (venda segue sem vínculo): ${e.message}`);
+      }
+    } else if (cli?.remote_id) {
+      venda.cliente_remote_id = cli.remote_id;
+    }
+  }
+
+  const res = await api.registrarVenda(venda);
+  if (res?.id) {
+    db.db().prepare('UPDATE vendas SET remote_id = ?, sync_status = ?, synced_at = ? WHERE id = ?')
+      .run(res.id, 'synced', new Date().toISOString(), vendaId);
+  }
+  return res?.id || null;
+}
+
+// Retry manual disparado pelo operador (botão "🔄 Retentar" na tela de
+// Vendas) — ao contrário da fila, propaga o erro de verdade em vez de só
+// registrar tentativa e desistir depois de 5 falhas sem avisar ninguém.
+async function retentarVendaManual(vendaId) {
+  const remoteId = await _sincronizarVendaCreate(vendaId);
+  return { ok: true, remoteId };
+}
+
 // ─── Upload: Local → Servidor (fila pendente) ─────────────────────
 async function processarFilaSync() {
   const pendentes = db.sync.getPendentes();
@@ -430,32 +479,7 @@ async function processarFilaSync() {
 
       if (item.entidade === 'venda') {
         if (item.operacao === 'create') {
-          const venda = db.vendas.getById(payload.venda_id);
-          if (venda && venda.status !== 'cancelada') {
-            // Se há cliente local sem remote_id, tentar sincronizar agora antes da venda
-            if (venda.cliente_id && !venda.cliente_remote_id) {
-              const cli = db.db().prepare('SELECT * FROM clientes WHERE id = ?').get(venda.cliente_id);
-              if (cli && !cli.remote_id) {
-                try {
-                  const cRes = await api.registrarCliente(cli);
-                  if (cRes?.id) {
-                    db.db().prepare('UPDATE clientes SET remote_id = ?, sync_status = ?, synced_at = ? WHERE id = ?')
-                      .run(cRes.id, 'synced', new Date().toISOString(), cli.id);
-                    venda.cliente_remote_id = cRes.id;
-                    console.log(`[SYNC] Cliente "${cli.nome}" sincronizado antes da venda`);
-                  }
-                } catch {}
-              } else if (cli?.remote_id) {
-                venda.cliente_remote_id = cli.remote_id;
-              }
-            }
-            const res = await api.registrarVenda(venda);
-            // Salvar remote_id retornado pelo servidor
-            if (res?.id) {
-              db.db().prepare('UPDATE vendas SET remote_id = ?, sync_status = ?, synced_at = ? WHERE id = ?')
-                .run(res.id, 'synced', new Date().toISOString(), payload.venda_id);
-            }
-          }
+          await _sincronizarVendaCreate(payload.venda_id);
         } else if (item.operacao === 'update' && payload.status === 'cancelada') {
           const venda = db.db().prepare('SELECT remote_id FROM vendas WHERE id = ?').get(payload.venda_id);
           if (venda?.remote_id) {
@@ -719,4 +743,4 @@ async function syncForcarCarteira() {
   return { clientes: clientes.length, creditos: creditos.length, contas: contas.length };
 }
 
-module.exports = { startAutoSync, stopAutoSync, syncNow, syncFila, getStatus, checkOnline, syncUpProdutos, syncForcarClientes, syncForcarCarteira, syncForcarProdutos, montarPayloadOrcamentoRemoto };
+module.exports = { startAutoSync, stopAutoSync, syncNow, syncFila, getStatus, checkOnline, syncUpProdutos, syncForcarClientes, syncForcarCarteira, syncForcarProdutos, montarPayloadOrcamentoRemoto, retentarVendaManual };

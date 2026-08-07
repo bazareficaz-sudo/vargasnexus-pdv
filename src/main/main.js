@@ -268,6 +268,16 @@ ipcMain.handle('vendas:registrar', (_, venda) => {
 ipcMain.handle('vendas:listar', (_, filtros) => db.vendas.listar(filtros));
 ipcMain.handle('vendas:getById', (_, id) => db.vendas.getById(id));
 ipcMain.handle('vendas:cancelar', (_, id, motivo) => db.vendas.cancelar(id, motivo));
+// Retry manual de venda travada em "Pendente" (ex: falha silenciosa na fila
+// depois de esgotar as tentativas automáticas) — ao contrário da fila, essa
+// chamada propaga o erro de verdade pro operador ver o motivo.
+ipcMain.handle('vendas:retentarSync', async (_, id) => {
+  try {
+    return await sync.retentarVendaManual(id);
+  } catch (err) {
+    return { ok: false, erro: err.message };
+  }
+});
 ipcMain.handle('vendas:editar', async (_, id, novosItens, novosDados) => {
   const vendaAtualizada = db.vendas.editar(id, novosItens, novosDados);
   // Re-sincronizar com Base44 se tiver remote_id
