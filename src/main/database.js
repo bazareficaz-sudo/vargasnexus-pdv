@@ -465,6 +465,7 @@ function runMigrations() {
   }
 
   limparProdutosBase44Legado();
+  corrigirClientesRemoteIdBase44Legado();
 }
 
 // Máquinas que já tiveram o PDV Vargas (Base44) instalado antes deste app
@@ -503,6 +504,38 @@ function limparProdutosBase44Legado() {
   limpar();
 
   console.log(`[DB] Limpeza catálogo legado Base44: ${semHistorico.length} removidos, ${comHistorico.length} desativados (histórico preservado)`);
+}
+
+// Mesma contaminação de limparProdutosBase44Legado(), só que em clientes:
+// um remote_id herdado do Base44 (ObjectId de 24 caracteres hex) não é um
+// UUID válido do Supabase. Diferente de produto, aqui não há linha
+// duplicada pra limpar — é a MESMA linha do cliente, só que apontando pro
+// sistema errado. Qualquer venda desse cliente falha pra sempre com
+// "invalid input syntax for type uuid" (o valor nunca muda entre
+// tentativas, então nunca destrava sozinho). Corrige limpando o remote_id
+// e reenfileirando o cliente pra ser criado de novo no Supabase — o
+// próximo sync ou venda desse cliente resolve um remote_id de verdade.
+// Idempotente: depois da primeira correção não sobra remote_id de 24
+// caracteres, então roda sem custo real nas próximas inicializações.
+function corrigirClientesRemoteIdBase44Legado() {
+  const antigos = db.prepare(`SELECT id, nome FROM clientes WHERE LENGTH(remote_id) = 24`).all();
+  if (!antigos.length) return;
+
+  const limparRemoteId = db.prepare(`UPDATE clientes SET remote_id = NULL, sync_status = 'pending' WHERE id = ?`);
+  const enfileirar = db.prepare(`INSERT INTO sync_queue (id, entidade, operacao, payload, created_at) VALUES (?,?,?,?,?)`);
+  const jaNaFila = db.prepare("SELECT id FROM sync_queue WHERE entidade='cliente' AND payload LIKE ? AND processado=0");
+
+  const corrigir = db.transaction(() => {
+    for (const c of antigos) {
+      limparRemoteId.run(c.id);
+      if (!jaNaFila.get(`%${c.id}%`)) {
+        enfileirar.run(uuidv4(), 'cliente', 'create', JSON.stringify({ cliente_id: c.id }), new Date().toISOString());
+      }
+    }
+  });
+  corrigir();
+
+  console.log(`[DB] Corrigidos ${antigos.length} clientes com remote_id herdado do Base44 (id inválido pro Supabase) — serão recriados no próximo sync`);
 }
 
 function createIndexes() {
@@ -841,10 +874,18 @@ const clientes = {
        updated_at, synced_at, sync_status)
       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
+    // remote_id é UNIQUE na tabela local — sem resolver o id local
+    // existente (por remote_id) antes do INSERT OR REPLACE, cada rodada de
+    // sync gerava um id novo aleatório; ao colidir com o UNIQUE de
+    // remote_id da linha antiga, o SQLite apagava essa linha em vez de
+    // atualizá-la, órfão de qualquer venda/referência que apontava pro id
+    // local antigo. Mesmo padrão de resolução já usado em produtos.upsertBatch.
+    const stmtGetId = db.prepare('SELECT id FROM clientes WHERE remote_id = ?');
     const t = db.transaction(items => {
       for (const c of items) {
+        const localId = stmtGetId.get(c.id)?.id || uuidv4();
         stmt.run(
-          c.local_id || uuidv4(), c.id, c.nome, c.nome?.toLowerCase(),
+          localId, c.id, c.nome, c.nome?.toLowerCase(),
           c.cpf_cnpj || null, c.telefone || null, c.whatsapp || null, c.email || null,
           c.cep || null, c.logradouro || null, c.numero || null, c.complemento || null,
           c.bairro || null, c.cidade || null, c.estado || null, c.referencia || null, c.obs_entrega || null,

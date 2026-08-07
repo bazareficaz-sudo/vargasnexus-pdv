@@ -19,6 +19,19 @@ function _naoDisponivel(nome) {
   };
 }
 
+// Terminais que já rodaram o antigo PDV Base44 podem ter remote_id de
+// cliente/produto herdado daquele sistema em cache local — um ObjectId de
+// 24 caracteres hex, não um UUID. Mandar isso pro Supabase como chave
+// estrangeira quebra com "invalid input syntax for type uuid" e a venda
+// fica pendente pra sempre (o valor nunca muda entre tentativas). Em vez
+// de confiar cegamente num remote_id em cache, valida o formato antes de
+// usar — se não for um UUID de verdade, trata como não vinculado (null)
+// em vez de travar a venda inteira por causa de um vínculo velho.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function _comoUuid(valor) {
+  return typeof valor === 'string' && UUID_RE.test(valor) ? valor : null;
+}
+
 // ─── Ping ─────────────────────────────────────────────────────────────
 
 async function ping() {
@@ -252,7 +265,9 @@ async function registrarVenda(venda) {
     // um item "órfão" sem bloquear o resto da venda. Sem remote_id ainda
     // resolvido (produto criado offline, sync não rodou), fica null — o
     // sistema web já trata null como "sem produto vinculado" corretamente.
-    produto_id: i.produto_remote_id || null,
+    // _comoUuid() cobre também o remote_id herdado do Base44 (24 chars,
+    // não é UUID) que pode estar em cache em terminais antigos.
+    produto_id: _comoUuid(i.produto_remote_id),
     produto_nome: i.produto_nome,
     produto_sku: i.produto_sku || null,
     quantidade: i.quantidade,
@@ -268,7 +283,7 @@ async function registrarVenda(venda) {
     empresa_fiscal_id: usuario.empresa_fiscal_id || empresaId,
     deposito_id: depositoIdVenda,
     numero: venda.numero,
-    cliente_id: venda.cliente_remote_id || null,
+    cliente_id: _comoUuid(venda.cliente_remote_id),
     cliente_nome: venda.cliente_nome || null,
     status: venda.status || 'concluida',
     tipo_operacao: 'venda',
@@ -283,7 +298,7 @@ async function registrarVenda(venda) {
     observacao: venda.observacao || null,
     terminal_id: store.get('config.terminal_id') || 'PDV-001',
     operador_nome: usuario.nome || null,
-    vendedor_id: venda.vendedor_id || null,
+    vendedor_id: _comoUuid(venda.vendedor_id),
     vendedor_nome: venda.vendedor_nome || null,
     vendedor_codigo: venda.vendedor_codigo || null,
     itens: itensPayload,
@@ -329,7 +344,7 @@ async function editarVenda(remoteId, itens, totais, forma_pagamento) {
     // um item "órfão" sem bloquear o resto da venda. Sem remote_id ainda
     // resolvido (produto criado offline, sync não rodou), fica null — o
     // sistema web já trata null como "sem produto vinculado" corretamente.
-    produto_id: i.produto_remote_id || null,
+    produto_id: _comoUuid(i.produto_remote_id),
     produto_nome: i.produto_nome,
     produto_sku: i.produto_sku || null,
     quantidade: i.quantidade,
@@ -621,7 +636,7 @@ async function registrarFalta(falta) {
   const { error } = await supabase.from('faltas').insert({
     id,
     empresa_id: empresaId,
-    produto_id: falta.produto_remote_id || null,
+    produto_id: _comoUuid(falta.produto_remote_id),
     produto_nome: falta.produto_nome,
     produto_sku: falta.produto_sku || null,
     cliente_nome: falta.cliente_nome || null,
@@ -683,7 +698,7 @@ async function sincronizarOrcamento(payload) {
   if (itens.length) {
     const { error: errItens } = await supabase.from('orcamento_itens').insert(itens.map(i => ({
       orcamento_id: orc.id,
-      produto_id: i.produto_id || null,
+      produto_id: _comoUuid(i.produto_id),
       produto_nome: i.produto_nome,
       produto_sku: i.produto_sku || null,
       quantidade: i.quantidade,
@@ -719,7 +734,9 @@ async function atualizarOrcamento(remoteId, dados) {
     if (dados.itens.length) {
       await supabase.from('orcamento_itens').insert(dados.itens.map(i => ({
         orcamento_id: remoteId,
-        produto_id: i.produto_remote_id || i.produto_id || null,
+        // Nunca cair pra i.produto_id (id local) — mesmo risco de item
+        // órfão já corrigido em vendas; aqui tinha ficado pra trás.
+        produto_id: _comoUuid(i.produto_remote_id),
         produto_nome: i.produto_nome,
         produto_sku: i.produto_sku || null,
         quantidade: i.quantidade,
