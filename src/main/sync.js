@@ -233,10 +233,20 @@ async function syncForcarProdutos() {
 }
 
 async function syncDownClientes() {
-  const ultimaSync = store.get('sync.ultima_sync_clientes');
+  // Reconciliação única pós-limpeza de duplicatas (v1.8.9): a limpeza local
+  // (database.js, deduplicarClientesLocal) escolhe qual linha local
+  // sobrevive só por sinal local (referências, mais antiga) — não tem como
+  // saber, sem rede, se o remote_id dela ainda existe depois da limpeza
+  // feita direto no Supabase (duplicatas antigas foram apagadas de lá). Uma
+  // carga completa (ignorando o checkpoint) corrige sozinha qualquer linha
+  // local cujo remote_id ainda seja válido; a que sobrou com remote_id
+  // morto fica intocada (não dá erro, só não recebe mais atualização).
+  const forcarPosLimpeza = !store.get('sync.clientes_dedup_reconciliado_v1');
+  const ultimaSync = forcarPosLimpeza ? null : store.get('sync.ultima_sync_clientes');
   emitir(mainWindowRef, 'sync:update', { ...syncStatus, progresso: 'Sincronizando clientes...' });
 
   const clientes = await api.sincronizarClientes(ultimaSync);
+  if (forcarPosLimpeza) store.set('sync.clientes_dedup_reconciliado_v1', true);
   if (clientes.length > 0) {
     db.clientes.upsertBatch(clientes.map(mapCliente));
     store.set('sync.ultima_sync_clientes', new Date().toISOString());

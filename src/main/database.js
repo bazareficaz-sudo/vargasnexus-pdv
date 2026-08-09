@@ -466,6 +466,7 @@ function runMigrations() {
 
   limparProdutosBase44Legado();
   corrigirClientesRemoteIdBase44Legado();
+  deduplicarClientesLocal();
 }
 
 // Máquinas que já tiveram o PDV Vargas (Base44) instalado antes deste app
@@ -536,6 +537,56 @@ function corrigirClientesRemoteIdBase44Legado() {
   corrigir();
 
   console.log(`[DB] Corrigidos ${antigos.length} clientes com remote_id herdado do Base44 (id inválido pro Supabase) — serão recriados no próximo sync`);
+}
+
+// clientes.upsertBatch() tinha um bug (corrigido nesta mesma versão) que
+// nunca resolvia o id local existente ao receber clientes do Supabase —
+// cada sync incremental gerava um id novo e, ao colidir com o UNIQUE de
+// remote_id da linha antiga, o SQLite apagava a antiga e ficava com as
+// duas soltas, uma órfã. Terminais que já sincronizaram clientes antes
+// desta correção têm essas cópias na base local mesmo depois do bug
+// parar de criar novas. Agrupa por (nome, telefone), mantém a linha com
+// mais referência local (venda ou movimentação de crédito) — empate, a
+// mais antiga — remapeia as referências das outras pra ela e apaga o
+// resto. Idempotente: sem duplicata sobrando, não faz nada.
+function deduplicarClientesLocal() {
+  const todos = db.prepare('SELECT id, nome_lower, telefone FROM clientes ORDER BY rowid ASC').all();
+  const grupos = {};
+  for (const c of todos) {
+    const chave = `${(c.nome_lower || '').trim()}|${(c.telefone || '').replace(/\D/g, '')}`;
+    (grupos[chave] = grupos[chave] || []).push(c.id);
+  }
+  const duplicados = Object.values(grupos).filter(ids => ids.length > 1);
+  if (!duplicados.length) return;
+
+  const contarRefs = db.prepare(`
+    SELECT (SELECT COUNT(*) FROM vendas WHERE cliente_id = ?) +
+           (SELECT COUNT(*) FROM credito_movimentacoes WHERE cliente_id = ?) AS refs
+  `);
+  const repointVendas = db.prepare('UPDATE vendas SET cliente_id = ? WHERE cliente_id = ?');
+  const repointCredito = db.prepare('UPDATE credito_movimentacoes SET cliente_id = ? WHERE cliente_id = ?');
+  const delCliente = db.prepare('DELETE FROM clientes WHERE id = ?');
+
+  let totalApagados = 0;
+  const limpar = db.transaction(() => {
+    for (const ids of duplicados) {
+      let manter = ids[0], melhorRefs = -1;
+      for (const id of ids) {
+        const { refs } = contarRefs.get(id, id);
+        if (refs > melhorRefs) { melhorRefs = refs; manter = id; }
+      }
+      for (const id of ids) {
+        if (id === manter) continue;
+        repointVendas.run(manter, id);
+        repointCredito.run(manter, id);
+        delCliente.run(id);
+        totalApagados++;
+      }
+    }
+  });
+  limpar();
+
+  console.log(`[DB] Deduplicação local de clientes: ${duplicados.length} grupos, ${totalApagados} linhas removidas (referências remapeadas pro registro mantido)`);
 }
 
 function createIndexes() {
@@ -881,9 +932,22 @@ const clientes = {
     // atualizá-la, órfão de qualquer venda/referência que apontava pro id
     // local antigo. Mesmo padrão de resolução já usado em produtos.upsertBatch.
     const stmtGetId = db.prepare('SELECT id FROM clientes WHERE remote_id = ?');
+    // Segundo nível de resolução, por nome+telefone: cobre o terminal que
+    // já tinha uma linha local desse cliente com um remote_id desatualizado
+    // (ex: sobrou de uma limpeza de duplicatas feita direto no Supabase,
+    // onde o sobrevivente escolhido lá não é o mesmo que sobrou localmente)
+    // — sem isso, essa linha nunca é encontrada por remote_id e o próximo
+    // sync completo cria uma segunda linha local pro mesmo cliente.
+    const stmtGetIdPorNomeTelefone = db.prepare(
+      "SELECT id FROM clientes WHERE nome_lower = ? AND telefone IS ? LIMIT 1"
+    );
     const t = db.transaction(items => {
       for (const c of items) {
-        const localId = stmtGetId.get(c.id)?.id || uuidv4();
+        const nomeLower = c.nome?.toLowerCase() || null;
+        const telefone = c.telefone || null;
+        const localId = stmtGetId.get(c.id)?.id
+          || stmtGetIdPorNomeTelefone.get(nomeLower, telefone)?.id
+          || uuidv4();
         stmt.run(
           localId, c.id, c.nome, c.nome?.toLowerCase(),
           c.cpf_cnpj || null, c.telefone || null, c.whatsapp || null, c.email || null,
