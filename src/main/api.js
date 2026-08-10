@@ -256,6 +256,27 @@ async function sincronizarEstoque() {
 
 // ─── Vendas ───────────────────────────────────────────────────────────
 
+// _comoUuid() só valida o FORMATO do remote_id em cache — não pega o caso
+// de um UUID bem formado que não existe mais no Supabase (ex: era uma das
+// duplicatas removidas na limpeza de clientes). Isso só aparece na hora do
+// INSERT, como violação da FK vendas_cliente_id_fkey. Resolve de novo por
+// nome+telefone (ou cria, se realmente não existir) em vez de desistir —
+// pra venda com forma de pagamento carteira/fiado, cliente_id é o que
+// amarra a dívida a alguém de verdade, não dá pra simplesmente cair pra null.
+async function _resolverOuCriarClienteRemoto(clienteLocal, empresaId) {
+  if (!clienteLocal?.nome) return null;
+  const nomeAlvo = clienteLocal.nome.trim().toLowerCase();
+  const telAlvo = (clienteLocal.telefone || '').replace(/\D/g, '');
+  const { data: todos } = await supabase.from('clientes').select('id, nome, telefone').eq('empresa_id', empresaId);
+  const encontrado = (todos || []).find(c =>
+    (c.nome || '').trim().toLowerCase() === nomeAlvo &&
+    (c.telefone || '').replace(/\D/g, '') === telAlvo
+  );
+  if (encontrado) return encontrado.id;
+  const criado = await registrarCliente(clienteLocal);
+  return criado.id;
+}
+
 async function registrarVenda(venda) {
   const usuario = store.get('auth.usuario') || {};
   const empresaId = usuario.empresa_estoque_id || usuario.empresa_id || venda.empresa_id;
@@ -278,12 +299,13 @@ async function registrarVenda(venda) {
 
   const depositoIdVenda = usuario.deposito_id || venda.deposito_id || null;
 
-  const { data: novaVenda, error } = await supabase.from('vendas').insert({
+  let clienteIdVenda = _comoUuid(venda.cliente_remote_id);
+  const montarInsert = () => ({
     empresa_id: empresaId,
     empresa_fiscal_id: usuario.empresa_fiscal_id || empresaId,
     deposito_id: depositoIdVenda,
     numero: venda.numero,
-    cliente_id: _comoUuid(venda.cliente_remote_id),
+    cliente_id: clienteIdVenda,
     cliente_nome: venda.cliente_nome || null,
     status: venda.status || 'concluida',
     tipo_operacao: 'venda',
@@ -302,7 +324,17 @@ async function registrarVenda(venda) {
     vendedor_nome: venda.vendedor_nome || null,
     vendedor_codigo: venda.vendedor_codigo || null,
     itens: itensPayload,
-  }).select().single();
+  });
+
+  let { data: novaVenda, error } = await supabase.from('vendas').insert(montarInsert()).select().single();
+
+  if (error?.message?.includes('vendas_cliente_id_fkey') && clienteIdVenda) {
+    console.warn('[VENDA] cliente_id não existe mais no Supabase, resolvendo de novo por nome+telefone:', clienteIdVenda);
+    clienteIdVenda = await _resolverOuCriarClienteRemoto(
+      { nome: venda.cliente_nome, telefone: venda.cliente_telefone }, empresaId
+    );
+    ({ data: novaVenda, error } = await supabase.from('vendas').insert(montarInsert()).select().single());
+  }
 
   if (error) throw new Error(`Supabase registrarVenda: ${error.message}`);
 
@@ -331,7 +363,7 @@ async function registrarVenda(venda) {
     }
   }
 
-  return { id: novaVenda.id };
+  return { id: novaVenda.id, cliente_id_usado: clienteIdVenda };
 }
 
 // UPDATE em vendas e DELETE em venda_itens foram revogados do anon — passa

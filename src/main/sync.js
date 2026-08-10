@@ -464,6 +464,15 @@ async function _sincronizarVendaCreate(vendaId) {
     db.db().prepare('UPDATE vendas SET remote_id = ?, sync_status = ?, synced_at = ? WHERE id = ?')
       .run(res.id, 'synced', new Date().toISOString(), vendaId);
   }
+  // registrarVenda pode ter resolvido um cliente_id diferente do que
+  // mandamos (o em cache não existia mais no Supabase — ver
+  // _resolverOuCriarClienteRemoto em api.js). Atualiza o cache local pra
+  // não bater no mesmo problema na próxima venda desse cliente.
+  if (venda.cliente_id && res?.cliente_id_usado && res.cliente_id_usado !== venda.cliente_remote_id) {
+    db.db().prepare('UPDATE clientes SET remote_id = ?, sync_status = ?, synced_at = ? WHERE id = ?')
+      .run(res.cliente_id_usado, 'synced', new Date().toISOString(), venda.cliente_id);
+    console.log(`[SYNC] Cliente "${venda.cliente_nome}" — remote_id corrigido após venda`);
+  }
   return res?.id || null;
 }
 
