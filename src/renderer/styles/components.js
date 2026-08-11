@@ -2279,6 +2279,30 @@ const Config = {
   </div>
 
   <div class="card" style="margin-bottom:16px">
+    <div style="font-size:13px;font-weight:600;margin-bottom:4px">🖥️ Tela do Cliente</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:14px">
+      Usa um segundo monitor conectado a este terminal como vitrine — mostra a foto e o preço do produto que o vendedor selecionar no carrinho.
+    </div>
+    <div id="cfg-tela-cliente-status" style="font-size:12px;color:var(--text3);margin-bottom:10px">Verificando monitor...</div>
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <div>
+        <div style="font-size:13px;font-weight:500">Ativar Tela do Cliente</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:2px">Abre a vitrine no segundo monitor deste terminal</div>
+      </div>
+      <label style="position:relative;display:inline-block;width:44px;height:24px;flex-shrink:0">
+        <input type="checkbox" id="cfg-tela-cliente"
+          style="opacity:0;width:0;height:0"
+          onchange="Config._onTelaClienteToggle(this.checked)">
+        <span id="cfg-toggle-tela-cliente"
+          style="position:absolute;cursor:pointer;inset:0;background:var(--bg3);border:1px solid var(--border2);border-radius:24px;transition:.2s">
+          <span id="cfg-toggle-tela-cliente-knob"
+            style="position:absolute;height:18px;width:18px;left:2px;top:2px;background:var(--text3);border-radius:50%;transition:.2s"></span>
+        </span>
+      </label>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
     <div style="font-size:13px;font-weight:600;margin-bottom:14px">🧾 Fiscal (NFC-e / FocusNFe)</div>
     <!-- Empresa fiscal da sessão (somente leitura — vem do login) -->
     <div id="cfg-fiscal-empresa-info" style="background:var(--bg3);border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:12px;color:var(--text2)">
@@ -2364,6 +2388,18 @@ const Config = {
       const ts = await window.pdv.tunnel.status();
       if (ts) this._atualizarUiTunnel({ estado: ts.ativo ? 'ativo' : 'parado', url: ts.url, mensagem: ts.ativo ? `Tunnel ativo: ${ts.url}` : 'Tunnel inativo' });
       window.pdv.tunnel.onStatus((s) => this._atualizarUiTunnel(s));
+    }
+
+    // Tela do Cliente
+    const telaClienteStatus = await window.pdv.telaCliente.status();
+    this._setToggle('cfg-tela-cliente', 'cfg-toggle-tela-cliente', 'cfg-toggle-tela-cliente-knob', telaClienteStatus.ativa);
+    const elTC = f('cfg-tela-cliente-status');
+    if (elTC) {
+      elTC.textContent = telaClienteStatus.ativa
+        ? '🟢 Ativa'
+        : telaClienteStatus.disponivel
+          ? '⭕ Segundo monitor detectado — desativada'
+          : '⚪ Nenhum segundo monitor detectado neste terminal';
     }
 
     const temaAtual = await window.pdv.config.get('config.tema') || 'dark';
@@ -2552,6 +2588,20 @@ const Config = {
       const status = await window.pdv.print.serverStatus();
       const el = document.getElementById('cfg-print-status');
       if (el) el.textContent = status.rodando ? '🟢 Servidor já está ativo' : '⭕ Servidor inativo — salve para ativar';
+    }
+  },
+
+  async _onTelaClienteToggle(ativo) {
+    if (ativo) await window.pdv.telaCliente.ativar();
+    else await window.pdv.telaCliente.desativar();
+    const status = await window.pdv.telaCliente.status();
+    this._setToggle('cfg-tela-cliente', 'cfg-toggle-tela-cliente', 'cfg-toggle-tela-cliente-knob', status.ativa);
+    const el = document.getElementById('cfg-tela-cliente-status');
+    if (ativo && !status.ativa) {
+      if (el) el.textContent = '⚪ Nenhum segundo monitor detectado neste terminal';
+      Toast.show('Nenhum segundo monitor encontrado — conecte um monitor e tente de novo', 'warning');
+    } else if (el) {
+      el.textContent = status.ativa ? '🟢 Ativa' : '⭕ Desativada';
     }
   },
 

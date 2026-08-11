@@ -1,10 +1,11 @@
-const { app, BrowserWindow, ipcMain, Menu, Tray, dialog, nativeTheme, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, Menu, Tray, dialog, nativeTheme, shell, screen } = require('electron');
 const path = require('path');
 const Store = require('electron-store');
 
 const store = new Store();
 let mainWindow;
 let tray;
+let clienteWindow = null; // "Tela do Cliente" — vitrine no segundo monitor, ver abrirTelaCliente()
 
 // ─── Imports internos ───────────────────────────────────────────
 const db = require('./database');
@@ -54,6 +55,26 @@ function createWindow() {
       const porta = store.get('config.print_server_porta') || 3001;
       printServer.start(porta);
     }
+    // Tela do Cliente: se já está ligada neste terminal, abre direto. Senão,
+    // se detectar um segundo monitor pela primeira vez, pergunta uma única
+    // vez (config.tela_cliente_pergunta_feita evita perguntar de novo depois
+    // de recusado — fica disponível pra ligar manualmente nas Configurações).
+    if (store.get('config.tela_cliente_ativa') === true) {
+      abrirTelaCliente();
+    } else if (screen.getAllDisplays().length > 1 && !store.get('config.tela_cliente_pergunta_feita')) {
+      store.set('config.tela_cliente_pergunta_feita', true);
+      const resp = dialog.showMessageBoxSync(mainWindow, {
+        type: 'question',
+        buttons: ['Ativar', 'Agora não'],
+        defaultId: 0,
+        title: 'Segundo monitor detectado',
+        message: 'Detectamos um segundo monitor conectado. Deseja ativar a Tela do Cliente nele (mostra foto e preço do produto selecionado para o cliente)?',
+      });
+      if (resp === 0) {
+        store.set('config.tela_cliente_ativa', true);
+        abrirTelaCliente();
+      }
+    }
     // Atualização automática (só em produção — não no dev)
     if (app.isPackaged) {
       updater.init(mainWindow);
@@ -61,6 +82,46 @@ function createWindow() {
   });
 
   mainWindow.on('closed', () => { mainWindow = null; });
+}
+
+// ─── Tela do Cliente (vitrine no segundo monitor) ─────────────────
+// Único precedente de segunda BrowserWindow no projeto (print:orcamento) é
+// oculta e efêmera, só pra gerar impressão. Esta é visível e persistente —
+// mostra o produto que o vendedor acabou de selecionar no carrinho (foto,
+// nome, preço) pro cliente ver, e volta pra logo quando não há produto em
+// foco. Só um terminal tem o segundo monitor hoje; os outros ganham aos
+// poucos — por isso é opt-in (per-terminal, via config local).
+function abrirTelaCliente() {
+  if (clienteWindow) return; // já aberta
+  const displays = screen.getAllDisplays();
+  const principal = screen.getPrimaryDisplay();
+  const externo = displays.find(d => d.id !== principal.id);
+  if (!externo) {
+    console.warn('[TELA-CLIENTE] Nenhum segundo monitor encontrado — não abriu');
+    return;
+  }
+
+  clienteWindow = new BrowserWindow({
+    x: externo.bounds.x,
+    y: externo.bounds.y,
+    width: externo.bounds.width,
+    height: externo.bounds.height,
+    fullscreen: true,
+    frame: false,
+    backgroundColor: '#0f0f0f',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-cliente.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+  clienteWindow.setMenuBarVisibility(false);
+  clienteWindow.loadFile(path.join(__dirname, '../renderer/tela-cliente.html'));
+  clienteWindow.on('closed', () => { clienteWindow = null; });
+}
+
+function fecharTelaCliente() {
+  if (clienteWindow) { clienteWindow.close(); clienteWindow = null; }
 }
 
 // ─── Migrar campos de empresa do usuário logado ─────────────────
@@ -165,6 +226,28 @@ app.on('window-all-closed', () => {
 ipcMain.handle('config:get', (_, key) => store.get(key));
 ipcMain.handle('config:set', (_, key, val) => store.set(key, val));
 ipcMain.handle('config:getAll', () => store.store);
+
+// Tela do Cliente (vitrine no segundo monitor) — ver abrirTelaCliente() acima
+ipcMain.handle('telaCliente:produto', (_, produto) => {
+  clienteWindow?.webContents.send('cliente:produto', produto);
+});
+ipcMain.handle('telaCliente:idle', () => {
+  clienteWindow?.webContents.send('cliente:idle');
+});
+ipcMain.handle('telaCliente:status', () => ({
+  ativa: !!clienteWindow,
+  disponivel: screen.getAllDisplays().length > 1,
+}));
+ipcMain.handle('telaCliente:ativar', () => {
+  store.set('config.tela_cliente_ativa', true);
+  abrirTelaCliente();
+  return { ok: true, ativa: !!clienteWindow };
+});
+ipcMain.handle('telaCliente:desativar', () => {
+  store.set('config.tela_cliente_ativa', false);
+  fecharTelaCliente();
+  return { ok: true };
+});
 
 // Sugestões
 ipcMain.handle('sugestoes:porCarrinho', (_, ids) => db.sugestoes.porCarrinho(ids));

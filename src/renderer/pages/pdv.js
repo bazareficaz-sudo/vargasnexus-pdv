@@ -483,6 +483,10 @@ const PDV = (() => {
     document.getElementById('qp-qty').focus();
     document.getElementById('qp-qty').select();
     showProductImage(produto);
+    window.pdv.telaCliente?.produto({
+      nome: produto.nome, preco_venda: produto.preco_venda,
+      foto_url: produto.foto_url || null, sku: produto.sku || null,
+    });
   }
 
   function fecharQtyPanel() {
@@ -672,6 +676,7 @@ const PDV = (() => {
     document.getElementById('pdv-desconto').value = 0;
     const imgWrap = document.getElementById('pdv-produto-img');
     if (imgWrap) imgWrap.style.display = 'none';
+    window.pdv.telaCliente?.idle();
     renderCart();
     updateTotals();
     renderClientBar();

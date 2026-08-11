@@ -10,6 +10,15 @@ contextBridge.exposeInMainWorld('pdv', {
     getAll: () => ipcRenderer.invoke('config:getAll'),
   },
 
+  // Tela do Cliente (vitrine no segundo monitor)
+  telaCliente: {
+    produto: (p) => ipcRenderer.invoke('telaCliente:produto', p),
+    idle: () => ipcRenderer.invoke('telaCliente:idle'),
+    status: () => ipcRenderer.invoke('telaCliente:status'),
+    ativar: () => ipcRenderer.invoke('telaCliente:ativar'),
+    desativar: () => ipcRenderer.invoke('telaCliente:desativar'),
+  },
+
   // Sugestões de produtos
   sugestoes: {
     porCarrinho:  (ids) => ipcRenderer.invoke('sugestoes:porCarrinho', ids),
