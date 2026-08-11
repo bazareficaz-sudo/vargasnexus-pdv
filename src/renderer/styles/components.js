@@ -1350,7 +1350,7 @@ const Vendas = {
     }
   },
 
-  _renderPreview(numero, itens, total, subtotal, desconto, forma_pagamento, troco, vendedor_nome, cliente_nome, created_at) {
+  _renderPreview(numero, itens, total, subtotal, desconto, forma_pagamento, troco, vendedor_nome, cliente_nome, created_at, observacao) {
     const itensPos = itens.filter(i => i.quantidade > 0);
     const itensNeg = itens.filter(i => i.quantidade < 0);
     const linhaItem = i => `
@@ -1376,6 +1376,7 @@ const Vendas = {
   </div>
   <div style="margin-top:10px;color:var(--text2);font-size:12px">Pagamento: ${(forma_pagamento||'').toUpperCase()}</div>
   ${troco > 0 ? `<div style="color:var(--green)">Troco: R$ ${fmtMoney(troco)}</div>` : ''}
+  ${observacao ? `<div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--border2);font-size:12px;color:var(--text2)">📝 ${observacao}</div>` : ''}
 </div>`;
   },
 
@@ -1390,10 +1391,10 @@ const Vendas = {
       itens: (venda.itens || []).map(i => ({ produto_nome: i.produto_nome, quantidade: i.quantidade, preco_unitario: i.preco_unitario, subtotal: i.total })),
       subtotal: venda.subtotal, desconto: venda.desconto || 0, total: venda.total,
       forma_pagamento: venda.forma_pagamento, valor_pago: venda.valor_pago,
-      troco: venda.troco || 0, created_at: venda.created_at,
+      troco: venda.troco || 0, created_at: venda.created_at, observacao: venda.observacao || null,
     };
     this._printDados = dados;
-    const preview = this._renderPreview(venda.numero, venda.itens, venda.total, venda.subtotal, venda.desconto || 0, venda.forma_pagamento, venda.troco || 0, venda.vendedor_nome, venda.cliente_nome, venda.created_at);
+    const preview = this._renderPreview(venda.numero, venda.itens, venda.total, venda.subtotal, venda.desconto || 0, venda.forma_pagamento, venda.troco || 0, venda.vendedor_nome, venda.cliente_nome, venda.created_at, venda.observacao);
     Modal.open(`${preview}<div class="modal-actions"><button class="btn btn-ghost" onclick="Modal.close()">Fechar</button><button class="btn btn-primary" onclick="Vendas._confirmarImpressao()">🖨️ Imprimir</button></div>`, `Comprovante #${venda.numero}`, '');
   },
 
@@ -1412,9 +1413,10 @@ const Vendas = {
       itens, subtotal: v.subtotal || v.total, desconto: v.desconto_total || 0,
       total: v.total, forma_pagamento: v.forma_pagamento,
       valor_pago: v.valor_recebido || v.total, troco: v.troco || 0, created_at: v.created_date,
+      observacao: v.observacao || null,
     };
     this._printDados = dados;
-    const preview = this._renderPreview(v.numero, itens, v.total, v.subtotal || v.total, v.desconto_total || 0, v.forma_pagamento, v.troco || 0, v.vendedor_nome, v.cliente_nome, v.created_date);
+    const preview = this._renderPreview(v.numero, itens, v.total, v.subtotal || v.total, v.desconto_total || 0, v.forma_pagamento, v.troco || 0, v.vendedor_nome, v.cliente_nome, v.created_date, v.observacao);
     Modal.open(`${preview}<div class="modal-actions"><button class="btn btn-ghost" onclick="Modal.close()">Fechar</button><button class="btn btn-primary" onclick="Vendas._confirmarImpressao()">🖨️ Imprimir</button></div>`, `Comprovante #${v.numero}`, '');
   },
 

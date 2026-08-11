@@ -8,6 +8,7 @@ const PDV = (() => {
   let vendedorAtual = null; // { id, codigo, nome, comissao }
   let dadosEntrega = null;  // preenchido na etapa "Agendar Entrega"
   let modoEdicao = null;    // { vendaId, numero, remote_id } — null = venda nova
+  let pedidoObservacao = ''; // nota livre do pedido (ex: telefone pra ligar) — impressa no comprovante
   let _ultimaVenda = null;  // { numero, remoteId, venda } — usado pelos botões do comprovante
   let vendasEmEspera = [];  // atendimentos pausados — persistidos em config.pdv.vendasEmEspera
 
@@ -151,6 +152,9 @@ const PDV = (() => {
     <div class="pdv-actions">
       <button class="btn btn-ghost pdv-action-icon" onclick="PDV.colocarEmEspera()" title="Colocar em espera (F7)">⏸</button>
       <button class="btn btn-ghost pdv-action-icon" onclick="PDV.clearCart()" title="Limpar carrinho (F8)">🗑</button>
+      <button class="btn btn-ghost pdv-action-icon" id="btn-obs" onclick="PDV.abrirObservacao()" title="Observação do pedido">
+        🗒️
+      </button>
       <button class="btn btn-ghost pdv-action-icon" id="btn-orc" onclick="PDV.salvarComoOrcamento()" disabled title="Salvar como orçamento sem baixar estoque">
         📝
       </button>
@@ -275,6 +279,7 @@ const PDV = (() => {
 .pdv-actions .btn{min-width:0}
 .pdv-actions .btn-lg{padding:10px 8px;font-size:13px;overflow:hidden;text-overflow:ellipsis}
 .pdv-action-icon{flex:0 0 auto;width:38px;padding:0!important;font-size:15px}
+.pdv-action-icon.has-obs{background:var(--accent-bg);border-color:var(--accent)}
 
 .pdv-espera-bar{
   display:flex;gap:6px;align-items:center;flex-wrap:wrap;
@@ -616,6 +621,35 @@ const PDV = (() => {
     updateTotals();
   }
 
+  // ─── Observação do pedido (impressa no comprovante/orçamento) ────
+  function abrirObservacao() {
+    Modal.open(`
+<textarea class="input" id="pdv-obs-texto" rows="3" maxlength="300"
+  placeholder="Ex: ligar para (21) 99999-8888 antes de entregar"
+  style="width:100%;resize:vertical;font-size:13px;font-family:inherit"
+  onkeydown="if(event.key==='Enter' && event.ctrlKey) PDV._salvarObservacao()"
+>${pedidoObservacao || ''}</textarea>
+<div class="modal-actions">
+  <button class="btn btn-ghost" onclick="Modal.close()">Cancelar</button>
+  <button class="btn btn-primary" onclick="PDV._salvarObservacao()">Salvar</button>
+</div>`, 'Observação do pedido');
+    setTimeout(() => document.getElementById('pdv-obs-texto')?.focus(), 80);
+  }
+
+  function _salvarObservacao() {
+    pedidoObservacao = document.getElementById('pdv-obs-texto')?.value.trim() || '';
+    Modal.close();
+    _atualizarBotaoObservacao();
+    Toast.show(pedidoObservacao ? 'Observação salva' : 'Observação removida', 'info');
+  }
+
+  function _atualizarBotaoObservacao() {
+    const btn = document.getElementById('btn-obs');
+    if (!btn) return;
+    btn.classList.toggle('has-obs', !!pedidoObservacao);
+    btn.title = pedidoObservacao ? `Observação: ${pedidoObservacao}` : 'Observação do pedido';
+  }
+
   function removeItem(produtoId) {
     cart = cart.filter(i => i.produto_id !== produtoId);
     renderCart();
@@ -631,6 +665,8 @@ const PDV = (() => {
     modoEdicao = null;
     payMethod = 'dinheiro';
     valorPago = 0;
+    pedidoObservacao = '';
+    _atualizarBotaoObservacao();
     const banner = document.getElementById('pdv-edicao-banner');
     if (banner) banner.style.display = 'none';
     document.getElementById('pdv-desconto').value = 0;
@@ -648,6 +684,7 @@ const PDV = (() => {
       numero, label,
       cart: JSON.parse(JSON.stringify(cart)),
       selectedClient, vendedorAtual, dadosEntrega, payMethod, valorPago, modoEdicao,
+      observacao: pedidoObservacao,
       desconto: getDesconto(),
       criadoEm: new Date().toISOString(),
     };
@@ -702,6 +739,8 @@ const PDV = (() => {
     payMethod = v.payMethod || 'dinheiro';
     valorPago = v.valorPago || 0;
     modoEdicao = v.modoEdicao || null;
+    pedidoObservacao = v.observacao || '';
+    _atualizarBotaoObservacao();
 
     const elDesc = document.getElementById('pdv-desconto');
     if (elDesc) elDesc.value = v.desconto || 0;
@@ -1339,6 +1378,7 @@ const PDV = (() => {
       usa_credito: payMethod === 'carteira',
       devolucao: eDevolucao,
       valor_devolvido: valorDevolver,
+      observacao: pedidoObservacao || null,
       itens: cart.map(i => ({
         produto_id: i.produto_id,
         produto_nome: i.produto_nome,
@@ -1553,6 +1593,7 @@ const PDV = (() => {
         forma_pagamento: venda.forma_pagamento,
         valor_pago: venda.valor_pago,
         troco: venda.troco || 0,
+        observacao: venda.observacao || null,
         created_at: venda.created_at || new Date().toISOString(),
       };
       const ip = await window.pdv.config.get('config.print_server_ip');
@@ -1952,6 +1993,12 @@ const PDV = (() => {
     vendedorAtual = null;
     payMethod = venda.forma_pagamento || 'dinheiro';
     valorPago = 0;
+    // Edição de venda não altera observação (a tela de edição não manda
+    // esse campo pro servidor) — evita mostrar no botão uma nota antiga
+    // sem relação com o pedido em edição, ou dar a entender que dá pra
+    // trocar a observação por aqui.
+    pedidoObservacao = '';
+    _atualizarBotaoObservacao();
 
     // Guardar referência da venda original
     modoEdicao = { vendaId: venda.id, numero: venda.numero, remote_id: venda.remote_id || null };
@@ -2021,7 +2068,7 @@ const PDV = (() => {
       forma_pagamento:  payMethod || 'dinheiro',
       validade_dias:    7,
       subtotal, desconto, total,
-      observacao:       null,
+      observacao:       pedidoObservacao || null,
       itens: cart.filter(i => i.quantidade > 0).map(i => ({
         produto_id:     i.produto_id,
         produto_nome:   i.produto_nome,
@@ -2097,6 +2144,7 @@ const PDV = (() => {
     initCursorHide();
     renderClientBar();
     carregarEsperas();
+    _atualizarBotaoObservacao();
     // Restaurar carrinho se houver itens da sessão anterior
     if (cart.length > 0) {
       renderCart();
@@ -2117,5 +2165,6 @@ const PDV = (() => {
     _reimprimir, _enviarImpressao, _emitirNFCeComprovante,
     verContaCliente, _receberCredito,
     salvarComoOrcamento, carregarDoOrcamento,
-    colocarEmEspera, retomarEspera, descartarEspera };
+    colocarEmEspera, retomarEspera, descartarEspera,
+    abrirObservacao, _salvarObservacao };
 })();

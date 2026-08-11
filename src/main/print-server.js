@@ -31,7 +31,7 @@ const LAYOUTS = {
 function gerarHtmlCupom(dados) {
   const { numero, empresa_nome, vendedor_nome, cliente_nome, itens = [],
           subtotal = 0, desconto = 0, total = 0, forma_pagamento = '',
-          valor_pago = 0, troco = 0, created_at } = dados;
+          valor_pago = 0, troco = 0, created_at, observacao = '' } = dados;
 
   const layoutNome = store.get('config.cupom_layout') || 'padrao';
   const L = LAYOUTS[layoutNome] || LAYOUTS.padrao;
@@ -106,6 +106,8 @@ function gerarHtmlCupom(dados) {
     ${valor_pago > 0 ? `<br>Recebido: R$ ${fmt(valor_pago)}` : ''}
     ${troco > 0     ? `<br>Troco: R$ ${fmt(troco)}`         : ''}
   </div>
+
+  ${observacao ? `<hr class="sep"><div class="sm">📝 ${observacao}</div>` : ''}
 
   <hr class="sep">
   <div class="center sm" style="margin-top:4px">Obrigado pela preferencia!</div>

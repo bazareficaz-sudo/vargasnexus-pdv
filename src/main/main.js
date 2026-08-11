@@ -435,7 +435,7 @@ ipcMain.handle('whatsapp:enviar', async (_, tipo, id, telefone, dadosExtras) => 
         itens, subtotal: venda.subtotal || venda.total,
         desconto: venda.desconto || 0, total: venda.total,
         forma_pagamento: venda.forma_pagamento, valor_pago: venda.valor_recebido || venda.total,
-        troco: venda.troco || 0, created_at: venda.created_at,
+        troco: venda.troco || 0, created_at: venda.created_at, observacao: venda.observacao || '',
       });
       const htmlForPdf = html.replace('</head>', `<style>
         @page { size: A4; margin: 15mm 20mm; }
