@@ -148,6 +148,7 @@ function mapProduto(p) {
     icms_origem: p.icms_origem ?? 0,
     pis_cst:   p.pis_cst   || null,
     cofins_cst:p.cofins_cst|| null,
+    tags:      Array.isArray(p.tags) ? p.tags : [],
   };
 }
 

@@ -5,5 +5,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('telaCliente', {
   onProduto: (cb) => ipcRenderer.on('cliente:produto', (_, data) => cb(data)),
-  onIdle: (cb) => ipcRenderer.on('cliente:idle', () => cb()),
+  // data: { produtos, intervaloSeg, tag } — produtos com a tag de destaque,
+  // pro carrossel enquanto ociosa. produtos vazio = só mostra a logo.
+  onIdle: (cb) => ipcRenderer.on('cliente:idle', (_, data) => cb(data)),
 });

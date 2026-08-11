@@ -365,6 +365,7 @@ function runMigrations() {
     'ALTER TABLE produtos ADD COLUMN icms_origem INTEGER DEFAULT 0',
     'ALTER TABLE produtos ADD COLUMN pis_cst TEXT DEFAULT \'07\'',
     'ALTER TABLE produtos ADD COLUMN cofins_cst TEXT DEFAULT \'07\'',
+    'ALTER TABLE produtos ADD COLUMN tags TEXT', // JSON — array de strings (ex: ["NOVIDADE"]), usado pelo carrossel da Tela do Cliente
     `CREATE TABLE IF NOT EXISTS entregas (
       id TEXT PRIMARY KEY, remote_id TEXT UNIQUE,
       empresa_id TEXT, empresa_nome TEXT, venda_id TEXT, venda_numero INTEGER,
@@ -779,9 +780,9 @@ const produtos = {
       INSERT OR IGNORE INTO produtos
       (id, remote_id, nome, nome_lower, sku, ean, preco_venda, preco_custo,
        unidade, categoria, marca, foto_url, ativo, disponivel_pdv, permite_fracao,
-       ncm, cfop, icms_cst, icms_origem, pis_cst, cofins_cst,
+       ncm, cfop, icms_cst, icms_origem, pis_cst, cofins_cst, tags,
        updated_at, synced_at, sync_status)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
     // UPDATE que preserva campos fiscais locais quando pendentes
     const stmtUpdate = db.prepare(`
@@ -796,6 +797,7 @@ const produtos = {
         icms_origem= CASE WHEN sync_status = 'pending' THEN icms_origem ELSE ? END,
         pis_cst    = CASE WHEN sync_status = 'pending' THEN pis_cst    ELSE ? END,
         cofins_cst = CASE WHEN sync_status = 'pending' THEN cofins_cst ELSE ? END,
+        tags       = ?,
         updated_at = ?, synced_at = ?,
         sync_status = CASE WHEN sync_status = 'pending' THEN 'pending' ELSE 'synced' END
       WHERE remote_id = ?
@@ -820,6 +822,7 @@ const produtos = {
         const icmsOri = p.icms_origem !== undefined ? p.icms_origem : 0;
         const pisCst  = p.pis_cst   || null;
         const cofCst  = p.cofins_cst|| null;
+        const tagsJson = JSON.stringify(Array.isArray(p.tags) ? p.tags : []);
 
         stmtInsert.run(
           localId, p.id,
@@ -831,7 +834,7 @@ const produtos = {
           p.ativo !== false ? 1 : 0,
           p.disponivel_pdv !== false ? 1 : 0,
           p.permite_fracao ? 1 : 0,
-          ncm, cfop, icmsCst, icmsOri, pisCst, cofCst,
+          ncm, cfop, icmsCst, icmsOri, pisCst, cofCst, tagsJson,
           p.updated_at || now, now, 'synced'
         );
 
@@ -844,7 +847,7 @@ const produtos = {
           p.ativo !== false ? 1 : 0,
           p.disponivel_pdv !== false ? 1 : 0,
           p.permite_fracao ? 1 : 0,
-          ncm, cfop, icmsCst, icmsOri, pisCst, cofCst,
+          ncm, cfop, icmsCst, icmsOri, pisCst, cofCst, tagsJson,
           p.updated_at || now, now,
           p.id
         );
@@ -856,7 +859,20 @@ const produtos = {
       }
     });
     transaction(lista);
-  }
+  },
+
+  // Produtos com a tag de destaque (ex: "NOVIDADE") — carrossel da Tela do
+  // Cliente enquanto ociosa. tags é armazenado como JSON local; o LIKE
+  // busca a string exata entre aspas, então "NOVO" não confunde com "NOVIDADE".
+  destaque(tag, limite = 20) {
+    if (!tag) return [];
+    return db.prepare(`
+      SELECT nome, sku, preco_venda, foto_url
+      FROM produtos
+      WHERE ativo = 1 AND disponivel_pdv = 1 AND tags LIKE ?
+      ORDER BY updated_at DESC LIMIT ?
+    `).all(`%"${tag}"%`, limite);
+  },
 };
 
 // ─── CLIENTES ─────────────────────────────────────────────────────

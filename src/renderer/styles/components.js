@@ -2300,6 +2300,26 @@ const Config = {
         </span>
       </label>
     </div>
+
+    <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:10px">
+        Enquanto ociosa (sem produto selecionado), a vitrine pode girar entre os produtos com uma tag de destaque — ex: produtos marcados "NOVIDADE" no cadastro.
+      </div>
+      <div class="form-group">
+        <label class="form-label">Tag de destaque</label>
+        <input class="input" id="cfg-tela-cliente-tag" placeholder="NOVIDADE" style="max-width:220px">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Trocar de produto a cada</label>
+        <select class="input" id="cfg-tela-cliente-intervalo" style="max-width:160px">
+          <option value="5">5 segundos</option>
+          <option value="8" selected>8 segundos</option>
+          <option value="12">12 segundos</option>
+          <option value="20">20 segundos</option>
+        </select>
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="Config.salvarTelaCliente()">Salvar</button>
+    </div>
   </div>
 
   <div class="card" style="margin-bottom:16px">
@@ -2401,6 +2421,8 @@ const Config = {
           ? '⭕ Segundo monitor detectado — desativada'
           : '⚪ Nenhum segundo monitor detectado neste terminal';
     }
+    if (f('cfg-tela-cliente-tag')) f('cfg-tela-cliente-tag').value = await window.pdv.config.get('config.tela_cliente_tag_destaque') || 'NOVIDADE';
+    if (f('cfg-tela-cliente-intervalo')) f('cfg-tela-cliente-intervalo').value = String(await window.pdv.config.get('config.tela_cliente_intervalo_segundos') || 8);
 
     const temaAtual = await window.pdv.config.get('config.tema') || 'dark';
     this._marcarTema(temaAtual);
@@ -2603,6 +2625,14 @@ const Config = {
     } else if (el) {
       el.textContent = status.ativa ? '🟢 Ativa' : '⭕ Desativada';
     }
+  },
+
+  async salvarTelaCliente() {
+    const tag = document.getElementById('cfg-tela-cliente-tag')?.value.trim() || 'NOVIDADE';
+    const intervalo = parseInt(document.getElementById('cfg-tela-cliente-intervalo')?.value || '8', 10);
+    await window.pdv.config.set('config.tela_cliente_tag_destaque', tag);
+    await window.pdv.config.set('config.tela_cliente_intervalo_segundos', intervalo);
+    Toast.show('Configuração da Tela do Cliente salva!', 'success');
   },
 
   async carregarImpressoras() {

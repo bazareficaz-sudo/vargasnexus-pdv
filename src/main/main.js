@@ -118,10 +118,25 @@ function abrirTelaCliente() {
   clienteWindow.setMenuBarVisibility(false);
   clienteWindow.loadFile(path.join(__dirname, '../renderer/tela-cliente.html'));
   clienteWindow.on('closed', () => { clienteWindow = null; });
+  clienteWindow.webContents.once('did-finish-load', () => {
+    clienteWindow?.webContents.send('cliente:idle', _dadosIdleTelaCliente());
+  });
 }
 
 function fecharTelaCliente() {
   if (clienteWindow) { clienteWindow.close(); clienteWindow = null; }
+}
+
+// Produtos com a tag de destaque (config.tela_cliente_tag_destaque, padrão
+// "NOVIDADE") pro carrossel da Tela do Cliente enquanto ociosa — ver
+// db.produtos.destaque(). Falha em buscar não deve derrubar a tela, só
+// cai pra lista vazia (a tela mostra a logo em vez do carrossel).
+function _dadosIdleTelaCliente() {
+  const tag = store.get('config.tela_cliente_tag_destaque') || 'NOVIDADE';
+  const intervaloSeg = store.get('config.tela_cliente_intervalo_segundos') || 8;
+  let produtos = [];
+  try { produtos = db.produtos.destaque(tag); } catch (e) { console.warn('[TELA-CLIENTE] Erro ao buscar produtos de destaque:', e.message); }
+  return { produtos, intervaloSeg, tag };
 }
 
 // ─── Migrar campos de empresa do usuário logado ─────────────────
@@ -232,7 +247,7 @@ ipcMain.handle('telaCliente:produto', (_, produto) => {
   clienteWindow?.webContents.send('cliente:produto', produto);
 });
 ipcMain.handle('telaCliente:idle', () => {
-  clienteWindow?.webContents.send('cliente:idle');
+  clienteWindow?.webContents.send('cliente:idle', _dadosIdleTelaCliente());
 });
 ipcMain.handle('telaCliente:status', () => ({
   ativa: !!clienteWindow,

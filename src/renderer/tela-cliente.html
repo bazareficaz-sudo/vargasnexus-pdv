@@ -22,18 +22,32 @@
     text-align: center;
   }
 
-  /* Estado ocioso — logo da loja */
+  /* Estado ocioso — logo da loja (sem produto de destaque configurado) */
   #ocioso { display: flex; flex-direction: column; align-items: center; gap: 24px; }
   #ocioso img { max-width: 42vw; max-height: 32vh; object-fit: contain; opacity: .95; }
   #ocioso .tagline { font-size: 1.4vw; color: #9a9590; letter-spacing: .5px; }
-
-  /* Estado produto */
-  #produto { display: none; flex-direction: column; align-items: center; gap: 3vh; width: 100%; }
-  #produto.ativo { display: flex; }
   #ocioso.escondido { display: none; }
 
+  /* Estado produto — usado tanto pra seleção do vendedor quanto pro
+     carrossel de destaque (tag) enquanto ociosa */
+  #produto { display: none; flex-direction: column; align-items: center; gap: 2.2vh; width: 100%; opacity: 1; }
+  #produto.ativo { display: flex; }
+  #produto.fade { animation: fadeIn .6s ease; }
+  @keyframes fadeIn {
+    from { opacity: 0; transform: scale(.97); }
+    to   { opacity: 1; transform: scale(1); }
+  }
+
+  #produto-tag {
+    display: none;
+    font-size: 1.1vw; font-weight: 700; letter-spacing: 1.5px;
+    padding: .8vh 1.8vw; border-radius: 999px;
+    background: linear-gradient(135deg, #1a3a8f 0%, #1565c0 55%, #00b4d8 100%);
+    color: #fff;
+  }
+
   #produto-img-wrap {
-    width: 46vw; height: 46vw; max-height: 52vh;
+    width: 44vw; height: 44vw; max-height: 48vh;
     display: flex; align-items: center; justify-content: center;
     background: #1e1e1e; border-radius: 24px;
     overflow: hidden;
@@ -53,6 +67,7 @@
       <div class="tagline">Bem-vindo!</div>
     </div>
     <div id="produto">
+      <div id="produto-tag"></div>
       <div id="produto-img-wrap"><span class="sem-foto">📦</span></div>
       <div id="produto-nome"></div>
       <div id="produto-sku"></div>
@@ -61,16 +76,23 @@
   </div>
 
 <script>
+  let carrosselTimer = null;
+  let carrosselProdutos = [];
+  let carrosselIndex = 0;
+
   function fmtMoney(v) {
     return 'R$ ' + Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
 
-  function mostrarOcioso() {
-    document.getElementById('ocioso').classList.remove('escondido');
-    document.getElementById('produto').classList.remove('ativo');
+  function pararCarrossel() {
+    if (carrosselTimer) { clearInterval(carrosselTimer); carrosselTimer = null; }
+    carrosselProdutos = [];
   }
 
-  function mostrarProduto(p) {
+  // Preenche o bloco de produto (imagem/nome/preço) e, quando houver, o
+  // selo da tag — reaproveitado tanto pela seleção do vendedor (sem tag)
+  // quanto pelo carrossel de destaque ocioso (com tag).
+  function exibirProdutoNaTela(p, tag) {
     document.getElementById('ocioso').classList.add('escondido');
     const wrap = document.getElementById('produto-img-wrap');
     if (p.foto_url) {
@@ -81,7 +103,49 @@
     document.getElementById('produto-nome').textContent = p.nome || '';
     document.getElementById('produto-sku').textContent = p.sku ? `Cód: ${p.sku}` : '';
     document.getElementById('produto-preco').textContent = fmtMoney(p.preco_venda);
-    document.getElementById('produto').classList.add('ativo');
+
+    const tagEl = document.getElementById('produto-tag');
+    if (tag) { tagEl.textContent = tag; tagEl.style.display = 'inline-block'; }
+    else { tagEl.style.display = 'none'; }
+
+    const painel = document.getElementById('produto');
+    painel.classList.remove('fade');
+    void painel.offsetWidth; // força reinício da animação a cada troca
+    painel.classList.add('ativo', 'fade');
+  }
+
+  // Vendedor selecionou um produto de verdade — sempre tem prioridade sobre
+  // o carrossel, que para imediatamente até o próximo estado ocioso.
+  function mostrarProduto(p) {
+    pararCarrossel();
+    exibirProdutoNaTela(p, null);
+  }
+
+  function exibirItemCarrossel(tag) {
+    const p = carrosselProdutos[carrosselIndex];
+    if (p) exibirProdutoNaTela(p, tag);
+  }
+
+  // Sem produto em foco: se houver produtos com a tag de destaque
+  // configurada, mostra um carrossel suave entre eles; senão, a logo.
+  function mostrarOcioso(data) {
+    pararCarrossel();
+    const produtos = (data && data.produtos) || [];
+    if (!produtos.length) {
+      document.getElementById('ocioso').classList.remove('escondido');
+      document.getElementById('produto').classList.remove('ativo');
+      document.getElementById('produto-tag').style.display = 'none';
+      return;
+    }
+    carrosselProdutos = produtos;
+    carrosselIndex = 0;
+    const tag = data.tag || '';
+    const intervaloMs = Math.max(3, Number(data.intervaloSeg) || 8) * 1000;
+    exibirItemCarrossel(tag);
+    carrosselTimer = setInterval(() => {
+      carrosselIndex = (carrosselIndex + 1) % carrosselProdutos.length;
+      exibirItemCarrossel(tag);
+    }, intervaloMs);
   }
 
   window.telaCliente.onProduto(mostrarProduto);
