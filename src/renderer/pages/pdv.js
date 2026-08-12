@@ -112,11 +112,15 @@ const PDV = (() => {
         <span>Desconto</span>
         <div class="flex gap-8">
           <input class="input" id="pdv-desconto" type="number" min="0" step="0.01"
-            value="0" style="width:90px;padding:4px 8px;font-size:13px"
+            value="0" style="width:70px;padding:4px 8px;font-size:13px"
             oninput="PDV.updateTotals()">
-          <span style="font-size:12px;color:var(--text3);line-height:28px">R$</span>
+          <select class="input" id="pdv-desconto-tipo" style="width:56px;padding:4px 6px;font-size:12px"
+            onchange="PDV.updateTotals()">
+            <option value="valor">R$</option>
+            <option value="pct">%</option>
+          </select>
         </div>
-      </div>` : `<input type="hidden" id="pdv-desconto" value="0">`}
+      </div>` : `<input type="hidden" id="pdv-desconto" value="0"><input type="hidden" id="pdv-desconto-tipo" value="valor">`}
       <div class="divider"></div>
       <div class="pdv-total-row total-final">
         <span>TOTAL</span>
@@ -711,6 +715,8 @@ const PDV = (() => {
     const banner = document.getElementById('pdv-edicao-banner');
     if (banner) banner.style.display = 'none';
     document.getElementById('pdv-desconto').value = 0;
+    const elDescTipo = document.getElementById('pdv-desconto-tipo');
+    if (elDescTipo) elDescTipo.value = 'valor';
     const imgWrap = document.getElementById('pdv-produto-img');
     if (imgWrap) imgWrap.style.display = 'none';
     window.pdv.telaCliente?.idle();
@@ -825,26 +831,96 @@ const PDV = (() => {
       return;
     }
     el.innerHTML = cart.map(item => `
-      <div class="cart-item ${item.entregar ? 'cart-item-entrega' : ''}">
+      <div class="cart-item ${item.entregar ? 'cart-item-entrega' : ''}"
+        ${!item.devolucao ? `onclick="PDV.abrirEditarItem('${item.produto_id}')" style="cursor:pointer" title="Clique para editar preço/desconto"` : ''}>
         <div class="cart-emoji">${item.emoji}</div>
         <div class="cart-info">
           <div class="cart-name">${item.produto_nome}${item.devolucao ? ' <span style="color:var(--red);font-size:10px">DEV</span>' : ''}${item.em_promocao && !item.preco_manual ? ' <span style="color:var(--accent);font-size:10px">🏷️ PROMOÇÃO</span>' : ''}</div>
           <div class="cart-unit">R$ ${fmtMoney(item.preco_unitario)} × ${item.quantidade}</div>
         </div>
         <div class="cart-qty">
-          <button class="qty-btn" onclick="PDV.changeQty('${item.produto_id}',-1)">−</button>
+          <button class="qty-btn" onclick="event.stopPropagation();PDV.changeQty('${item.produto_id}',-1)">−</button>
           <span class="qty-num">${item.quantidade}</span>
-          <button class="qty-btn" onclick="PDV.changeQty('${item.produto_id}',1)">+</button>
+          <button class="qty-btn" onclick="event.stopPropagation();PDV.changeQty('${item.produto_id}',1)">+</button>
         </div>
         <div class="cart-price">R$ ${fmtMoney(item.total)}</div>
         ${!item.devolucao ? `
         <button class="qty-btn ${item.entregar ? 'entrega-ativo' : ''}"
           title="${item.entregar ? 'Remover entrega' : 'Marcar para entrega'}"
-          onclick="PDV.toggleEntregar('${item.produto_id}')"
+          onclick="event.stopPropagation();PDV.toggleEntregar('${item.produto_id}')"
           style="width:28px;height:28px;font-size:13px">🚚</button>` : ''}
-        <button class="remove-btn" onclick="PDV.removeItem('${item.produto_id}')">✕</button>
+        <button class="remove-btn" onclick="event.stopPropagation();PDV.removeItem('${item.produto_id}')">✕</button>
       </div>`).join('');
     _atualizarBadgeEntregas();
+  }
+
+  // ─── Editar item do carrinho (preço / desconto) ────────────────
+  function abrirEditarItem(produtoId) {
+    const item = cart.find(i => i.produto_id === produtoId);
+    if (!item) return;
+    const podeAlterarPreco = podePermissao('alterar_preco_venda');
+    const podeDesconto = podePermissao('dar_desconto_pdv');
+    Modal.open(`
+<div style="margin-bottom:14px">
+  <div style="font-weight:600;font-size:14px">${item.emoji || '📦'} ${item.produto_nome}</div>
+  <div style="font-size:11px;color:var(--text3);margin-top:2px">
+    Qtd: ${item.quantidade} · Preço tabela: R$ ${fmtMoney(item.preco_tabela ?? item.preco_unitario)}
+  </div>
+</div>
+<div style="margin-bottom:14px">
+  <label style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text3);display:block;margin-bottom:4px">Preço unitário (R$)</label>
+  <input class="input" id="ei-preco" type="number" min="0" step="0.01" value="${item.preco_unitario}"
+    style="font-size:18px;font-weight:700;text-align:center;${podeAlterarPreco ? '' : 'opacity:.45;pointer-events:none'}"
+    ${podeAlterarPreco ? '' : 'readonly'}>
+</div>
+${podeDesconto ? `
+<div style="margin-bottom:14px;padding:10px;background:var(--bg2);border-radius:8px">
+  <label style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text3);display:block;margin-bottom:6px">Aplicar desconto sobre o preço acima</label>
+  <div style="display:flex;gap:8px">
+    <input class="input" id="ei-desc-valor" type="number" min="0" step="0.01" value="0" style="flex:1" placeholder="0,00">
+    <select class="input" id="ei-desc-tipo" style="width:64px">
+      <option value="valor">R$</option>
+      <option value="pct">%</option>
+    </select>
+    <button class="btn btn-ghost btn-sm" onclick="PDV._aplicarDescontoItem()">Aplicar</button>
+  </div>
+</div>` : (podeAlterarPreco ? '' : `
+<div style="font-size:11px;color:var(--text3);margin-bottom:14px">Sem permissão para alterar preço ou dar desconto neste item.</div>`)}
+<div class="modal-actions">
+  <button class="btn btn-ghost" onclick="Modal.close()">Cancelar</button>
+  <button class="btn btn-primary" onclick="PDV._salvarEdicaoItem('${produtoId}')">Salvar</button>
+</div>`, 'Editar item do carrinho');
+    setTimeout(() => document.getElementById('ei-preco')?.focus(), 80);
+  }
+
+  function _aplicarDescontoItem() {
+    const base = parseFloat(document.getElementById('ei-preco')?.value) || 0;
+    const valor = parseFloat(document.getElementById('ei-desc-valor')?.value) || 0;
+    const tipo = document.getElementById('ei-desc-tipo')?.value || 'valor';
+    const desconto = tipo === 'pct' ? base * (valor / 100) : valor;
+    const campoPreco = document.getElementById('ei-preco');
+    if (campoPreco) campoPreco.value = Math.max(0, base - desconto).toFixed(2);
+  }
+
+  function _salvarEdicaoItem(produtoId) {
+    const item = cart.find(i => i.produto_id === produtoId);
+    if (!item) return;
+    const novoPreco = parseFloat(document.getElementById('ei-preco')?.value);
+    if (isNaN(novoPreco) || novoPreco < 0) { Toast.show('Preço inválido', 'warning'); return; }
+    const precoAntes = item.preco_unitario;
+    if (Math.abs(novoPreco - precoAntes) > 0.004) {
+      item.preco_unitario = novoPreco;
+      item.total = item.quantidade * novoPreco;
+      // Registro do desconto aplicado à linha (usado no comprovante de orçamento)
+      item.desconto = Math.max(0, (precoAntes - novoPreco) * item.quantidade);
+      // Preço alterado manualmente pelo vendedor — não deve ser sobrescrito
+      // pela troca automática de forma de pagamento (mesma regra de addToCartConfirmado)
+      item.preco_manual = true;
+    }
+    Modal.close();
+    renderCart();
+    updateTotals();
+    Toast.show('Item atualizado', 'success');
   }
 
   // ─── Sugestões ────────────────────────────────────────────────
@@ -970,7 +1046,12 @@ const PDV = (() => {
 
   // ─── Totais ───────────────────────────────────────────────────
   function getSubtotal() { return cart.reduce((a, i) => a + i.total, 0); }
-  function getDesconto() { return parseFloat(document.getElementById('pdv-desconto')?.value || 0); }
+  function getDesconto() {
+    const valor = parseFloat(document.getElementById('pdv-desconto')?.value || 0);
+    const tipo = document.getElementById('pdv-desconto-tipo')?.value || 'valor';
+    if (tipo === 'pct') return Math.max(0, getSubtotal() * (valor / 100));
+    return valor;
+  }
   // Total pode ser negativo (devolução maior que compra)
   function getTotal() { return getSubtotal() - getDesconto(); }
   function temDevolucao() { return cart.some(i => i.quantidade < 0); }
@@ -2198,7 +2279,7 @@ const PDV = (() => {
     if (!cart.length) { Toast.show('Carrinho vazio', 'warning'); return; }
 
     const subtotal = getSubtotal();
-    const desconto = parseFloat(document.getElementById('pdv-desconto')?.value) || 0;
+    const desconto = getDesconto();
     const total = Math.max(0, subtotal - desconto);
     const usuario = await window.pdv.config.get('auth.usuario') || {};
 
@@ -2301,6 +2382,7 @@ const PDV = (() => {
   return { render, init, onSearch, onSearchKey, _abrirModalFaltaPDV, _confirmarFaltaPDV,
     selecionarProduto, fecharQtyPanel, qpKeyDown, confirmarQtyPreco,
     addToCart, changeQty, removeItem, clearCart, adicionarSugestao,
+    abrirEditarItem, _aplicarDescontoItem, _salvarEdicaoItem,
     toggleEntregar, _selecionarTurno, entrarModoEdicao, cancelarEdicao,
     setPayment, calcTroco, finalizarVenda, abrirPagamento, updateTotals,
     _selectPay, _calcTrocoModal, _confirmarPagamento,
