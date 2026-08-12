@@ -115,6 +115,8 @@ const App = (() => {
         mostrarBannerUpdate(`✅ v${data.versao} pronto — <a href="#" onclick="window.pdv.update.install();return false" style="color:inherit;font-weight:700;text-decoration:underline">Reiniciar para atualizar</a>`, true);
       } else if (data.evento === 'progress') {
         mostrarBannerUpdate(`⬇️ Baixando atualização... ${data.porcentagem}% (${data.velocidade} KB/s)`);
+      } else if (data.evento === 'error') {
+        mostrarBannerUpdate(`⚠️ Falha ao baixar atualização — <a href="#" onclick="window.pdv.update.check();return false" style="color:inherit;font-weight:700;text-decoration:underline">tentar novamente</a>`, true);
       }
     });
   }
