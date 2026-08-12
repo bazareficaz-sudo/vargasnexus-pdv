@@ -196,6 +196,14 @@ async function syncDownProdutos() {
   const totalLocal = db.produtos.total();
   let ultimaSync = totalLocal > 0 ? store.get('sync.ultima_sync_produtos') : null;
 
+  // Reconciliação única pós-rollout dos campos de promoção (v1.8.15): o
+  // sync incremental só resgata produtos cujo updated_at mudou depois do
+  // checkpoint local — produtos com promoção configurada ANTES desse
+  // rollout nunca teriam o updated_at tocado de novo, então nunca
+  // chegariam ao terminal. Uma carga completa, uma única vez, resolve.
+  const forcarBackfillPromo = !store.get('sync.produtos_promo_backfill_v1');
+  if (forcarBackfillPromo) ultimaSync = null;
+
   // Rede de segurança: se o catálogo local ficou muito menor que o remoto
   // (limpeza de dados legados, corrupção, etc.), o sync incremental nunca
   // resgataria os produtos que sumiram localmente — o updated_at deles no
@@ -224,6 +232,7 @@ async function syncDownProdutos() {
   });
 
   store.set('sync.ultima_sync_produtos', inicioSync);
+  if (forcarBackfillPromo) store.set('sync.produtos_promo_backfill_v1', true);
   const modo = ultimaSync ? 'incremental' : 'completo';
   console.log(`[SYNC] Produtos: ${totalSalvos} sincronizados (${modo})`);
 
@@ -236,6 +245,8 @@ async function syncDownProdutos() {
 }
 
 async function syncForcarProdutos() {
+  // Força re-sync completo ignorando o checkpoint incremental
+  store.delete('sync.ultima_sync_produtos');
   return syncDownProdutos();
 }
 

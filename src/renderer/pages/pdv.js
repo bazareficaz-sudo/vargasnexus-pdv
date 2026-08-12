@@ -349,7 +349,10 @@ const PDV = (() => {
             <td><div class="si-nome">${p.emoji ? p.emoji + ' ' : ''}${p.nome}</div><div class="si-sub">${p.ean ? 'EAN: ' + p.ean : ''}</div></td>
             <td class="si-marca">${p.marca || '—'}</td>
             <td class="si-estoque" style="white-space:nowrap">${estoqueHtml}${faltaBtn}</td>
-            <td class="si-preco">R$ ${fmtMoney(p.preco_venda)}</td>
+            <td class="si-preco">${promocaoVigente(p)
+              ? `<span style="text-decoration:line-through;color:var(--text3);font-size:10px">R$ ${fmtMoney(p.preco_venda)}</span><br>
+                 <span style="color:var(--green);font-weight:700">🏷️ R$ ${fmtMoney(p.preco_promocional)}</span>`
+              : `R$ ${fmtMoney(p.preco_venda)}`}</td>
           </tr>`;
         }).join('');
         box.innerHTML = `<table class="search-grid">
