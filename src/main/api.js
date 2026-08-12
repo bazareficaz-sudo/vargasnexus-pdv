@@ -852,8 +852,17 @@ async function sincronizarConfigDesconto() {
   return data || [];
 }
 
+// Config de Saúde da Venda (taxas, faixas de margem e a regra de
+// "promoção só vale à vista" — orcamento_promo_formas). Um registro por
+// empresa (saude_config.empresa_id, UNIQUE). Era um stub que sempre
+// devolvia null; o terminal nunca puxava essa config de verdade.
 async function sincronizarConfigTermometro() {
-  return null;
+  const usuario = store.get('auth.usuario') || {};
+  const empresaId = usuario.empresa_estoque_id || usuario.empresa_id;
+  if (!empresaId) return null;
+  const { data, error } = await supabase.from('saude_config').select('*').eq('empresa_id', empresaId).maybeSingle();
+  if (error) { console.warn('[ConfigTermometro]', error.message); return null; }
+  return data;
 }
 
 // ─── Impressão em rede (URL do tunnel do terminal-caixa) ──────────────

@@ -149,6 +149,12 @@ function mapProduto(p) {
     pis_cst:   p.pis_cst   || null,
     cofins_cst:p.cofins_cst|| null,
     tags:      Array.isArray(p.tags) ? p.tags : [],
+    // Promoção — mesmos campos e mesma regra de vigência de
+    // pdv-vargas-web/src/lib/produtos/promocao.ts (promocaoVigente/precoVigente).
+    preco_promocional: p.preco_promocional ?? null,
+    promocao_ativa:    !!p.promocao_ativa,
+    promocao_inicio:   p.promocao_inicio || null,
+    promocao_fim:      p.promocao_fim || null,
   };
 }
 
@@ -363,6 +369,12 @@ async function syncDownConfigTermometro() {
         margem_excelente: cfg.margem_excelente ?? 30,
         margem_boa:       cfg.margem_boa       ?? 15,
         margem_media:     cfg.margem_media      ?? 8,
+        // Formas de pagamento que preservam o preço promocional — mesma
+        // lista usada nos orçamentos (supabase-orcamento-promo-estrategia.sql),
+        // pra não ter duas definições diferentes de "à vista" no sistema.
+        promo_formas: Array.isArray(cfg.orcamento_promo_formas) && cfg.orcamento_promo_formas.length
+          ? cfg.orcamento_promo_formas
+          : ['pix', 'dinheiro'],
       });
       console.log('[SYNC] ConfigTermometro sincronizado');
     }

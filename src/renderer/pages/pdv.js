@@ -11,6 +11,10 @@ const PDV = (() => {
   let pedidoObservacao = ''; // nota livre do pedido (ex: telefone pra ligar) — impressa no comprovante
   let _ultimaVenda = null;  // { numero, remoteId, venda } — usado pelos botões do comprovante
   let vendasEmEspera = [];  // atendimentos pausados — persistidos em config.pdv.vendasEmEspera
+  // Formas de pagamento que preservam o preço promocional — carregado de
+  // config_termometro.promo_formas (mesma config de saude_config.orcamento_promo_formas
+  // usada pelos orçamentos). Default local só pra não ficar sem nada antes do 1º sync.
+  let formasAvista = ['pix', 'dinheiro'];
 
   // ─── Render ────────────────────────────────────────────────────
   function render() {
@@ -33,6 +37,7 @@ const PDV = (() => {
       <div style="padding:10px 16px 0">
         <div id="qp-nome" style="font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
         <div id="qp-info" style="font-size:11px;color:var(--text3);margin-top:2px"></div>
+        <div id="qp-promo" style="display:none;font-size:11px;font-weight:600;color:var(--accent);margin-top:4px;padding:4px 8px;background:var(--accent-bg);border-radius:6px"></div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:10px 16px">
         <div>
@@ -117,6 +122,7 @@ const PDV = (() => {
         <span>TOTAL</span>
         <span id="pdv-total" class="text-accent font-syne">R$ 0,00</span>
       </div>
+      <div id="pdv-promo-resumo" style="display:none;margin-top:8px;padding:8px 10px;background:var(--accent-bg);border:1px solid var(--border2);border-radius:8px;font-size:11px;line-height:1.6"></div>
     </div>
 
     <!-- Saúde da Venda (visível quando há itens no carrinho) -->
@@ -477,7 +483,20 @@ const PDV = (() => {
     document.getElementById('qp-info').textContent =
       `${produto.sku || ''} · Estoque: ${produto.estoque} · Preço tabela: R$ ${fmtMoney(produto.preco_venda)}`;
     document.getElementById('qp-qty').value = '1';
-    document.getElementById('qp-preco').value = produto.preco_venda.toFixed(2);
+
+    const emPromo = promocaoVigente(produto);
+    const precoInicial = emPromo && _formaEhAvista(payMethod) ? Number(produto.preco_promocional) : produto.preco_venda;
+    document.getElementById('qp-preco').value = precoInicial.toFixed(2);
+
+    const elPromo = document.getElementById('qp-promo');
+    if (elPromo) {
+      if (emPromo) {
+        elPromo.style.display = 'block';
+        elPromo.textContent = `🏷️ Em promoção — à vista R$ ${fmtMoney(produto.preco_promocional)} · outras formas R$ ${fmtMoney(produto.preco_venda)}`;
+      } else {
+        elPromo.style.display = 'none';
+      }
+    }
 
     panel.style.display = 'flex';
     document.getElementById('qp-qty').focus();
@@ -550,11 +569,21 @@ const PDV = (() => {
 
   // ─── Carrinho ─────────────────────────────────────────────────
   function addToCartConfirmado(produto, quantidade, precoUnitario, eDevolucao = false) {
+    const precoTabela = produto.preco_venda;
+    const emPromo = !eDevolucao && promocaoVigente(produto);
+    const precoPromo = emPromo ? Number(produto.preco_promocional) : null;
+    // Vendedor digitou um preço diferente tanto do de tabela quanto do
+    // promocional — é uma decisão dele, a troca de forma de pagamento não
+    // deve sobrescrever depois.
+    const precoManual = Math.abs(precoUnitario - precoTabela) > 0.004 &&
+      (precoPromo == null || Math.abs(precoUnitario - precoPromo) > 0.004);
+
     const existing = cart.find(i => i.produto_id === produto.id);
     if (existing) {
       const novaQty = existing.quantidade + quantidade;
       existing.quantidade = novaQty;
       existing.preco_unitario = precoUnitario;
+      existing.preco_manual = precoManual;
       existing.total = novaQty * precoUnitario;
       if (novaQty === 0) cart.splice(cart.indexOf(existing), 1);
     } else {
@@ -566,6 +595,10 @@ const PDV = (() => {
         quantidade,
         preco_unitario: precoUnitario,
         preco_custo: produto.preco_custo || 0,
+        preco_tabela: precoTabela,
+        preco_promocional: precoPromo,
+        em_promocao: emPromo,
+        preco_manual: precoManual,
         desconto: 0,
         total: quantidade * precoUnitario,
         estoque_max: produto.estoque,
@@ -574,6 +607,7 @@ const PDV = (() => {
       });
     }
     if (eDevolucao) Toast.show(`Devolução de ${Math.abs(quantidade)} un. adicionada`, 'info');
+    _aplicarPrecoPorFormaPagamento();
     renderCart();
     updateTotals();
   }
@@ -791,7 +825,7 @@ const PDV = (() => {
       <div class="cart-item ${item.entregar ? 'cart-item-entrega' : ''}">
         <div class="cart-emoji">${item.emoji}</div>
         <div class="cart-info">
-          <div class="cart-name">${item.produto_nome}${item.devolucao ? ' <span style="color:var(--red);font-size:10px">DEV</span>' : ''}</div>
+          <div class="cart-name">${item.produto_nome}${item.devolucao ? ' <span style="color:var(--red);font-size:10px">DEV</span>' : ''}${item.em_promocao && !item.preco_manual ? ' <span style="color:var(--accent);font-size:10px">🏷️ PROMOÇÃO</span>' : ''}</div>
           <div class="cart-unit">R$ ${fmtMoney(item.preco_unitario)} × ${item.quantidade}</div>
         </div>
         <div class="cart-qty">
@@ -868,6 +902,69 @@ const PDV = (() => {
     addToCart(produto, 1);
   }
 
+  // ─── Promoção ─────────────────────────────────────────────────
+  // Mesma regra de vigência de pdv-vargas-web/src/lib/produtos/promocao.ts
+  // (promocaoVigente) — precisa ligar, preço promocional > 0 e menor que o
+  // normal, e a data de hoje dentro da janela (data ausente = sem limite).
+  function promocaoVigente(produto, agora = new Date()) {
+    if (!produto?.promocao_ativa) return false;
+    const promo = Number(produto.preco_promocional ?? 0);
+    if (!(promo > 0)) return false;
+    const normal = Number(produto.preco_venda ?? 0);
+    if (normal > 0 && promo >= normal) return false;
+    const inicio = produto.promocao_inicio ? new Date(produto.promocao_inicio) : null;
+    if (inicio && !isNaN(inicio) && agora < inicio) return false;
+    const fim = produto.promocao_fim ? new Date(produto.promocao_fim) : null;
+    if (fim && !isNaN(fim) && agora > fim) return false;
+    return true;
+  }
+
+  // "À vista" = forma configurada em saude_config.orcamento_promo_formas
+  // (padrão Pix + Dinheiro) — mesma definição usada nos orçamentos, pra não
+  // ter duas regras diferentes de "à vista" convivendo no sistema.
+  function _formaEhAvista(forma) {
+    return formasAvista.includes(forma);
+  }
+
+  // Recalcula preco_unitario/total dos itens em promoção conforme a forma
+  // de pagamento atual: à vista mantém o preço promocional, qualquer outra
+  // forma (cartão, carteira, misto) cobra o preço de tabela — é a regra que
+  // já existe pros orçamentos (supabase-orcamento-promo-estrategia.sql),
+  // agora valendo pra venda direta também. Item com preço editado manualmente
+  // pelo vendedor (preco_manual) fica de fora — decisão dele prevalece.
+  function _aplicarPrecoPorFormaPagamento() {
+    const avista = _formaEhAvista(payMethod);
+    for (const item of cart) {
+      if (item.devolucao || item.preco_manual || !item.em_promocao) continue;
+      const precoCerto = avista ? item.preco_promocional : item.preco_tabela;
+      if (precoCerto == null) continue;
+      if (Math.abs(item.preco_unitario - precoCerto) > 0.004) {
+        item.preco_unitario = precoCerto;
+        item.total = item.quantidade * precoCerto;
+      }
+    }
+  }
+
+  // Totais dos dois cenários (à vista com promoção / cartão preço cheio)
+  // pro vendedor conseguir oferecer o valor certo antes do cliente escolher
+  // como paga — não depende da forma de pagamento selecionada agora.
+  function calcularTotaisPromocao() {
+    let totalAvista = 0, totalCartao = 0, temPromo = false;
+    for (const item of cart) {
+      if (item.devolucao) continue;
+      const elegivel = item.em_promocao && !item.preco_manual && item.preco_promocional != null;
+      if (elegivel) temPromo = true;
+      totalAvista += item.quantidade * (elegivel ? item.preco_promocional : item.preco_unitario);
+      totalCartao += item.quantidade * (elegivel ? item.preco_tabela : item.preco_unitario);
+    }
+    const desconto = getDesconto();
+    return {
+      temPromo,
+      totalAvista: Math.max(0, totalAvista - desconto),
+      totalCartao: Math.max(0, totalCartao - desconto),
+    };
+  }
+
   // ─── Totais ───────────────────────────────────────────────────
   function getSubtotal() { return cart.reduce((a, i) => a + i.total, 0); }
   function getDesconto() { return parseFloat(document.getElementById('pdv-desconto')?.value || 0); }
@@ -897,6 +994,21 @@ const PDV = (() => {
     }
     const btnOrc = document.getElementById('btn-orc');
     if (btnOrc) btnOrc.disabled = cart.length === 0;
+
+    const elPromoResumo = document.getElementById('pdv-promo-resumo');
+    if (elPromoResumo) {
+      const { temPromo, totalAvista, totalCartao } = calcularTotaisPromocao();
+      if (temPromo && !negativo) {
+        elPromoResumo.style.display = 'block';
+        elPromoResumo.innerHTML =
+          `🏷️ <strong>Tem item em promoção</strong> — ofereça ao cliente:<br>` +
+          `À vista (${formasAvista.join('/')}): <strong style="color:var(--accent)">R$ ${fmtMoney(totalAvista)}</strong>` +
+          `&nbsp;·&nbsp;Outras formas: <strong>R$ ${fmtMoney(totalCartao)}</strong>`;
+      } else {
+        elPromoResumo.style.display = 'none';
+      }
+    }
+
     calcTroco();
     SaudeVenda.atualizar(cart, getDesconto(), payMethod);
   }
@@ -949,7 +1061,8 @@ const PDV = (() => {
     Modal.open(`
 <div style="text-align:center;margin-bottom:20px">
   <div style="font-size:13px;color:var(--text3)">TOTAL A PAGAR</div>
-  <div class="font-syne" style="font-size:36px;font-weight:800;color:var(--accent)">R$ ${fmtMoney(total)}</div>
+  <div id="modal-total-pagar" class="font-syne" style="font-size:36px;font-weight:800;color:var(--accent)">R$ ${fmtMoney(total)}</div>
+  <div id="modal-total-promo-aviso" style="display:none;font-size:11px;color:var(--text3);margin-top:4px"></div>
 </div>
 <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:16px">
   ${payOpts.map(o => `
@@ -977,7 +1090,26 @@ const PDV = (() => {
   }
 
   function _selectPay(method, btn) {
+    const temPromoAntes = calcularTotaisPromocao().temPromo;
     payMethod = method;
+    // Item em promoção cobra o preço certo pra CADA forma — recalcula e
+    // já reflete no total exibido no próprio modal, sem precisar fechar.
+    if (temPromoAntes) {
+      _aplicarPrecoPorFormaPagamento();
+      renderCart();
+      const elModalTotal = document.getElementById('modal-total-pagar');
+      const elAviso = document.getElementById('modal-total-promo-aviso');
+      const novoTotal = getTotal();
+      if (elModalTotal) elModalTotal.textContent = `R$ ${fmtMoney(novoTotal)}`;
+      if (elAviso) {
+        if (_formaEhAvista(method)) {
+          elAviso.style.display = 'none';
+        } else {
+          elAviso.style.display = 'block';
+          elAviso.textContent = '🏷️ Sem o preço promocional — vale só à vista (' + formasAvista.join('/') + ')';
+        }
+      }
+    }
     document.querySelectorAll('.pay-opt').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     const extra = document.getElementById('modal-pay-extra');
@@ -2145,13 +2277,17 @@ const PDV = (() => {
     window._orcamentoParaConverter = orc.id;
   }
 
-  function init() {
+  async function init() {
     SaudeVenda.init();
     initKeyboard();
     initCursorHide();
     renderClientBar();
     carregarEsperas();
     _atualizarBotaoObservacao();
+    const termometro = await window.pdv.config.get('config_termometro');
+    if (Array.isArray(termometro?.promo_formas) && termometro.promo_formas.length) {
+      formasAvista = termometro.promo_formas;
+    }
     // Restaurar carrinho se houver itens da sessão anterior
     if (cart.length > 0) {
       renderCart();

@@ -366,6 +366,10 @@ function runMigrations() {
     'ALTER TABLE produtos ADD COLUMN pis_cst TEXT DEFAULT \'07\'',
     'ALTER TABLE produtos ADD COLUMN cofins_cst TEXT DEFAULT \'07\'',
     'ALTER TABLE produtos ADD COLUMN tags TEXT', // JSON — array de strings (ex: ["NOVIDADE"]), usado pelo carrossel da Tela do Cliente
+    'ALTER TABLE produtos ADD COLUMN preco_promocional REAL',
+    'ALTER TABLE produtos ADD COLUMN promocao_ativa INTEGER DEFAULT 0',
+    'ALTER TABLE produtos ADD COLUMN promocao_inicio TEXT',
+    'ALTER TABLE produtos ADD COLUMN promocao_fim TEXT',
     `CREATE TABLE IF NOT EXISTS entregas (
       id TEXT PRIMARY KEY, remote_id TEXT UNIQUE,
       empresa_id TEXT, empresa_nome TEXT, venda_id TEXT, venda_numero INTEGER,
@@ -781,8 +785,9 @@ const produtos = {
       (id, remote_id, nome, nome_lower, sku, ean, preco_venda, preco_custo,
        unidade, categoria, marca, foto_url, ativo, disponivel_pdv, permite_fracao,
        ncm, cfop, icms_cst, icms_origem, pis_cst, cofins_cst, tags,
+       preco_promocional, promocao_ativa, promocao_inicio, promocao_fim,
        updated_at, synced_at, sync_status)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
     // UPDATE que preserva campos fiscais locais quando pendentes
     const stmtUpdate = db.prepare(`
@@ -798,6 +803,7 @@ const produtos = {
         pis_cst    = CASE WHEN sync_status = 'pending' THEN pis_cst    ELSE ? END,
         cofins_cst = CASE WHEN sync_status = 'pending' THEN cofins_cst ELSE ? END,
         tags       = ?,
+        preco_promocional = ?, promocao_ativa = ?, promocao_inicio = ?, promocao_fim = ?,
         updated_at = ?, synced_at = ?,
         sync_status = CASE WHEN sync_status = 'pending' THEN 'pending' ELSE 'synced' END
       WHERE remote_id = ?
@@ -823,6 +829,10 @@ const produtos = {
         const pisCst  = p.pis_cst   || null;
         const cofCst  = p.cofins_cst|| null;
         const tagsJson = JSON.stringify(Array.isArray(p.tags) ? p.tags : []);
+        const precoPromo = p.preco_promocional != null ? Number(p.preco_promocional) : null;
+        const promoAtiva = p.promocao_ativa ? 1 : 0;
+        const promoInicio = p.promocao_inicio || null;
+        const promoFim = p.promocao_fim || null;
 
         stmtInsert.run(
           localId, p.id,
@@ -835,6 +845,7 @@ const produtos = {
           p.disponivel_pdv !== false ? 1 : 0,
           p.permite_fracao ? 1 : 0,
           ncm, cfop, icmsCst, icmsOri, pisCst, cofCst, tagsJson,
+          precoPromo, promoAtiva, promoInicio, promoFim,
           p.updated_at || now, now, 'synced'
         );
 
@@ -848,6 +859,7 @@ const produtos = {
           p.disponivel_pdv !== false ? 1 : 0,
           p.permite_fracao ? 1 : 0,
           ncm, cfop, icmsCst, icmsOri, pisCst, cofCst, tagsJson,
+          precoPromo, promoAtiva, promoInicio, promoFim,
           p.updated_at || now, now,
           p.id
         );
