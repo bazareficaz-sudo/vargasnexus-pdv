@@ -538,6 +538,25 @@ async function processarFilaSync() {
               console.log(`[SYNC] Cliente "${cliente.nome}" → Base44 ${res.id}`);
             }
           }
+        } else if (item.operacao === 'update_endereco') {
+          // Manda o endereço/telefone atuais do cliente local (não um
+          // snapshot de quando foi enfileirado) — se o operador editou de
+          // novo antes desta rodada rodar, já vai a versão mais recente.
+          const cliente = db.db().prepare('SELECT * FROM clientes WHERE id = ?').get(payload.cliente_id);
+          if (!cliente) throw new Error('Cliente não encontrado para atualizar endereço');
+          // Cliente cadastrado na mesma venda pode ainda não ter remote_id
+          // (registro roda no bloco 'create' acima, na mesma passada da
+          // fila) — lança erro pra essa atualização tentar de novo na
+          // próxima sincronização, quando o remote_id já vai existir.
+          if (!cliente.remote_id) throw new Error('Cliente ainda sem remote_id — tenta de novo na próxima sincronização');
+          await api.atualizarClienteEndereco(cliente.remote_id, {
+            telefone: cliente.telefone, whatsapp: cliente.whatsapp, cep: cliente.cep,
+            logradouro: cliente.logradouro, numero: cliente.numero, complemento: cliente.complemento,
+            bairro: cliente.bairro, cidade: cliente.cidade, estado: cliente.estado,
+            referencia: cliente.referencia, obs_entrega: cliente.obs_entrega,
+          });
+          db.db().prepare("UPDATE clientes SET sync_status = 'synced' WHERE id = ?").run(cliente.id);
+          console.log(`[SYNC] Endereço de "${cliente.nome}" sincronizado`);
         }
       }
 

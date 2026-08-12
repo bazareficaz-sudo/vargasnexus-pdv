@@ -1271,10 +1271,12 @@ const PDV = (() => {
       valor_total_entrega: itens.reduce((s, i) => s + i.total, 0),
     };
 
-    // Atualiza endereço no cadastro do cliente (em background, sem bloquear)
-    const remoteId = selectedClient?.remote_id || selectedClient?.id;
-    if (remoteId) {
-      window.pdv.clientes.atualizarEndereco(remoteId, {
+    // Atualiza endereço no cadastro do cliente (em background, sem bloquear).
+    // Sempre o id LOCAL — inclusive pra cliente recém-cadastrado nesta
+    // mesma venda, que ainda não tem remote_id nesse momento (a fila de
+    // sync cuida de mandar pro Supabase assim que ele tiver um).
+    if (selectedClient?.id) {
+      window.pdv.clientes.atualizarEndereco(selectedClient.id, {
         telefone:    dadosEntrega.cliente_telefone || null,
         whatsapp:    dadosEntrega.cliente_whatsapp || null,
         cep:         dadosEntrega.cep || null,

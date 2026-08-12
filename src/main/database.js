@@ -978,13 +978,28 @@ const clientes = {
     t(lista);
   },
 
-  atualizarEndereco(remoteId, dados) {
+  // id é o id LOCAL do cliente — não remote_id. Um cliente recém-cadastrado
+  // na mesma venda (tela de entrega pede endereço logo após cadastrar)
+  // ainda não tem remote_id nesse momento (registro no Supabase acontece
+  // depois, em background); casar por remote_id aqui fazia essa atualização
+  // não bater em linha nenhuma, local nem remota — endereço se perdia toda
+  // vez que era um cliente novo. sync_status='pending' + fila garantem que
+  // o Supabase recebe o endereço assim que o cliente tiver um remote_id.
+  atualizarEndereco(id, dados) {
     const campos = ['telefone','whatsapp','cep','logradouro','numero','complemento','bairro','cidade','estado','referencia','obs_entrega'];
     const sets = campos.filter(c => dados[c]).map(c => `${c} = ?`).join(', ');
     const vals = campos.filter(c => dados[c]).map(c => dados[c]);
     if (!sets) return;
-    vals.push(remoteId);
-    db.prepare(`UPDATE clientes SET ${sets} WHERE remote_id = ?`).run(...vals);
+    vals.push(id);
+    db.prepare(`UPDATE clientes SET ${sets}, sync_status = 'pending' WHERE id = ?`).run(...vals);
+
+    const jaNaFila = db.prepare(
+      "SELECT id FROM sync_queue WHERE entidade='cliente' AND operacao='update_endereco' AND payload LIKE ? AND processado=0"
+    ).get(`%${id}%`);
+    if (!jaNaFila) {
+      db.prepare(`INSERT INTO sync_queue (id, entidade, operacao, payload, created_at) VALUES (?,?,?,?,?)`)
+        .run(uuidv4(), 'cliente', 'update_endereco', JSON.stringify({ cliente_id: id }), new Date().toISOString());
+    }
   }
 };
 

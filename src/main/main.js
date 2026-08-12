@@ -290,13 +290,24 @@ ipcMain.handle('clientes:syncForcar', async () => {
     return { erro: e.message };
   }
 });
-ipcMain.handle('clientes:atualizarEndereco', async (_, remoteId, dados) => {
+ipcMain.handle('clientes:atualizarEndereco', async (_, id, dados) => {
+  // id é o id LOCAL do cliente (ver comentário em database.js). Local
+  // sempre salva; o envio pro Supabase é best-effort aqui — se o cliente
+  // ainda não tiver remote_id (acabou de ser cadastrado) ou estiver
+  // offline, a fila de sync tenta de novo depois (mesmo padrão de
+  // vendas/faltas), então não é perdido.
   try {
-    // Atualiza local
-    db.clientes.atualizarEndereco(remoteId, dados);
-    // Atualiza no Base44
-    const res = await api.atualizarClienteEndereco(remoteId, dados);
-    return { ok: true, res };
+    db.clientes.atualizarEndereco(id, dados);
+    const cliente = db.clientes.getById(id);
+    if (cliente?.remote_id) {
+      try {
+        await api.atualizarClienteEndereco(cliente.remote_id, dados);
+        db.db().prepare("UPDATE clientes SET sync_status = 'synced' WHERE id = ?").run(id);
+      } catch (e) {
+        console.warn('[ENTREGA] Endereço salvo localmente; envio imediato falhou, fila tenta de novo:', e.message);
+      }
+    }
+    return { ok: true };
   } catch(e) {
     return { erro: e.message };
   }
