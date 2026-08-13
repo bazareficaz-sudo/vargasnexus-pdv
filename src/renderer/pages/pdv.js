@@ -202,6 +202,9 @@ const PDV = (() => {
 .search-item:hover,.search-item.highlighted{background:var(--bg3)}
 .search-item td{padding:8px 10px;font-size:13px;vertical-align:middle}
 .search-item.out-of-stock{opacity:.5;cursor:not-allowed}
+.si-thumb{width:36px;padding:6px 4px!important}
+.si-thumb-img{width:32px;height:32px;object-fit:cover;border-radius:6px;background:var(--bg3);display:block}
+.si-thumb-fallback{width:32px;height:32px;border-radius:6px;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:16px}
 .si-cod{font-size:10px;color:var(--text3);white-space:nowrap}
 .si-nome{font-weight:600;line-height:1.3}
 .si-sub{font-size:10px;color:var(--text3)}
@@ -359,8 +362,17 @@ const PDV = (() => {
                 title="Registrar como falta/encomenda"
                 onclick="event.stopPropagation();Faltas.abrirNovaFalta(${prodJson});document.getElementById('pdv-results').style.display='none'">
                 📋 Anotar falta</button>` : '';
+          // Miniatura só nas primeiras linhas (evita disparar dezenas de
+          // downloads a cada tecla numa busca de 100 resultados) — carrega
+          // sob demanda (loading="lazy") e cai pro emoji se faltar foto ou falhar.
+          const thumbHtml = (p.foto_url && i < 30)
+            ? `<img class="si-thumb-img" src="${p.foto_url}" loading="lazy" alt=""
+                 onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+               <div class="si-thumb-fallback" style="display:none">${p.emoji || '📦'}</div>`
+            : `<div class="si-thumb-fallback">${p.emoji || '📦'}</div>`;
           return `<tr class="search-item ${semEstoque ? 'out-of-stock' : ''}" id="si-${i}"
             onclick="${!semEstoque ? `PDV.selecionarProduto(${JSON.stringify(p).replace(/"/g, '&quot;')})` : ''}">
+            <td class="si-thumb">${thumbHtml}</td>
             <td class="si-cod">${p.sku || '—'}</td>
             <td><div class="si-nome">${p.emoji ? p.emoji + ' ' : ''}${p.nome}</div><div class="si-sub">${p.ean ? 'EAN: ' + p.ean : ''}</div></td>
             <td class="si-marca">${p.marca || '—'}</td>
@@ -373,6 +385,7 @@ const PDV = (() => {
         }).join('');
         box.innerHTML = `<table class="search-grid">
           <thead><tr>
+            <th style="width:36px"></th>
             <th style="width:80px">SKU</th>
             <th>Produto</th>
             <th style="width:110px">Marca</th>
