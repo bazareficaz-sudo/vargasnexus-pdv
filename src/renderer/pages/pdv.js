@@ -159,16 +159,22 @@ const PDV = (() => {
     </div>
 
     <!-- Botões de ação -->
-    <div class="pdv-actions">
-      <button class="btn btn-ghost pdv-action-icon" onclick="PDV.colocarEmEspera()" title="Colocar em espera (F7)">⏸</button>
-      <button class="btn btn-ghost pdv-action-icon" onclick="PDV.clearCart()" title="Limpar carrinho (F8)">🗑</button>
-      <button class="btn btn-ghost pdv-action-icon" id="btn-obs" onclick="PDV.abrirObservacao()" title="Observação do pedido">
-        🗒️
+    <div class="pdv-actions-secondary">
+      <button class="btn btn-ghost pdv-action-btn" onclick="PDV.colocarEmEspera()" title="Colocar em espera (F7)">
+        <span class="pdv-action-icon-el">⏸</span><span class="pdv-action-label">Espera</span>
       </button>
-      <button class="btn btn-ghost pdv-action-icon" id="btn-orc" onclick="PDV.salvarComoOrcamento()" disabled title="Salvar como orçamento sem baixar estoque">
-        📝
+      <button class="btn btn-ghost pdv-action-btn" onclick="PDV._confirmarLimparCarrinho()" title="Limpar carrinho (F8)">
+        <span class="pdv-action-icon-el">🗑️</span><span class="pdv-action-label">Limpar</span>
       </button>
-      <button class="btn btn-primary btn-lg" id="btn-finalizar" onclick="PDV.finalizarVenda()" style="flex:1" disabled>
+      <button class="btn btn-ghost pdv-action-btn" id="btn-obs" onclick="PDV.abrirObservacao()" title="Observação do pedido">
+        <span class="pdv-action-icon-el">🗒️</span><span class="pdv-action-label">Obs.</span>
+      </button>
+      <button class="btn btn-ghost pdv-action-btn" id="btn-orc" onclick="PDV.salvarComoOrcamento()" disabled title="Salvar como orçamento sem baixar estoque">
+        <span class="pdv-action-icon-el">📋</span><span class="pdv-action-label">Orçamento</span>
+      </button>
+    </div>
+    <div class="pdv-actions-main">
+      <button class="btn btn-primary btn-lg" id="btn-finalizar" onclick="PDV.finalizarVenda()" disabled>
         F9 — Finalizar
       </button>
     </div>
@@ -282,14 +288,20 @@ const PDV = (() => {
   font-family:'Syne',sans-serif;font-size:16px;font-weight:700;text-align:center
 }
 
-.pdv-actions{
-  padding:16px 20px;border-top:1px solid var(--border);
-  display:flex;gap:8px;flex-shrink:0
+.pdv-actions-secondary{
+  padding:14px 20px 0;border-top:1px solid var(--border);
+  display:grid;grid-template-columns:repeat(4,1fr);gap:8px;flex-shrink:0
 }
-.pdv-actions .btn{min-width:0}
-.pdv-actions .btn-lg{padding:10px 8px;font-size:13px;overflow:hidden;text-overflow:ellipsis}
-.pdv-action-icon{flex:0 0 auto;width:38px;padding:0!important;font-size:15px}
-.pdv-action-icon.has-obs{background:var(--accent-bg);border-color:var(--accent)}
+.pdv-action-btn{
+  display:flex!important;flex-direction:column;align-items:center;justify-content:center;gap:3px;
+  height:auto;min-width:0;padding:8px 4px!important
+}
+.pdv-action-icon-el{font-size:17px;line-height:1}
+.pdv-action-label{font-size:10px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+.pdv-action-btn.has-obs{background:var(--accent-bg);border-color:var(--accent)}
+.pdv-action-btn.has-obs .pdv-action-label{color:var(--accent)}
+.pdv-actions-main{padding:10px 20px 16px;flex-shrink:0}
+.pdv-actions-main .btn-lg{width:100%;padding:14px 8px;font-size:15px}
 
 .pdv-espera-bar{
   display:flex;gap:6px;align-items:center;flex-wrap:wrap;
@@ -699,6 +711,17 @@ const PDV = (() => {
     cart = cart.filter(i => i.produto_id !== produtoId);
     renderCart();
     updateTotals();
+  }
+
+  // Limpar carrinho apaga o atendimento inteiro sem volta — confirma antes
+  // quando há algo a perder, pra não ser um clique acidental (era um dos
+  // botõezinhos sem legenda ao lado de "Colocar em espera").
+  async function _confirmarLimparCarrinho() {
+    if (cart.length > 0) {
+      const ok = await window.pdv.dialog.confirm('Limpar o carrinho? Todos os itens desse atendimento serão perdidos.');
+      if (!ok) return;
+    }
+    clearCart();
   }
 
   function clearCart() {
@@ -2147,7 +2170,7 @@ ${podeDesconto ? `
       // ── F8: limpar carrinho ────────────────────────────────────
       if (e.key === 'F8') {
         e.preventDefault();
-        if (!modalAberto) clearCart();
+        if (!modalAberto) _confirmarLimparCarrinho();
         return;
       }
 
@@ -2381,7 +2404,7 @@ ${podeDesconto ? `
 
   return { render, init, onSearch, onSearchKey, _abrirModalFaltaPDV, _confirmarFaltaPDV,
     selecionarProduto, fecharQtyPanel, qpKeyDown, confirmarQtyPreco,
-    addToCart, changeQty, removeItem, clearCart, adicionarSugestao,
+    addToCart, changeQty, removeItem, clearCart, _confirmarLimparCarrinho, adicionarSugestao,
     abrirEditarItem, _aplicarDescontoItem, _salvarEdicaoItem,
     toggleEntregar, _selecionarTurno, entrarModoEdicao, cancelarEdicao,
     setPayment, calcTroco, finalizarVenda, abrirPagamento, updateTotals,
