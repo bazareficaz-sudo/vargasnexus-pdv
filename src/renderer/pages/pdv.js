@@ -442,59 +442,139 @@ const PDV = (() => {
   }
 
   // ─── Modal rápido de Falta a partir do PDV ───────────────────
+  //
+  // Esta é a tela mais importante do módulo de compras, e a menos óbvia:
+  // ela é usada com o cliente na frente, no meio de um atendimento. Se
+  // custar mais de cinco segundos, o vendedor deixa de usar e a demanda
+  // perdida volta a ser invisível.
+  //
+  // Por isso a única pergunta nova é um botão: o cliente só perguntou, ou
+  // vai encomendar? É a diferença entre um sinal de demanda e uma pessoa
+  // esperando — e quem sabe disso é só quem está no balcão. Depois, ninguém
+  // consegue reconstruir.
+  let _faltaTipo = 'falta';
+
   function _abrirModalFaltaPDV(produto) {
+    _faltaTipo = 'falta';
     document.getElementById('pdv-results').style.display = 'none';
+    const p = JSON.stringify(produto).replace(/"/g, '&quot;');
     Modal.open(`
-      <div style="display:flex;flex-direction:column;gap:12px;min-width:320px">
+      <div style="display:flex;flex-direction:column;gap:12px;min-width:340px">
         <div style="background:var(--bg3);padding:10px 14px;border-radius:8px;font-size:13px">
           <div style="font-weight:600;color:var(--text)">${produto.nome}</div>
           ${produto.sku ? `<div style="font-size:11px;color:var(--text3);margin-top:2px">SKU: ${produto.sku}</div>` : ''}
         </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+          <button type="button" id="fpdv-tipo-falta" class="btn"
+            onclick="PDV._setTipoFalta('falta')"
+            style="flex-direction:column;gap:1px;padding:8px">
+            <span style="font-size:13px;font-weight:600">🔍 Só perguntou</span>
+            <span style="font-size:10px;opacity:.75">registra a procura</span>
+          </button>
+          <button type="button" id="fpdv-tipo-encomenda" class="btn"
+            onclick="PDV._setTipoFalta('encomenda')"
+            style="flex-direction:column;gap:1px;padding:8px">
+            <span style="font-size:13px;font-weight:600">📌 Vai encomendar</span>
+            <span style="font-size:10px;opacity:.75">cliente esperando</span>
+          </button>
+        </div>
+
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
           <div>
             <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">Quantidade</label>
             <input id="fpdv-qty" class="input" type="number" min="1" step="1" value="1"
               style="font-size:16px;font-weight:700;text-align:center"
-              onkeydown="if(event.key==='Enter'){PDV._confirmarFaltaPDV(${JSON.stringify(produto).replace(/"/g,'&quot;')})}">
+              onkeydown="if(event.key==='Enter'){PDV._confirmarFaltaPDV(${p})}">
           </div>
           <div>
             <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">WhatsApp (opcional)</label>
             <input id="fpdv-wa" class="input" placeholder="(00) 00000-0000"
-              onkeydown="if(event.key==='Enter'){PDV._confirmarFaltaPDV(${JSON.stringify(produto).replace(/"/g,'&quot;')})}">
+              onkeydown="if(event.key==='Enter'){PDV._confirmarFaltaPDV(${p})}">
           </div>
         </div>
         <div>
           <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">Nome do cliente (opcional)</label>
           <input id="fpdv-nome" class="input" placeholder="Nome para contato"
-            onkeydown="if(event.key==='Enter'){PDV._confirmarFaltaPDV(${JSON.stringify(produto).replace(/"/g,'&quot;')})}">
+            onkeydown="if(event.key==='Enter'){PDV._confirmarFaltaPDV(${p})}">
         </div>
+
+        <div id="fpdv-encomenda-extra" style="display:none;flex-direction:column;gap:10px">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+            <div>
+              <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">Prazo que prometeu</label>
+              <input id="fpdv-prazo" class="input" type="date">
+            </div>
+            <div>
+              <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">Preço combinado</label>
+              <input id="fpdv-preco" class="input" type="number" step="0.01" min="0" placeholder="0,00">
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:4px">Observação (opcional)</label>
+          <input id="fpdv-obs" class="input" placeholder="Marca, medida, detalhe que o cliente pediu"
+            onkeydown="if(event.key==='Enter'){PDV._confirmarFaltaPDV(${p})}">
+        </div>
+
         <div style="display:flex;gap:8px;margin-top:4px">
           <button class="btn btn-ghost" style="flex:1" onclick="Modal.close()">Cancelar</button>
-          <button class="btn btn-primary" style="flex:2"
-            onclick="PDV._confirmarFaltaPDV(${JSON.stringify(produto).replace(/"/g,'&quot;')})">
+          <button class="btn btn-primary" style="flex:2" id="fpdv-salvar"
+            onclick="PDV._confirmarFaltaPDV(${p})">
             📋 Registrar Falta
           </button>
         </div>
       </div>`, '📋 Anotar Falta / Encomenda');
+    _setTipoFalta('falta');
     setTimeout(() => document.getElementById('fpdv-qty')?.select(), 50);
   }
 
+  function _setTipoFalta(tipo) {
+    _faltaTipo = tipo === 'encomenda' ? 'encomenda' : 'falta';
+    const bFalta = document.getElementById('fpdv-tipo-falta');
+    const bEnc = document.getElementById('fpdv-tipo-encomenda');
+    const extra = document.getElementById('fpdv-encomenda-extra');
+    const salvar = document.getElementById('fpdv-salvar');
+    if (bFalta) bFalta.className = _faltaTipo === 'falta' ? 'btn btn-primary' : 'btn btn-ghost';
+    if (bEnc) bEnc.className = _faltaTipo === 'encomenda' ? 'btn btn-primary' : 'btn btn-ghost';
+    if (extra) extra.style.display = _faltaTipo === 'encomenda' ? 'flex' : 'none';
+    if (salvar) salvar.textContent = _faltaTipo === 'encomenda' ? '📌 Registrar Encomenda' : '📋 Registrar Falta';
+  }
+
   async function _confirmarFaltaPDV(produto) {
-    const qty = parseInt(document.getElementById('fpdv-qty')?.value) || 1;
+    const qty = parseFloat(document.getElementById('fpdv-qty')?.value) || 1;
     const wa = document.getElementById('fpdv-wa')?.value.trim() || '';
     const nome = document.getElementById('fpdv-nome')?.value.trim() || '';
+    const obs = document.getElementById('fpdv-obs')?.value.trim() || '';
+    const prazo = document.getElementById('fpdv-prazo')?.value || '';
+    const preco = parseFloat(document.getElementById('fpdv-preco')?.value);
+    const tipo = _faltaTipo;
     Modal.close();
     try {
       await window.pdv.faltas.registrar({
         produto_id: produto.id || null,
         produto_nome: produto.nome,
         produto_sku: produto.sku || '',
-        quantidade: qty,
+        // Os nomes destes dois campos estavam errados e a informação era
+        // descartada em silêncio: a quantidade virava sempre 1 e o telefone
+        // sempre nulo. Quinze dias de anotação do balcão foram para o banco
+        // sem quantidade e sem contato por causa disso.
+        quantidade_solicitada: qty,
         cliente_nome: nome || null,
-        cliente_whatsapp: wa || null,
+        cliente_telefone: wa || null,
+        observacao: obs || null,
+        tipo,
+        prazo_desejado: tipo === 'encomenda' && prazo ? prazo : null,
+        preco_negociado: tipo === 'encomenda' && !isNaN(preco) ? preco : null,
         status: 'pendente',
       });
-      Toast.show(`Falta registrada: ${produto.nome}`, 'success');
+      Toast.show(
+        tipo === 'encomenda'
+          ? `Encomenda registrada: ${produto.nome}`
+          : `Falta registrada: ${produto.nome}`,
+        'success'
+      );
       App.atualizarBadgeFaltas();
     } catch (err) {
       Toast.show('Erro ao registrar falta', 'error');
@@ -2415,7 +2495,7 @@ ${podeDesconto ? `
     }
   }
 
-  return { render, init, onSearch, onSearchKey, _abrirModalFaltaPDV, _confirmarFaltaPDV,
+  return { render, init, onSearch, onSearchKey, _abrirModalFaltaPDV, _confirmarFaltaPDV, _setTipoFalta,
     selecionarProduto, fecharQtyPanel, qpKeyDown, confirmarQtyPreco,
     addToCart, changeQty, removeItem, clearCart, _confirmarLimparCarrinho, adicionarSugestao,
     abrirEditarItem, _aplicarDescontoItem, _salvarEdicaoItem,

@@ -677,7 +677,15 @@ async function registrarFalta(falta) {
     observacao: falta.observacao || null,
     status: falta.status || 'pendente',
     origem: falta.origem || 'pdv',
-    usuario_nome: falta.usuario_nome || null,
+    // Quem anotou. Ficava sempre nulo porque nenhuma das duas telas mandava
+    // o operador — e sem isso o comprador não tem a quem perguntar se o
+    // cliente ainda quer o produto. O nome do operador logado já está no
+    // store; é só usá-lo quando a tela não informar outro.
+    usuario_nome: falta.usuario_nome || usuario.nome || null,
+    tipo: falta.tipo === 'encomenda' ? 'encomenda' : 'falta',
+    prazo_desejado: falta.prazo_desejado || null,
+    preco_negociado: falta.preco_negociado != null ? Number(falta.preco_negociado) : null,
+    terminal_id: falta.terminal_id || store.get('config.terminal_id') || null,
   });
   if (error) throw new Error(error.message);
   return { id };
@@ -689,10 +697,20 @@ async function atualizarFalta(remoteId, dados) {
   return { ok: true };
 }
 
+// Status que ainda interessam ao balcão. `recebido` é o mais importante da
+// lista: é o momento em que o vendedor pode ligar para o cliente avisando
+// que a encomenda chegou. Enquanto o filtro trazia só pendente/notificado/
+// comprado, o painel podia marcar "recebido" à vontade — a informação
+// morria no servidor e nunca chegava a quem atende.
+const STATUS_ABERTOS = [
+  'pendente', 'em_analise', 'em_compra', 'pedido', 'recebido',
+  'notificado', 'comprado', // vocabulário antigo, ainda em linhas existentes
+];
+
 async function listarFaltasRemoto() {
   const usuario = store.get('auth.usuario') || {};
   const empresaId = usuario.empresa_estoque_id || usuario.empresa_id;
-  let query = supabase.from('faltas').select('*').in('status', ['pendente', 'notificado', 'comprado']).order('created_at', { ascending: false }).limit(200);
+  let query = supabase.from('faltas').select('*').in('status', STATUS_ABERTOS).order('created_at', { ascending: false }).limit(200);
   if (empresaId) query = query.eq('empresa_id', empresaId);
   const { data, error } = await query;
   if (error) { console.warn('[Faltas]', error.message); return []; }

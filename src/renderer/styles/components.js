@@ -1779,16 +1779,31 @@ const Estoque = {
 const Faltas = (() => {
   let _lista = [];
   let _filtroStatus = '';
+  let _filtroTipo = '';
   let _busca = '';
+  let _novoTipo = 'falta';
 
+  // O caminho da solicitação, do balcão até a mercadoria na mão do cliente.
+  // Os quatro últimos são vocabulário antigo — as linhas gravadas antes de
+  // agosto/2026 ainda os usam, e some-las da lista faria o status dessas
+  // linhas aparecer em branco no seletor.
   const STATUS_LABEL = {
-    pendente:   { label: 'Pendente',   cor: '#eab308', bg: '#fef9c3' },
-    notificado: { label: 'Notificado', cor: '#3b82f6', bg: '#dbeafe' },
-    comprado:   { label: 'Comprado',   cor: '#8b5cf6', bg: '#ede9fe' },
-    atendido:   { label: 'Atendido',   cor: '#22c55e', bg: '#dcfce7' },
-    cancelado:  { label: 'Cancelado',  cor: '#9ca3af', bg: '#f3f4f6' },
-    resolvido:  { label: 'Resolvido',  cor: '#22c55e', bg: '#dcfce7' },
-    ignorado:   { label: 'Ignorado',   cor: '#9ca3af', bg: '#f3f4f6' },
+    pendente:   { label: 'Pendente',        cor: '#eab308', bg: '#fef9c3' },
+    em_analise: { label: 'Em análise',      cor: '#3b82f6', bg: '#dbeafe' },
+    em_compra:  { label: 'Na lista',        cor: '#6366f1', bg: '#e0e7ff' },
+    pedido:     { label: 'Pedido ao forn.', cor: '#8b5cf6', bg: '#ede9fe' },
+    recebido:   { label: 'Chegou!',         cor: '#0891b2', bg: '#cffafe' },
+    atendido:   { label: 'Atendido',        cor: '#22c55e', bg: '#dcfce7' },
+    cancelado:  { label: 'Cancelado',       cor: '#9ca3af', bg: '#f3f4f6' },
+    notificado: { label: 'Notificado',      cor: '#3b82f6', bg: '#dbeafe' },
+    comprado:   { label: 'Comprado',        cor: '#8b5cf6', bg: '#ede9fe' },
+    resolvido:  { label: 'Resolvido',       cor: '#22c55e', bg: '#dcfce7' },
+    ignorado:   { label: 'Ignorado',        cor: '#9ca3af', bg: '#f3f4f6' },
+  };
+
+  const TIPO_LABEL = {
+    falta:     { label: 'Falta',    icone: '🔍', cor: '#64748b', bg: '#f1f5f9' },
+    encomenda: { label: 'Encomenda', icone: '📌', cor: '#c2410c', bg: '#ffedd5' },
   };
 
   function render() {
@@ -1804,14 +1819,20 @@ const Faltas = (() => {
   <input class="input" id="faltas-busca" placeholder="Buscar produto ou cliente..."
     style="flex:1;max-width:320px"
     oninput="Faltas.setBusca(this.value)">
+  <select class="input" id="faltas-tipo" style="width:150px" onchange="Faltas.setTipo(this.value)">
+    <option value="">Falta e encomenda</option>
+    <option value="encomenda">Só encomendas</option>
+    <option value="falta">Só faltas</option>
+  </select>
   <select class="input" id="faltas-status" style="width:160px" onchange="Faltas.setStatus(this.value)">
     <option value="">Todos os status</option>
     <option value="pendente">Pendente</option>
-    <option value="notificado">Notificado</option>
-    <option value="comprado">Comprado</option>
+    <option value="em_analise">Em análise</option>
+    <option value="em_compra">Na lista</option>
+    <option value="pedido">Pedido ao fornecedor</option>
+    <option value="recebido">Chegou!</option>
     <option value="atendido">Atendido</option>
     <option value="cancelado">Cancelado</option>
-    <option value="resolvido">Resolvido</option>
   </select>
   <span id="faltas-count" style="font-size:12px;color:var(--text3)"></span>
 </div>
@@ -1819,7 +1840,7 @@ const Faltas = (() => {
   <div class="table-wrap">
     <table>
       <thead><tr>
-        <th>Produto</th><th>Cliente</th><th>Qtd</th>
+        <th>Produto</th><th>Tipo</th><th>Cliente</th><th>Qtd</th>
         <th>Observação</th><th>Status</th><th>Data</th><th>Ações</th>
       </tr></thead>
       <tbody id="faltas-tbody"></tbody>
@@ -1833,7 +1854,7 @@ const Faltas = (() => {
   }
 
   async function carregar() {
-    _lista = await window.pdv.faltas.listar({ status: _filtroStatus, busca: _busca });
+    _lista = await window.pdv.faltas.listar({ status: _filtroStatus, tipo: _filtroTipo, busca: _busca });
     renderTabela();
   }
 
@@ -1845,7 +1866,7 @@ const Faltas = (() => {
     if (count) count.textContent = `${_lista.length} registro${_lista.length !== 1 ? 's' : ''}`;
 
     if (_lista.length === 0) {
-      tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:40px;color:var(--text3)">
+      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:40px;color:var(--text3)">
         Nenhuma falta registrada
       </td></tr>`;
       return;
@@ -1853,16 +1874,27 @@ const Faltas = (() => {
 
     tbody.innerHTML = _lista.map(f => {
       const s = STATUS_LABEL[f.status] || STATUS_LABEL.pendente;
+      const t = TIPO_LABEL[f.tipo] || TIPO_LABEL.falta;
       const data = f.created_at ? new Date(f.created_at).toLocaleDateString('pt-BR') : '—';
       const tel = f.cliente_telefone
         ? `<div style="font-size:10px;color:var(--text3)">${f.cliente_telefone}</div>` : '';
       const syncBadge = f.sync_status === 'synced'
         ? '<span style="font-size:9px;color:var(--text3)">☁</span>'
         : '<span style="font-size:9px;color:var(--accent)">↑</span>';
+      // Prazo prometido ao cliente aparece junto do produto: é a informação
+      // que faz alguém correr atrás da encomenda antes de o prazo estourar.
+      const prazo = f.prazo_desejado
+        ? `<div style="font-size:10px;color:var(--orange, #c2410c)">prometido p/ ${new Date(f.prazo_desejado + 'T00:00:00').toLocaleDateString('pt-BR')}</div>`
+        : '';
       return `<tr>
         <td>
           <div style="font-weight:600">${f.produto_nome}</div>
           ${f.produto_sku ? `<div style="font-size:10px;color:var(--text3)">${f.produto_sku}</div>` : ''}
+          ${prazo}
+        </td>
+        <td>
+          <span style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;
+            color:${t.cor};background:${t.bg};white-space:nowrap">${t.icone} ${t.label}</span>
         </td>
         <td>${f.cliente_nome ? `<div>${f.cliente_nome}</div>${tel}` : '<span style="color:var(--text3)">—</span>'}</td>
         <td style="text-align:center;font-weight:600">${f.quantidade_solicitada || 1}</td>
@@ -1898,6 +1930,11 @@ const Faltas = (() => {
     carregar();
   }
 
+  function setTipo(v) {
+    _filtroTipo = v;
+    carregar();
+  }
+
   async function mudarStatus(id, status) {
     await window.pdv.faltas.atualizarStatus(id, status);
     await carregar();
@@ -1929,6 +1966,18 @@ const Faltas = (() => {
         cursor:pointer;color:var(--text3);font-size:13px;padding:0">✕</button>
     </div>
   </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+    <button type="button" id="nf-tipo-falta" class="btn" onclick="Faltas.setNovoTipo('falta')"
+      style="flex-direction:column;gap:1px;padding:8px">
+      <span style="font-size:13px;font-weight:600">🔍 Falta</span>
+      <span style="font-size:10px;opacity:.75">cliente só procurou</span>
+    </button>
+    <button type="button" id="nf-tipo-encomenda" class="btn" onclick="Faltas.setNovoTipo('encomenda')"
+      style="flex-direction:column;gap:1px;padding:8px">
+      <span style="font-size:13px;font-weight:600">📌 Encomenda</span>
+      <span style="font-size:10px;opacity:.75">cliente vai levar</span>
+    </button>
+  </div>
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
     <div>
       <label class="label">Quantidade</label>
@@ -1938,7 +1987,8 @@ const Faltas = (() => {
       <label class="label">Status</label>
       <select class="input" id="nf-status">
         <option value="pendente">Pendente</option>
-        <option value="comprado">Comprado</option>
+        <option value="em_compra">Na lista de compra</option>
+        <option value="pedido">Pedido ao fornecedor</option>
       </select>
     </div>
   </div>
@@ -1950,9 +2000,19 @@ const Faltas = (() => {
     <label class="label">Telefone / WhatsApp</label>
     <input class="input" id="nf-tel" placeholder="(21) 99999-9999">
   </div>
+  <div id="nf-encomenda-extra" style="display:none;gap:10px;grid-template-columns:1fr 1fr">
+    <div>
+      <label class="label">Prazo prometido</label>
+      <input class="input" id="nf-prazo" type="date">
+    </div>
+    <div>
+      <label class="label">Preço combinado</label>
+      <input class="input" id="nf-preco" type="number" step="0.01" min="0" placeholder="0,00">
+    </div>
+  </div>
   <div>
     <label class="label">Observação</label>
-    <input class="input" id="nf-obs" placeholder="Quantidade, prazo, detalhes...">
+    <input class="input" id="nf-obs" placeholder="Marca, medida, detalhe que o cliente pediu">
   </div>
 </div>
 <div class="modal-actions">
@@ -1962,7 +2022,18 @@ const Faltas = (() => {
 
     // Pre-preencher se veio com produto já conhecido
     if (idProduto) _marcarProdutoSelecionado({ id: idProduto, nome: nomeProduto, sku: skuProduto });
+    setNovoTipo('falta');
     setTimeout(() => document.getElementById('nf-produto')?.focus(), 80);
+  }
+
+  function setNovoTipo(tipo) {
+    _novoTipo = tipo === 'encomenda' ? 'encomenda' : 'falta';
+    const bF = document.getElementById('nf-tipo-falta');
+    const bE = document.getElementById('nf-tipo-encomenda');
+    const extra = document.getElementById('nf-encomenda-extra');
+    if (bF) bF.className = _novoTipo === 'falta' ? 'btn btn-primary' : 'btn btn-ghost';
+    if (bE) bE.className = _novoTipo === 'encomenda' ? 'btn btn-primary' : 'btn btn-ghost';
+    if (extra) extra.style.display = _novoTipo === 'encomenda' ? 'grid' : 'none';
   }
 
   let _nfResultados = [];
@@ -2069,6 +2140,8 @@ const Faltas = (() => {
   async function confirmarNovaFalta() {
     const nome = document.getElementById('nf-produto')?.value?.trim();
     if (!nome) { App.toast('Informe o nome do produto', 'error'); return; }
+    const prazo = document.getElementById('nf-prazo')?.value || '';
+    const preco = parseFloat(document.getElementById('nf-preco')?.value);
     const falta = {
       produto_id:           document.getElementById('nf-produto-id')?.value || null,
       produto_nome:         nome,
@@ -2078,11 +2151,14 @@ const Faltas = (() => {
       cliente_telefone:     document.getElementById('nf-tel')?.value?.trim() || null,
       observacao:           document.getElementById('nf-obs')?.value?.trim() || null,
       status:               document.getElementById('nf-status')?.value || 'pendente',
+      tipo:                 _novoTipo,
+      prazo_desejado:       _novoTipo === 'encomenda' && prazo ? prazo : null,
+      preco_negociado:      _novoTipo === 'encomenda' && !isNaN(preco) ? preco : null,
       origem: 'pdv',
     };
     await window.pdv.faltas.registrar(falta);
     Modal.close();
-    App.toast('✅ Falta registrada!', 'success');
+    App.toast(_novoTipo === 'encomenda' ? '✅ Encomenda registrada!' : '✅ Falta registrada!', 'success');
     if (document.getElementById('faltas-tbody')) await carregar();
   }
 
@@ -2095,7 +2171,7 @@ const Faltas = (() => {
   }
 
   return {
-    render, init, carregar, setBusca, setStatus,
+    render, init, carregar, setBusca, setStatus, setTipo, setNovoTipo,
     mudarStatus, abrirNovaFalta, confirmarNovaFalta, abrirWhatsApp,
     _buscarProduto, _navBusca, _selecionarProduto, _marcarProdutoSelecionado,
     _limparProduto, _hlProduto,

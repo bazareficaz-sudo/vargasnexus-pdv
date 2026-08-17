@@ -464,6 +464,14 @@ function runMigrations() {
       FOREIGN KEY (orcamento_id) REFERENCES orcamentos(id)
     )`,
     'ALTER TABLE vendas ADD COLUMN cliente_nome TEXT',
+    // Faltas e encomendas — espelha supabase-faltas-encomendas.sql.
+    // Sem `tipo`, "o cliente perguntou" e "o cliente encomendou" viravam a
+    // mesma linha, e a encomenda sumia dentro de uma lista genérica.
+    'ALTER TABLE faltas ADD COLUMN tipo TEXT DEFAULT \'falta\'',
+    'ALTER TABLE faltas ADD COLUMN prazo_desejado TEXT',
+    'ALTER TABLE faltas ADD COLUMN preco_negociado REAL',
+    'ALTER TABLE faltas ADD COLUMN quantidade_atendida REAL DEFAULT 0',
+    'ALTER TABLE faltas ADD COLUMN terminal_id TEXT',
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* coluna já existe */ }
@@ -1535,19 +1543,37 @@ const estoque = {
 
 // ─── FALTAS / ENCOMENDAS ─────────────────────────────────────────
 const faltas = {
+  // Duas telas chamam esta função com nomes de campo diferentes: o modal
+  // rápido do PDV mandava `quantidade` e `cliente_whatsapp`, a tela de
+  // Faltas manda `quantidade_solicitada` e `cliente_telefone`. Só a segunda
+  // batia com o que era gravado — por isso as 11 primeiras faltas foram
+  // parar no banco todas com quantidade 1 e sem telefone nenhum, mesmo
+  // quando o vendedor digitou 10 e anotou o WhatsApp do cliente.
+  //
+  // Aqui os dois nomes passam a valer. Não é indulgência com bagunça: é
+  // que a informação já foi perdida uma vez, e a tela é o lado que não
+  // pode falhar em silêncio.
   registrar(falta) {
     const id = uuidv4();
+    const qtd = Number(falta.quantidade_solicitada ?? falta.quantidade) || 1;
+    const tel = falta.cliente_telefone || falta.cliente_whatsapp || null;
+
     db.prepare(`
       INSERT INTO faltas
       (id, produto_id, produto_nome, produto_sku, cliente_nome, cliente_telefone,
-       quantidade_solicitada, observacao, status, origem, usuario_nome, created_at, sync_status)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+       quantidade_solicitada, observacao, status, origem, usuario_nome, created_at, sync_status,
+       tipo, prazo_desejado, preco_negociado, terminal_id)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `).run(
       id, falta.produto_id || null, falta.produto_nome, falta.produto_sku || null,
-      falta.cliente_nome || null, falta.cliente_telefone || null,
-      falta.quantidade_solicitada || 1, falta.observacao || null,
+      falta.cliente_nome || null, tel,
+      qtd, falta.observacao || null,
       falta.status || 'pendente', falta.origem || 'pdv',
-      falta.usuario_nome || null, new Date().toISOString(), 'pending'
+      falta.usuario_nome || null, new Date().toISOString(), 'pending',
+      falta.tipo === 'encomenda' ? 'encomenda' : 'falta',
+      falta.prazo_desejado || null,
+      falta.preco_negociado != null ? Number(falta.preco_negociado) : null,
+      falta.terminal_id || null
     );
     db.prepare(`INSERT INTO sync_queue (id, entidade, operacao, payload, created_at) VALUES (?,?,?,?,?)`)
       .run(uuidv4(), 'falta', 'create', JSON.stringify({ falta_id: id }), new Date().toISOString());
@@ -1558,6 +1584,7 @@ const faltas = {
     let where = '1=1';
     const params = [];
     if (filtros.status) { where += ' AND status = ?'; params.push(filtros.status); }
+    if (filtros.tipo) { where += ' AND COALESCE(tipo, \'falta\') = ?'; params.push(filtros.tipo); }
     if (filtros.busca) {
       where += ' AND (produto_nome LIKE ? OR cliente_nome LIKE ?)';
       params.push(`%${filtros.busca}%`, `%${filtros.busca}%`);
@@ -1581,8 +1608,9 @@ const faltas = {
     const stmt = db.prepare(`
       INSERT OR REPLACE INTO faltas
       (id, remote_id, produto_id, produto_nome, produto_sku, cliente_nome, cliente_telefone,
-       quantidade_solicitada, observacao, status, origem, usuario_nome, created_at, synced_at, sync_status)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       quantidade_solicitada, observacao, status, origem, usuario_nome, created_at, synced_at, sync_status,
+       tipo, prazo_desejado, preco_negociado, quantidade_atendida)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
     const t = db.transaction(items => {
       for (const f of items) {
@@ -1591,14 +1619,25 @@ const faltas = {
           f.cliente_nome || null, f.cliente_telefone || null,
           f.quantidade_solicitada || 1, f.observacao || null,
           f.status || 'pendente', f.origem || 'pdv', f.usuario_nome || null,
-          f.created_date || new Date().toISOString(), new Date().toISOString(), 'synced');
+          f.created_date || new Date().toISOString(), new Date().toISOString(), 'synced',
+          f.tipo || 'falta', f.prazo_desejado || null,
+          f.preco_negociado != null ? Number(f.preco_negociado) : null,
+          Number(f.quantidade_atendida) || 0);
       }
     });
     t(lista);
   },
 
+  // O badge conta o que espera alguém do balcão fazer alguma coisa —
+  // e isso inclui `recebido`. Quando a mercadoria chega, quem precisa
+  // agir é o vendedor, ligando para o cliente que encomendou. Se o
+  // badge só contasse `pendente`, a encomenda que chegou não apareceria
+  // em lugar nenhum e o cliente continuaria esperando com o produto na
+  // prateleira.
   contarPendentes() {
-    return db.prepare("SELECT COUNT(*) as total FROM faltas WHERE status = 'pendente'").get().total;
+    return db.prepare(
+      "SELECT COUNT(*) as total FROM faltas WHERE status IN ('pendente', 'recebido')"
+    ).get().total;
   },
 };
 
