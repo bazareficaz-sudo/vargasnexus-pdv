@@ -883,6 +883,34 @@ async function sincronizarConfigTermometro() {
   return data;
 }
 
+// ─── WhatsApp (envio de orçamento/pedido/cupom via Z-API) ─────────────
+// O terminal só tem a chave anônima — não pode ler whatsapp_config (guarda
+// o token do Z-API) nem chamar a rota /api/whatsapp/enviar do painel (exige
+// sessão de navegador). Passa pela Edge Function enviar-whatsapp-pdv, que
+// roda com privilégio elevado só no servidor e nunca devolve o token pro
+// cliente. Ver pdv-vargas-web/supabase/functions/enviar-whatsapp-pdv.
+async function chamarPdvProxy(_action, params) {
+  const usuario = store.get('auth.usuario') || {};
+  const empresaId = usuario.empresa_estoque_id || usuario.empresa_id;
+  if (!empresaId) throw new Error('Empresa não identificada — faça login novamente');
+
+  const url = `${supabase.supabaseUrl}/functions/v1/enviar-whatsapp-pdv`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      apikey: supabase.supabaseKey,
+      Authorization: `Bearer ${supabase.supabaseKey}`,
+    },
+    body: JSON.stringify({ ...params, empresa_id: empresaId, operador_nome: usuario.nome || null }),
+  });
+  const text = await res.text();
+  let json;
+  try { json = JSON.parse(text); } catch { throw new Error(`Servidor retornou resposta inválida: ${text.slice(0, 200)}`); }
+  if (!res.ok || json.error) throw new Error(json.error || `HTTP ${res.status}`);
+  return json;
+}
+
 // ─── Impressão em rede (URL do tunnel do terminal-caixa) ──────────────
 
 async function atualizarUrlImpressao(url) {
@@ -1038,6 +1066,6 @@ module.exports = {
   listarOrcamentosCloud,
   getOrcamentoCloud,
   registrarNfceVenda: _naoDisponivel('NFC-e'),
-  chamarPdvProxy: _naoDisponivel('WhatsApp'),
+  chamarPdvProxy,
   repararClienteNasVendas: _naoDisponivel('Manutenção'),
 };

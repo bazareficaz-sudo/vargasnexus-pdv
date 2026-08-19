@@ -461,18 +461,20 @@ ipcMain.handle('orcamentos:atualizar', async (_, id, dados) => {
   return { ok: true };
 });
 
-// WhatsApp via pdvProxy
+// WhatsApp via Edge Function enviar-whatsapp-pdv (Z-API server-side —
+// ver comentário em api.js/chamarPdvProxy sobre por que não dá pra chamar
+// o Z-API ou a rota do painel direto do terminal)
 ipcMain.handle('whatsapp:enviar', async (_, tipo, id, telefone, dadosExtras) => {
-  const params = { tipo: tipo === 'catalogo' ? 'orcamento' : tipo, telefone: telefone || null };
+  const params = { tipo, telefone: telefone || null };
+  const fmtBRL = v => 'R$ ' + Number(v || 0).toFixed(2).replace('.', ',');
+  const empresaNome = store.get('auth.usuario.empresa_nome') || 'Vargas';
+
   if (tipo === 'catalogo') {
     const { produtos, opcoes } = dadosExtras || {};
     if (!produtos || !produtos.length) throw new Error('Nenhum produto para enviar');
-    const fmtBRL = v => 'R$ ' + Number(v || 0).toFixed(2).replace('.', ',');
-    const empresaNome = store.get('auth.usuario.empresa_nome') || 'Vargas';
 
     const comFoto = [];
     const semFotoLinhas = [];
-
     for (const p of produtos) {
       const partes = [];
       if (opcoes?.nome  !== false) partes.push(`*${p.nome}*`);
@@ -480,29 +482,24 @@ ipcMain.handle('whatsapp:enviar', async (_, tipo, id, telefone, dadosExtras) => 
       if (opcoes?.desc  && p.descricao) partes.push(p.descricao);
       const legenda = partes.join('\n');
       const fotoUrl = opcoes?.foto !== false ? (p.foto_url || '') : '';
-      if (fotoUrl) {
-        comFoto.push({ url: fotoUrl, caption: legenda });
-      } else {
-        semFotoLinhas.push(legenda);
-      }
+      if (fotoUrl) comFoto.push({ url: fotoUrl, caption: legenda });
+      else semFotoLinhas.push(legenda);
     }
-
-    // Texto apenas para produtos sem foto (ou intro se todos têm foto)
-    params.mensagem_texto = semFotoLinhas.length
-      ? `🏪 *${empresaNome}*\n\n` + semFotoLinhas.join('\n─────────────\n\n')
-      : `🏪 *${empresaNome}*`;
+    // Texto só para produtos sem foto (ou intro, se todos têm foto — as
+    // fotos já levam nome/preço na legenda de cada uma)
+    if (semFotoLinhas.length) {
+      params.mensagem = `🏪 *${empresaNome}*\n\n` + semFotoLinhas.join('\n─────────────\n\n');
+    } else if (!comFoto.length) {
+      params.mensagem = `🏪 *${empresaNome}*`;
+    }
     if (comFoto.length) params.fotos = comFoto;
-    // orcamento_data mínimo para passar validação do cloud (mensagem_texto substitui o conteúdo)
-    params.orcamento_data = { numero: 'CAT', itens: [], total: 0 };
     console.log('[WA] catalogo fotos:', comFoto.length, '| semFoto:', semFotoLinhas.length);
+
   } else if (tipo === 'orcamento') {
     const orc = db.orcamentos.getById(id);
     if (!orc) throw new Error('Orçamento não encontrado');
     const itensOrc = Array.isArray(orc.itens) ? orc.itens : [];
-    // Gera mensagem de texto localmente (evita dependência do gerarMensagemOrcamento do Base44)
-    const fmtBRL = v => 'R$ ' + Number(v || 0).toFixed(2).replace('.', ',');
-    const empresaNome = store.get('auth.usuario.empresa_nome') || 'Vargas';
-    let linhasItens = itensOrc.map(i => {
+    const linhasItens = itensOrc.map(i => {
       const unitario = i.preco_unitario || i.preco || i.preco_venda || i.valor_unitario
                        || (i.total && i.quantidade ? i.total / Math.max(i.quantidade, 1) : 0);
       const subtotal = i.subtotal || i.total || (unitario * Math.max(i.quantidade || 1, 1));
@@ -511,35 +508,27 @@ ipcMain.handle('whatsapp:enviar', async (_, tipo, id, telefone, dadosExtras) => 
     const totalOrc = orc.total || orc.valor_total || itensOrc.reduce((s, i) => s + (i.subtotal || i.total || 0), 0);
     const validadeTexto = orc.validade ? `\n📅 Válido até: ${orc.validade}` : '';
     const obsTexto = orc.observacao ? `\n📝 ${orc.observacao}` : '';
-    // Enviar orcamento_data sem o id para o cloud não buscar no Base44
-    // (no Base44 os itens têm preco_unitario=0; aqui temos os preços corretos do SQLite)
-    const itensNormalizados = itensOrc.map(i => {
-      const unitario = i.preco_unitario || i.preco || i.preco_venda || i.valor_unitario
-                       || (i.total && i.quantidade ? i.total / Math.max(i.quantidade, 1) : 0);
-      return { produto_nome: i.produto_nome, quantidade: i.quantidade, preco_unitario: unitario,
-               subtotal: i.subtotal || i.total || (unitario * Math.max(i.quantidade || 1, 1)) };
-    });
-    params.orcamento_data = {
-      numero: orc.numero, itens: itensNormalizados,
-      total: totalOrc, validade: orc.validade, observacao: orc.observacao,
-      // sem id — força o cloud a usar estes dados em vez de buscar no Base44
-    };
+    params.mensagem = `🏪 *${empresaNome}*\n📋 *Orçamento #${orc.numero}*\n\n${linhasItens}\n\n💰 *Total: ${fmtBRL(totalOrc)}*${validadeTexto}${obsTexto}`;
+    params.cliente_id = orc.cliente_id || null;
+    params.cliente_nome = orc.cliente_nome || null;
+    params.referencia_tipo = 'orcamento';
+    params.referencia_id = orc.id;
+
   } else if (tipo === 'mensagem_direta') {
-    // Texto livre — reutiliza o fluxo de orçamento mas com mensagem pré-formatada
     const mensagem = dadosExtras?.mensagem_texto;
     if (!mensagem) throw new Error('mensagem_texto obrigatório para mensagem_direta');
-    params.tipo = 'orcamento';
-    params.mensagem_texto = mensagem;
-    params.orcamento_data = { numero: 'MSG', itens: [], total: 0 };
+    params.tipo = 'manual';
+    params.mensagem = mensagem;
+
   } else {
-    // dadosExtras tem prioridade (vendas de outros terminais não existem no banco local)
+    // Cupom de venda — dadosExtras tem prioridade (vendas de outros
+    // terminais não existem no banco local)
     const venda = dadosExtras || db.vendas.getById(id);
     if (!venda) throw new Error('Venda não encontrada');
-    // Gerar PDF do cupom e incluir em base64
     try {
       const itens = typeof venda.itens === 'string' ? JSON.parse(venda.itens) : (venda.itens || []);
       const html = printServer.gerarHtmlCupom({
-        numero: venda.numero, empresa_nome: store.get('auth.usuario.empresa_nome') || '',
+        numero: venda.numero, empresa_nome: empresaNome,
         vendedor_nome: venda.vendedor_nome, cliente_nome: venda.cliente_nome,
         itens, subtotal: venda.subtotal || venda.total,
         desconto: venda.desconto || 0, total: venda.total,
@@ -564,10 +553,17 @@ ipcMain.handle('whatsapp:enviar', async (_, tipo, id, telefone, dadosExtras) => 
       const pdfBuf = await tmpWin.webContents.printToPDF({ printBackground: true, pageSize: 'A4' });
       tmpWin.close();
       params.pdf_base64 = pdfBuf.toString('base64');
-      params.pdf_filename = `cupom-${venda.numero}`;
+      params.pdf_filename = `cupom-${venda.numero}.pdf`;
+      params.pdf_caption = `🧾 Aqui está o comprovante da sua compra #${venda.numero}!`;
       console.log('[WA] PDF gerado:', params.pdf_filename, 'bytes:', pdfBuf.length);
-    } catch (e) { console.error('[WA] PDF gen error:', e.message); }
-    params.venda_data = venda;
+    } catch (e) {
+      console.error('[WA] PDF gen error:', e.message);
+      throw new Error('Falha ao gerar PDF do comprovante: ' + e.message);
+    }
+    params.cliente_id = venda.cliente_id || null;
+    params.cliente_nome = venda.cliente_nome || null;
+    params.referencia_tipo = 'venda';
+    params.referencia_id = venda.id;
 
     // Após envio do cupom, verificar se tem NF-Ce e enviar após 10s
     if (venda.nfce_emitida && venda.nfce_url_pdf && params.telefone) {
@@ -582,7 +578,10 @@ ipcMain.handle('whatsapp:enviar', async (_, tipo, id, telefone, dadosExtras) => 
             telefone: params.telefone,
             pdf_base64: pdfBuffer.toString('base64'),
             pdf_filename: `NFCe-${venda.nfce_numero || venda.numero}.pdf`,
-            venda_data: venda,
+            pdf_caption: '📄 Nota Fiscal do Consumidor (NFC-e)',
+            cliente_id: venda.cliente_id || null,
+            cliente_nome: venda.cliente_nome || null,
+            referencia_tipo: 'venda', referencia_id: venda.id,
           });
           console.log('[WA] NF-Ce PDF enviado para:', params.telefone);
         } catch (e) { console.error('[WA] NF-Ce send error:', e.message); }
