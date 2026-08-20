@@ -211,6 +211,8 @@ const PDV = (() => {
 .si-marca{font-size:12px;color:var(--text2)}
 .si-estoque{text-align:center;font-size:12px;white-space:nowrap}
 .si-preco{text-align:right;font-weight:700;color:var(--accent);font-family:'Syne',sans-serif;white-space:nowrap}
+.si-preco-normal{color:var(--accent);font-size:12px;line-height:1.5}
+.si-preco-promo{color:var(--green);font-size:12px;line-height:1.5}
 
 .pdv-client-bar{
   display:flex;align-items:center;justify-content:space-between;
@@ -378,8 +380,8 @@ const PDV = (() => {
             <td class="si-marca">${p.marca || '—'}</td>
             <td class="si-estoque" style="white-space:nowrap">${estoqueHtml}${faltaBtn}</td>
             <td class="si-preco">${promocaoVigente(p)
-              ? `<span style="text-decoration:line-through;color:var(--text3);font-size:10px">R$ ${fmtMoney(p.preco_venda)}</span><br>
-                 <span style="color:var(--green);font-weight:700">🏷️ R$ ${fmtMoney(p.preco_promocional)}</span>`
+              ? `<span class="si-preco-normal">💳 R$ ${fmtMoney(p.preco_venda)}</span><br>
+                 <span class="si-preco-promo">🏷️ R$ ${fmtMoney(p.preco_promocional)}</span>`
               : `R$ ${fmtMoney(p.preco_venda)}`}</td>
           </tr>`;
         }).join('');
@@ -1121,6 +1123,16 @@ ${podeDesconto ? `
     return formasAvista.includes(forma);
   }
 
+  // Rótulo curto pro resumo de promoção na lateral (ex: "Din/Pix")
+  const _NOMES_FORMA_CURTO = {
+    pix: 'Pix', dinheiro: 'Din', debito: 'Débito',
+    credito_vista: 'Créd. à vista', credito_parc: 'Créd. parc.',
+    carteira: 'Carteira', fiado: 'Fiado',
+  };
+  function _labelFormasAvista() {
+    return formasAvista.map(f => _NOMES_FORMA_CURTO[f] || f).join('/');
+  }
+
   // Recalcula preco_unitario/total dos itens em promoção conforme a forma
   // de pagamento atual: à vista mantém o preço promocional, qualquer outra
   // forma (cartão, carteira, misto) cobra o preço de tabela — é a regra que
@@ -1200,10 +1212,16 @@ ${podeDesconto ? `
       const { temPromo, totalAvista, totalCartao } = calcularTotaisPromocao();
       if (temPromo && !negativo) {
         elPromoResumo.style.display = 'block';
-        elPromoResumo.innerHTML =
-          `🏷️ <strong>Tem item em promoção</strong> — ofereça ao cliente:<br>` +
-          `À vista (${formasAvista.join('/')}): <strong style="color:var(--accent)">R$ ${fmtMoney(totalAvista)}</strong>` +
-          `&nbsp;·&nbsp;Outras formas: <strong>R$ ${fmtMoney(totalCartao)}</strong>`;
+        elPromoResumo.innerHTML = `
+          <div style="font-weight:700;margin-bottom:6px">🏷️ Tem item em promoção — ofereça ao cliente:</div>
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0">
+            <span style="color:var(--text2)">💳 Pgto Normal</span>
+            <strong style="color:var(--accent);font-size:17px">R$ ${fmtMoney(totalCartao)}</strong>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0">
+            <span style="color:var(--text2)">${_labelFormasAvista()}</span>
+            <strong style="color:var(--green);font-size:17px">R$ ${fmtMoney(totalAvista)}</strong>
+          </div>`;
       } else {
         elPromoResumo.style.display = 'none';
       }
