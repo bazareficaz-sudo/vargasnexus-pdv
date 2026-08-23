@@ -206,6 +206,7 @@ const PDV = (() => {
 .si-thumb-img{width:32px;height:32px;object-fit:cover;border-radius:6px;background:var(--bg3);display:block}
 .si-thumb-fallback{width:32px;height:32px;border-radius:6px;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:16px}
 .si-cod{font-size:10px;color:var(--text3);white-space:nowrap}
+.si-local{font-size:10px;color:var(--accent);font-weight:600;margin-top:2px;white-space:nowrap}
 .si-nome{font-weight:600;line-height:1.3}
 .si-sub{font-size:10px;color:var(--text3)}
 .si-marca{font-size:12px;color:var(--text2)}
@@ -375,7 +376,7 @@ const PDV = (() => {
           return `<tr class="search-item ${semEstoque ? 'out-of-stock' : ''}" id="si-${i}"
             onclick="${!semEstoque ? `PDV.selecionarProduto(${JSON.stringify(p).replace(/"/g, '&quot;')})` : ''}">
             <td class="si-thumb">${thumbHtml}</td>
-            <td class="si-cod">${p.sku || '—'}</td>
+            <td class="si-cod">${p.sku || '—'}${p.localizacao ? `<div class="si-local">📍 ${p.localizacao}</div>` : ''}</td>
             <td><div class="si-nome">${p.emoji ? p.emoji + ' ' : ''}${p.nome}</div><div class="si-sub">${p.ean ? 'EAN: ' + p.ean : ''}</div></td>
             <td class="si-marca">${p.marca || '—'}</td>
             <td class="si-estoque" style="white-space:nowrap">${estoqueHtml}${faltaBtn}</td>
@@ -595,7 +596,8 @@ const PDV = (() => {
 
     document.getElementById('qp-nome').textContent = produto.nome;
     document.getElementById('qp-info').textContent =
-      `${produto.sku || ''} · Estoque: ${produto.estoque} · Preço tabela: R$ ${fmtMoney(produto.preco_venda)}`;
+      `${produto.sku || ''} · Estoque: ${produto.estoque} · Preço tabela: R$ ${fmtMoney(produto.preco_venda)}`
+      + (produto.localizacao ? ` · 📍 ${produto.localizacao}` : '');
     document.getElementById('qp-qty').value = '1';
 
     const emPromo = promocaoVigente(produto);

@@ -472,6 +472,15 @@ function runMigrations() {
     'ALTER TABLE faltas ADD COLUMN preco_negociado REAL',
     'ALTER TABLE faltas ADD COLUMN quantidade_atendida REAL DEFAULT 0',
     'ALTER TABLE faltas ADD COLUMN terminal_id TEXT',
+    // Endereçamento de estoque — só o endereço de picking (ou o de maior
+    // quantidade) do produto no depósito deste terminal, pro vendedor achar
+    // a mercadoria. Tabela pequena e substituída inteira a cada sync (ver
+    // sync.js/syncDownEnderecos) — não precisa de upsert incremental porque
+    // é só um espelho de leitura, nada grava aqui localmente.
+    `CREATE TABLE IF NOT EXISTS produto_localizacao (
+      produto_id TEXT PRIMARY KEY,
+      codigo_legivel TEXT NOT NULL
+    )`,
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* coluna já existe */ }
@@ -639,9 +648,10 @@ const produtos = {
 
     if (!query || query.trim() === '') {
       return db.prepare(`
-        SELECT p.*, e.quantidade as estoque
+        SELECT p.*, e.quantidade as estoque, pl.codigo_legivel as localizacao
         FROM produtos p
         LEFT JOIN estoque e ON e.produto_id = p.id
+        LEFT JOIN produto_localizacao pl ON pl.produto_id = p.id
         WHERE ${filtroBase}
         ORDER BY p.nome LIMIT 100
       `).all();
@@ -650,9 +660,10 @@ const produtos = {
     // Busca por EAN primeiro (digitação de código de barras)
     if (/^\d{8,14}$/.test(query.trim())) {
       const byEan = db.prepare(`
-        SELECT p.*, e.quantidade as estoque
+        SELECT p.*, e.quantidade as estoque, pl.codigo_legivel as localizacao
         FROM produtos p
         LEFT JOIN estoque e ON e.produto_id = p.id
+        LEFT JOIN produto_localizacao pl ON pl.produto_id = p.id
         WHERE p.ean = ? AND ${filtroBase} LIMIT 1
       `).get(query.trim());
       if (byEan) return [byEan];
@@ -662,9 +673,10 @@ const produtos = {
 
     if (palavras.length <= 1) {
       return db.prepare(`
-        SELECT p.*, e.quantidade as estoque
+        SELECT p.*, e.quantidade as estoque, pl.codigo_legivel as localizacao
         FROM produtos p
         LEFT JOIN estoque e ON e.produto_id = p.id
+        LEFT JOIN produto_localizacao pl ON pl.produto_id = p.id
         WHERE ${filtroBase} AND (
           p.nome_lower LIKE ? OR
           p.sku LIKE ? OR
@@ -683,9 +695,10 @@ const produtos = {
     const nomeParams = palavras.map(p => `%${p}%`);
 
     const sql = `
-      SELECT p.*, e.quantidade as estoque
+      SELECT p.*, e.quantidade as estoque, pl.codigo_legivel as localizacao
       FROM produtos p
       LEFT JOIN estoque e ON e.produto_id = p.id
+      LEFT JOIN produto_localizacao pl ON pl.produto_id = p.id
       WHERE ${filtroBase} AND (
         (${nomeConditions}) OR
         p.sku LIKE ? OR
@@ -701,18 +714,20 @@ const produtos = {
 
   getById(id) {
     return db.prepare(`
-      SELECT p.*, e.quantidade as estoque, e.quantidade_minima
+      SELECT p.*, e.quantidade as estoque, e.quantidade_minima, pl.codigo_legivel as localizacao
       FROM produtos p
       LEFT JOIN estoque e ON e.produto_id = p.id
+      LEFT JOIN produto_localizacao pl ON pl.produto_id = p.id
       WHERE p.id = ?
     `).get(id);
   },
 
   getByEan(ean) {
     return db.prepare(`
-      SELECT p.*, e.quantidade as estoque
+      SELECT p.*, e.quantidade as estoque, pl.codigo_legivel as localizacao
       FROM produtos p
       LEFT JOIN estoque e ON e.produto_id = p.id
+      LEFT JOIN produto_localizacao pl ON pl.produto_id = p.id
       WHERE p.ean = ? AND p.ativo = 1 LIMIT 1
     `).get(ean);
   },
@@ -1541,6 +1556,26 @@ const estoque = {
   }
 };
 
+// ─── LOCALIZAÇÃO DE PRODUTOS (endereçamento de estoque) ────────────
+// Espelho de leitura, sem upsert incremental — substitui a tabela inteira a
+// cada sync (o conjunto é pequeno: só produtos endereçados no depósito
+// deste terminal) pra nunca sobrar um endereço velho depois que o produto
+// foi transferido/desendereçado no painel web.
+const produtoLocalizacao = {
+  substituirTudo(lista) {
+    const t = db.transaction(items => {
+      db.prepare('DELETE FROM produto_localizacao').run();
+      const stmt = db.prepare('INSERT INTO produto_localizacao (produto_id, codigo_legivel) VALUES (?,?)');
+      for (const l of items) {
+        const prod = db.prepare('SELECT id FROM produtos WHERE remote_id = ?').get(l.produto_id);
+        if (!prod || !l.codigo_legivel) continue;
+        stmt.run(prod.id, l.codigo_legivel);
+      }
+    });
+    t(lista);
+  }
+};
+
 // ─── FALTAS / ENCOMENDAS ─────────────────────────────────────────
 const faltas = {
   // Duas telas chamam esta função com nomes de campo diferentes: o modal
@@ -2122,6 +2157,7 @@ module.exports = {
   creditosCliente,
   vendas,
   estoque,
+  produtoLocalizacao,
   faltas,
   entregas,
   orcamentos,

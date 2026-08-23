@@ -94,6 +94,7 @@ async function syncNow(win) {
     await syncDownContasReceber();
     await syncDownConfigDesconto();
     await syncDownConfigTermometro();
+    await syncDownEnderecos();
     await syncDownUrlImpressao();
     await syncDownFaltas();
     await syncDownOrcamentos();
@@ -391,6 +392,16 @@ async function syncDownConfigTermometro() {
     }
   } catch (err) {
     console.warn('[SYNC] ConfigTermometro: erro (não crítico):', err.message);
+  }
+}
+
+async function syncDownEnderecos() {
+  try {
+    const enderecos = await api.sincronizarEnderecosProdutos();
+    db.produtoLocalizacao.substituirTudo(enderecos);
+    console.log(`[SYNC] Localização de produtos: ${enderecos.length} endereçados neste depósito`);
+  } catch (err) {
+    console.warn('[SYNC] Localização de produtos: erro (não crítico):', err.message);
   }
 }
 

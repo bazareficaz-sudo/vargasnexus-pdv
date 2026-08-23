@@ -883,6 +883,45 @@ async function sincronizarConfigTermometro() {
   return data;
 }
 
+// ─── Endereçamento de estoque (onde o produto está no depósito) ───────
+// Módulo opt-in por depósito (deposito_enderecamento_config.modo) — se
+// nunca foi ligado, não existe endereço nenhum e isso devolve lista vazia
+// silenciosamente (não é erro, é o estado padrão da maioria dos depósitos).
+// Só traz o endereço do DEPÓSITO do terminal (do operador, senão o
+// principal da empresa) — o mesmo raciocínio de _resolverDepositoAjuste,
+// porque o vendedor só precisa achar o produto onde ELE está, não em
+// todos os depósitos da empresa.
+async function sincronizarEnderecosProdutos() {
+  const usuario = store.get('auth.usuario') || {};
+  const empresaId = usuario.empresa_estoque_id || usuario.empresa_id;
+  if (!empresaId) return [];
+  const depositoId = await _resolverDepositoAjuste(null, empresaId);
+  if (!depositoId) return [];
+
+  const { data: config } = await supabase.from('deposito_enderecamento_config')
+    .select('modo').eq('deposito_id', depositoId).maybeSingle();
+  if (!config || config.modo === 'desativado') return [];
+
+  const { data, error } = await supabase.from('produto_enderecos')
+    .select('produto_id, quantidade, papel, enderecos!inner(codigo_legivel, status)')
+    .eq('empresa_id', empresaId).eq('deposito_id', depositoId)
+    .eq('enderecos.status', 'ativo').gt('quantidade', 0);
+  if (error) { console.warn('[Enderecos]', error.message); return []; }
+
+  // Um produto pode estar em vários endereços — prioriza o marcado como
+  // "picking" (separação/venda); sem isso, o de maior quantidade.
+  const porProduto = new Map();
+  for (const row of data || []) {
+    const atual = porProduto.get(row.produto_id);
+    const candidato = { codigo_legivel: row.enderecos.codigo_legivel, papel: row.papel, quantidade: row.quantidade };
+    const substitui = !atual
+      || (candidato.papel === 'picking' && atual.papel !== 'picking')
+      || (candidato.papel === atual.papel && candidato.quantidade > atual.quantidade);
+    if (substitui) porProduto.set(row.produto_id, candidato);
+  }
+  return Array.from(porProduto, ([produto_id, v]) => ({ produto_id, codigo_legivel: v.codigo_legivel }));
+}
+
 // ─── WhatsApp (envio de orçamento/pedido/cupom via Z-API) ─────────────
 // O terminal só tem a chave anônima — não pode ler whatsapp_config (guarda
 // o token do Z-API) nem chamar a rota /api/whatsapp/enviar do painel (exige
@@ -1043,6 +1082,7 @@ module.exports = {
   listarFaltasRemoto,
   sincronizarConfigDesconto,
   sincronizarConfigTermometro,
+  sincronizarEnderecosProdutos,
   atualizarUrlImpressao,
   buscarUrlImpressao,
   autenticarPDV,
