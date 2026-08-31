@@ -571,14 +571,50 @@ function corrigirClientesRemoteIdBase44Legado() {
 // mais referência local (venda ou movimentação de crédito) — empate, a
 // mais antiga — remapeia as referências das outras pra ela e apaga o
 // resto. Idempotente: sem duplicata sobrando, não faz nada.
+//
+// Agrupava por (nome, telefone) — e era essa a brecha por onde a duplicata
+// sobrevivia: a linha do cliente sem telefone ficava num grupo só dela,
+// nunca era unificada, e como ela também não casava por remote_id acabava
+// subindo pro Supabase como cadastro novo a cada limpeza de remote_id.
+// Agora agrupa só por nome e separa dentro do grupo apenas quando os DOIS
+// lados têm telefone e são diferentes (aí é gente diferente de verdade).
 function deduplicarClientesLocal() {
   const todos = db.prepare('SELECT id, nome_lower, telefone FROM clientes ORDER BY rowid ASC').all();
-  const grupos = {};
+  const porNome = {};
   for (const c of todos) {
-    const chave = `${(c.nome_lower || '').trim()}|${(c.telefone || '').replace(/\D/g, '')}`;
-    (grupos[chave] = grupos[chave] || []).push(c.id);
+    const nome = (c.nome_lower || '').replace(/\s+/g, ' ').trim();
+    if (!nome) continue;
+    (porNome[nome] = porNome[nome] || []).push(c);
   }
-  const duplicados = Object.values(grupos).filter(ids => ids.length > 1);
+
+  // Dentro de um nome, junta quem tem o mesmo telefone; quem não tem
+  // telefone entra no grupo que já existe (se houver um só) em vez de
+  // virar grupo próprio.
+  const grupos = [];
+  for (const linhas of Object.values(porNome)) {
+    const porTelefone = {};
+    const semTelefone = [];
+    for (const c of linhas) {
+      const tel = (c.telefone || '').replace(/\D/g, '');
+      if (tel) (porTelefone[tel] = porTelefone[tel] || []).push(c.id);
+      else semTelefone.push(c.id);
+    }
+    const telefones = Object.keys(porTelefone);
+    if (telefones.length === 1) {
+      // Um telefone só no nome inteiro: as linhas sem telefone são o
+      // mesmo cliente cadastrado às pressas. Junta tudo.
+      grupos.push([...porTelefone[telefones[0]], ...semTelefone]);
+    } else if (telefones.length === 0) {
+      grupos.push(semTelefone);
+    } else {
+      // Vários telefones sob o mesmo nome: ambíguo. Une cada telefone
+      // entre si e deixa as linhas sem telefone quietas — adivinhar aqui
+      // fundiria pessoas diferentes, que é pior que uma cópia.
+      telefones.forEach(t => grupos.push(porTelefone[t]));
+    }
+  }
+
+  const duplicados = grupos.filter(ids => ids.length > 1);
   if (!duplicados.length) return;
 
   const contarRefs = db.prepare(`
@@ -589,6 +625,9 @@ function deduplicarClientesLocal() {
   const repointCredito = db.prepare('UPDATE credito_movimentacoes SET cliente_id = ? WHERE cliente_id = ?');
   const delCliente = db.prepare('DELETE FROM clientes WHERE id = ?');
 
+  const pegarDados = db.prepare('SELECT id, remote_id, telefone, cpf_cnpj FROM clientes WHERE id = ?');
+  const herdar = db.prepare('UPDATE clientes SET remote_id = ?, telefone = COALESCE(telefone, ?), cpf_cnpj = COALESCE(cpf_cnpj, ?) WHERE id = ?');
+
   let totalApagados = 0;
   const limpar = db.transaction(() => {
     for (const ids of duplicados) {
@@ -597,6 +636,25 @@ function deduplicarClientesLocal() {
         const { refs } = contarRefs.get(id, id);
         if (refs > melhorRefs) { melhorRefs = refs; manter = id; }
       }
+
+      // O vencedor herda o remote_id (e o telefone/CPF que só a cópia
+      // tinha) antes das outras sumirem. Sem isso a linha que fica pode
+      // ser justamente a que nunca foi ao Supabase, e o próximo sync a
+      // recadastra lá como cliente novo — o vazamento que essa
+      // deduplicação existe pra fechar. O remote_id da perdedora sai
+      // primeiro porque a coluna é UNIQUE.
+      const dadosManter = pegarDados.get(manter);
+      let remoteIdFinal = dadosManter?.remote_id || null;
+      let telefoneExtra = dadosManter?.telefone || null;
+      let docExtra = dadosManter?.cpf_cnpj || null;
+      for (const id of ids) {
+        if (id === manter) continue;
+        const d = pegarDados.get(id);
+        if (!remoteIdFinal && d?.remote_id) remoteIdFinal = d.remote_id;
+        if (!telefoneExtra && d?.telefone) telefoneExtra = d.telefone;
+        if (!docExtra && d?.cpf_cnpj) docExtra = d.cpf_cnpj;
+      }
+
       for (const id of ids) {
         if (id === manter) continue;
         repointVendas.run(manter, id);
@@ -604,6 +662,7 @@ function deduplicarClientesLocal() {
         delCliente.run(id);
         totalApagados++;
       }
+      herdar.run(remoteIdFinal, telefoneExtra, docExtra, manter);
     }
   });
   limpar();
@@ -932,7 +991,61 @@ const clientes = {
     return { ...cliente, movimentacoes: movs };
   },
 
+  // Cadastro novo que já existe: o operador não acha o cliente na busca
+  // (digitou o nome com acento diferente, ou o cadastro veio sem
+  // telefone) e cadastra de novo. Isso nascia como uma segunda linha
+  // local e, no sync, virava um segundo cadastro no sistema web. Aqui a
+  // linha existente é REAPROVEITADA — o cadastro vira uma atualização, e
+  // o que o operador acabou de digitar completa o que faltava.
+  //
+  // Só reaproveita quando nada desmente: telefone e CPF iguais, ou um dos
+  // lados vazio. Mesmo critério do Supabase (impedir_cliente_duplicado)
+  // e do api.registrarCliente — os três precisam concordar.
+  _acharEquivalente(cliente) {
+    const soDigitos = v => (v || '').replace(/\D/g, '');
+    const nomeLower = cliente.nome?.replace(/\s+/g, ' ').trim().toLowerCase();
+    if (!nomeLower) return null;
+    const tel = soDigitos(cliente.telefone);
+    const doc = soDigitos(cliente.cpf_cnpj);
+
+    if (doc) {
+      const porDoc = db.prepare(
+        "SELECT * FROM clientes WHERE cpf_cnpj IS NOT NULL AND replace(replace(replace(replace(cpf_cnpj,'.',''),'-',''),'/',''),' ','') = ? LIMIT 1"
+      ).get(doc);
+      if (porDoc) return porDoc;
+    }
+
+    const candidatos = db.prepare('SELECT * FROM clientes WHERE nome_lower = ?').all(nomeLower);
+    return candidatos.find(c => {
+      const t = soDigitos(c.telefone), d = soDigitos(c.cpf_cnpj);
+      if (tel && t && tel !== t) return false;
+      if (doc && d && doc !== d) return false;
+      return true;
+    }) || null;
+  },
+
   salvar(cliente) {
+    // Num cadastro novo (sem id), reaproveita a linha equivalente se ela
+    // já estiver aqui, em vez de abrir outra.
+    if (!cliente.id) {
+      const equivalente = clientes._acharEquivalente(cliente);
+      if (equivalente) {
+        cliente = {
+          ...cliente,
+          id: equivalente.id,
+          telefone: cliente.telefone || equivalente.telefone,
+          cpf_cnpj: cliente.cpf_cnpj || equivalente.cpf_cnpj,
+          email: cliente.email || equivalente.email,
+          limite_credito: cliente.limite_credito ?? equivalente.limite_credito,
+          saldo_credito: cliente.saldo_credito ?? equivalente.saldo_credito,
+          saldo_devedor: cliente.saldo_devedor ?? equivalente.saldo_devedor,
+          status_credito: cliente.status_credito || equivalente.status_credito,
+          permite_carteira: cliente.permite_carteira ?? equivalente.permite_carteira,
+        };
+        console.log(`[DB] Cliente "${cliente.nome}" já existia localmente (${equivalente.id}) — cadastro tratado como atualização`);
+      }
+    }
+
     const id = cliente.id || uuidv4();
     const existente = cliente.id
       ? db.prepare('SELECT remote_id FROM clientes WHERE id = ?').get(cliente.id)
@@ -989,15 +1102,30 @@ const clientes = {
     // onde o sobrevivente escolhido lá não é o mesmo que sobrou localmente)
     // — sem isso, essa linha nunca é encontrada por remote_id e o próximo
     // sync completo cria uma segunda linha local pro mesmo cliente.
-    const stmtGetIdPorNomeTelefone = db.prepare(
-      "SELECT id FROM clientes WHERE nome_lower = ? AND telefone IS ? LIMIT 1"
+    // Telefone IGUAL era exigência demais: o terminal que tem a linha do
+    // cliente sem telefone (cadastro rápido no balcão) não casava com a
+    // linha remota que tem telefone, e o sync criava uma SEGUNDA linha
+    // local pro mesmo cliente — a semente da duplicata que depois subia
+    // pro Supabase como cadastro novo. Casa quando o telefone bate OU
+    // quando um dos lados está vazio; telefone diferente nos dois lados
+    // continua sendo gente diferente.
+    const stmtGetIdPorNome = db.prepare(
+      "SELECT id, telefone FROM clientes WHERE nome_lower = ?"
     );
+    const soDigitos = v => (v || '').replace(/\D/g, '');
+    const acharPorNome = (nomeLower, telefone) => {
+      const tel = soDigitos(telefone);
+      const candidatos = stmtGetIdPorNome.all(nomeLower);
+      const exato = candidatos.find(c => soDigitos(c.telefone) === tel);
+      if (exato) return exato;
+      return candidatos.find(c => !soDigitos(c.telefone) || !tel);
+    };
     const t = db.transaction(items => {
       for (const c of items) {
         const nomeLower = c.nome?.toLowerCase() || null;
         const telefone = c.telefone || null;
         const localId = stmtGetId.get(c.id)?.id
-          || stmtGetIdPorNomeTelefone.get(nomeLower, telefone)?.id
+          || acharPorNome(nomeLower, telefone)?.id
           || uuidv4();
         stmt.run(
           localId, c.id, c.nome, c.nome?.toLowerCase(),

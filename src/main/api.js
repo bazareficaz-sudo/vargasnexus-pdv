@@ -259,22 +259,14 @@ async function sincronizarEstoque() {
 // _comoUuid() só valida o FORMATO do remote_id em cache — não pega o caso
 // de um UUID bem formado que não existe mais no Supabase (ex: era uma das
 // duplicatas removidas na limpeza de clientes). Isso só aparece na hora do
-// INSERT, como violação da FK vendas_cliente_id_fkey. Resolve de novo por
-// nome+telefone (ou cria, se realmente não existir) em vez de desistir —
-// pra venda com forma de pagamento carteira/fiado, cliente_id é o que
-// amarra a dívida a alguém de verdade, não dá pra simplesmente cair pra null.
+// INSERT, como violação da FK vendas_cliente_id_fkey. Resolve de novo pelo
+// cadastro equivalente (ou cria, se realmente não existir) em vez de
+// desistir — pra venda com forma de pagamento carteira/fiado, cliente_id é
+// o que amarra a dívida a alguém de verdade, não dá pra cair pra null.
 async function _resolverOuCriarClienteRemoto(clienteLocal, empresaId) {
   if (!clienteLocal?.nome) return null;
-  const nomeAlvo = clienteLocal.nome.trim().toLowerCase();
-  const telAlvo = (clienteLocal.telefone || '').replace(/\D/g, '');
-  const { data: todos } = await supabase.from('clientes').select('id, nome, telefone').eq('empresa_id', empresaId);
-  const encontrado = (todos || []).find(c =>
-    (c.nome || '').trim().toLowerCase() === nomeAlvo &&
-    (c.telefone || '').replace(/\D/g, '') === telAlvo
-  );
-  if (encontrado) return encontrado.id;
-  const criado = await registrarCliente(clienteLocal);
-  return criado.id;
+  const cli = await registrarCliente(clienteLocal, empresaId);
+  return cli?.id || null;
 }
 
 async function registrarVenda(venda) {
@@ -463,9 +455,109 @@ async function sincronizarVendedores() {
 
 // ─── Clientes ─────────────────────────────────────────────────────────
 
-async function registrarCliente(cliente) {
+// Nome comparável: sem acento, sem espaço duplicado, caixa alta. Precisa
+// bater EXATAMENTE com cliente_chave_dedup() do banco
+// (supabase-clientes-antiduplicacao.sql), senão PDV e Supabase discordam
+// sobre o que é o mesmo cliente e a duplicata volta por outra porta.
+const _ACENTOS = { á:'a',à:'a',ã:'a',â:'a',ä:'a',é:'e',è:'e',ê:'e',ë:'e',í:'i',ì:'i',î:'i',ï:'i',
+                   ó:'o',ò:'o',õ:'o',ô:'o',ö:'o',ú:'u',ù:'u',û:'u',ü:'u',ç:'c',ñ:'n' };
+function _chaveNome(nome) {
+  return (nome || '')
+    .toLowerCase()
+    .replace(/[áàãâäéèêëíìîïóòõôöúùûüçñ]/g, c => _ACENTOS[c] || c)
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toUpperCase();
+}
+const _soDigitos = v => (v || '').replace(/\D/g, '');
+
+// Dois cadastros são a mesma pessoa quando o nome bate e nada os
+// desmente: telefone e CPF/CNPJ ou são iguais, ou um dos lados está
+// vazio. É a parte que faltava — telefone diferente NÃO é o critério de
+// separação sozinho (a loja tem "SILVANO" e "SILVANO VARGAS" no mesmo
+// número, gente de casa dividindo telefone), mas telefone vazio de um
+// lado também não pode inventar um cadastro novo, que foi exatamente o
+// que encheu o sistema web de cópias.
+function _mesmoCliente(local, remoto) {
+  if (_chaveNome(local.nome) !== _chaveNome(remoto.nome)) return false;
+  const telL = _soDigitos(local.telefone), telR = _soDigitos(remoto.telefone);
+  if (telL && telR && telL !== telR) return false;
+  const docL = _soDigitos(local.cpf_cnpj), docR = _soDigitos(remoto.cpf_cnpj);
+  if (docL && docR && docL !== docR) return false;
+  return true;
+}
+
+// Procura o cadastro que já existe no Supabase antes de criar outro.
+// CPF/CNPJ tem prioridade: é identidade de verdade, vale mesmo com o nome
+// escrito diferente. Depois cai pro nome + compatibilidade de telefone.
+//
+// `mesclado_em` é seguido até o sobrevivente: um cadastro que foi
+// unificado no sistema web continua existindo, e devolver o id dele faria
+// a venda nascer pendurada num cliente morto.
+async function _acharClienteRemoto(cliente, empresaId) {
+  const doc = _soDigitos(cliente.cpf_cnpj);
+  if (doc) {
+    const { data } = await supabase.from('clientes')
+      .select('id, nome, telefone, cpf_cnpj, mesclado_em')
+      .eq('empresa_id', empresaId).eq('cpf_cnpj', doc).limit(1);
+    if (data?.length) return _seguirMesclado(data[0]);
+  }
+
+  // Traz a lista da empresa e compara aqui. Filtrar por `ilike` no nome
+  // seria mais econômico, mas erra justamente onde não pode errar: o
+  // acento. "Thainá" com ilike 'Thainá%' não acha a linha gravada como
+  // "THAINA", e um cadastro a mais nasce por causa de um til. A tabela de
+  // clientes da loja tem centenas de linhas, não milhares, e isto só roda
+  // quando um cliente vai ser criado.
+  const { data } = await supabase.from('clientes')
+    .select('id, nome, telefone, cpf_cnpj, mesclado_em')
+    .eq('empresa_id', empresaId)
+    .limit(5000);
+  const achado = (data || []).find(c => _mesmoCliente(cliente, c));
+  return achado ? _seguirMesclado(achado) : null;
+}
+
+async function _seguirMesclado(cliente, saltos = 0) {
+  if (!cliente?.mesclado_em || saltos >= 10) return cliente;
+  const { data } = await supabase.from('clientes')
+    .select('id, nome, telefone, cpf_cnpj, mesclado_em')
+    .eq('id', cliente.mesclado_em).limit(1);
+  if (!data?.length) return cliente;
+  return _seguirMesclado(data[0], saltos + 1);
+}
+
+// Era um INSERT cego, e é daí que vinham as cópias no sistema web: quatro
+// caminhos diferentes chamam esta função (fila de sync, recuperação de
+// clientes sem remote_id, venda que sobe antes do cliente, e o resolver
+// de venda), e nenhum perguntava se o cliente já estava lá. Bastava um
+// terminal limpar o remote_id local — o que a própria correção de ids
+// legados do Base44 faz de propósito — pra loja inteira ser recadastrada
+// do zero. Foi assim nos dois surtos: 8 cópias em 07/08 e 33 em 24/08,
+// todas no mesmo minuto.
+//
+// Agora resolve antes de criar e é idempotente: chamar dez vezes para o
+// mesmo cliente devolve sempre o mesmo id. Completa o cadastro achado com
+// o que o local tem e o remoto não (telefone que faltava, CPF, e-mail) em
+// vez de descartar — era esse "vazio de um lado" que fazia o par parecer
+// gente diferente na próxima rodada.
+async function registrarCliente(cliente, empresaIdHint = null) {
   const usuario = store.get('auth.usuario') || {};
-  const empresaId = usuario.empresa_estoque_id || usuario.empresa_id;
+  const empresaId = empresaIdHint || usuario.empresa_estoque_id || usuario.empresa_id;
+
+  const existente = await _acharClienteRemoto(cliente, empresaId);
+  if (existente) {
+    const completar = {};
+    if (!_soDigitos(existente.telefone) && cliente.telefone) completar.telefone = cliente.telefone;
+    if (!_soDigitos(existente.cpf_cnpj) && cliente.cpf_cnpj) completar.cpf_cnpj = cliente.cpf_cnpj;
+    if (Object.keys(completar).length) {
+      const { data } = await supabase.from('clientes').update(completar).eq('id', existente.id).select().single();
+      if (data) return data;
+    }
+    console.log(`[API] Cliente "${cliente.nome}" já existia no Supabase (${existente.id}) — reaproveitado em vez de duplicar`);
+    const { data } = await supabase.from('clientes').select('*').eq('id', existente.id).single();
+    return data || existente;
+  }
+
   const { data, error } = await supabase.from('clientes').insert({
     empresa_id: empresaId,
     nome: cliente.nome,
