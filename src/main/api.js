@@ -615,6 +615,21 @@ const STATUS_CONTA_REMOTO_PARA_LOCAL = { aberto: 'pendente', parcial: 'pendente'
 const STATUS_CREDITO_REMOTO_PARA_LOCAL = { disponivel: 'aberto', parcial: 'usado_parcialmente', utilizado: 'usado_totalmente', cancelado: 'cancelado', expirado: 'usado_totalmente' };
 const STATUS_CREDITO_LOCAL_PARA_REMOTO = { aberto: 'disponivel', usado_parcialmente: 'parcial', usado_totalmente: 'utilizado' };
 
+// Cadastros que o sistema web unificou. `sincronizarClientes` só traz os
+// ativos, então um cadastro que virou cópia some do sync e o terminal fica
+// com o remote_id de um cliente morto para sempre — sem erro, só sem
+// atualização nunca mais. Aqui vem só a lista de "quem virou quem", que é
+// pequena, para o PDV seguir a unificação em vez de ignorá-la.
+async function sincronizarClientesMesclados() {
+  const usuario = store.get('auth.usuario') || {};
+  const empresaId = usuario.empresa_estoque_id || usuario.empresa_id;
+  let query = supabase.from('clientes').select('id, mesclado_em').not('mesclado_em', 'is', null);
+  if (empresaId && !usuario.unificar_estoque) query = query.eq('empresa_id', empresaId);
+  const { data, error } = await query;
+  if (error) throw new Error(error.message);
+  return data || [];
+}
+
 async function sincronizarContasReceber() {
   const usuario = store.get('auth.usuario') || {};
   const empresaId = usuario.empresa_estoque_id || usuario.empresa_id;
@@ -1161,6 +1176,7 @@ module.exports = {
   atualizarCliente,
   atualizarClienteEndereco,
   sincronizarClientes,
+  sincronizarClientesMesclados,
   sincronizarContasReceber,
   pagarContaReceber,
   pagarContaReceberParcial,

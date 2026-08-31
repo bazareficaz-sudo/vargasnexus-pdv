@@ -79,7 +79,14 @@ async function syncNow(win) {
     isOnline = true;
     syncStatus.online = true;
 
-    // 1. Upload primeiro: enviar alterações locais antes de sobrescrever com download
+    // 0. Seguir as unificações de cliente feitas no sistema web ANTES de
+    // qualquer envio. Uma venda enviada com o id de um cadastro que virou
+    // cópia funciona (o banco redireciona por gatilho), mas a conta a
+    // receber e o extrato nascem apontando pro lugar errado até o gatilho
+    // agir — e a linha local esquecida vira a semente da próxima cópia.
+    await syncDownClientesMesclados();
+
+    // 1. Upload: enviar alterações locais antes de sobrescrever com download
     await syncUpProdutos();
     await recuperarClientesPendentes();
     await processarFilaSync();
@@ -249,6 +256,22 @@ async function syncForcarProdutos() {
   // Força re-sync completo ignorando o checkpoint incremental
   store.delete('sync.ultima_sync_produtos');
   return syncDownProdutos();
+}
+
+// Aplica localmente as unificações feitas no sistema web. Roda ANTES do
+// download de clientes: o cadastro que virou cópia não vem mais na lista
+// (o sync só traz ativos), então a linha local precisa ser apontada pro
+// sobrevivente antes, ou ela nunca mais é encontrada e vira a semente da
+// próxima cópia.
+async function syncDownClientesMesclados() {
+  try {
+    const pares = await api.sincronizarClientesMesclados();
+    db.clientes.aplicarMesclagens(pares);
+  } catch (err) {
+    // Não é crítico: sem isso a venda ainda sobe certo (o banco redireciona
+    // por gatilho), só o cadastro local fica desatualizado.
+    console.warn('[SYNC] Unificações de cliente: erro (não crítico):', err.message);
+  }
 }
 
 async function syncDownClientes() {

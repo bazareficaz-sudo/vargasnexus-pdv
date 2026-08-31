@@ -1141,6 +1141,47 @@ const clientes = {
     t(lista);
   },
 
+  // Segue a unificação feita no sistema web. Recebe [{id, mesclado_em}] e
+  // aponta a linha local do cadastro que virou cópia para o remote_id do
+  // sobrevivente. Sem isso o terminal fica com o id de um cliente morto:
+  // não dá erro (o banco redireciona a venda por gatilho), mas o cadastro
+  // local nunca mais recebe atualização, e é dessa linha esquecida que
+  // nasce a próxima cópia.
+  //
+  // Se as DUAS linhas existem aqui — a da cópia e a do sobrevivente — a da
+  // cópia é apagada e suas referências passam pro sobrevivente, senão
+  // sobrariam duas fichas do mesmo cliente na busca do balcão.
+  aplicarMesclagens(pares) {
+    if (!pares?.length) return 0;
+    const porRemote = db.prepare('SELECT id FROM clientes WHERE remote_id = ?');
+    const trocarRemote = db.prepare("UPDATE clientes SET remote_id = ?, sync_status = 'synced' WHERE id = ?");
+    const repointVendas = db.prepare('UPDATE vendas SET cliente_id = ? WHERE cliente_id = ?');
+    const repointCredito = db.prepare('UPDATE credito_movimentacoes SET cliente_id = ? WHERE cliente_id = ?');
+    const apagar = db.prepare('DELETE FROM clientes WHERE id = ?');
+
+    let aplicadas = 0;
+    const rodar = db.transaction(() => {
+      for (const { id: copiaRemote, mesclado_em: vivoRemote } of pares) {
+        const copia = porRemote.get(copiaRemote);
+        if (!copia) continue;                       // terminal nunca viu essa cópia
+        const vivo = porRemote.get(vivoRemote);
+
+        if (!vivo) {
+          // Só a cópia existe aqui: reaproveita a linha, trocando o id.
+          trocarRemote.run(vivoRemote, copia.id);
+        } else if (vivo.id !== copia.id) {
+          repointVendas.run(vivo.id, copia.id);
+          repointCredito.run(vivo.id, copia.id);
+          apagar.run(copia.id);
+        }
+        aplicadas++;
+      }
+    });
+    rodar();
+    if (aplicadas) console.log(`[DB] Unificações do sistema web aplicadas localmente: ${aplicadas}`);
+    return aplicadas;
+  },
+
   // id é o id LOCAL do cliente — não remote_id. Um cliente recém-cadastrado
   // na mesma venda (tela de entrega pede endereço logo após cadastrar)
   // ainda não tem remote_id nesse momento (registro no Supabase acontece
