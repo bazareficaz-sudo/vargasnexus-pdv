@@ -91,6 +91,7 @@ async function syncNow(win) {
     await recuperarClientesPendentes();
     await processarFilaSync();
     await recuperarVendasPendentes();
+    await processarReparoEstoque();
 
     // 2. Baixar dados do servidor (servidor → local) — agora o Base44 já tem os dados locais
     await syncDownProdutos();
@@ -522,6 +523,15 @@ async function _sincronizarVendaCreate(vendaId) {
     db.db().prepare('UPDATE vendas SET remote_id = ?, sync_status = ?, synced_at = ? WHERE id = ?')
       .run(res.id, 'synced', new Date().toISOString(), vendaId);
   }
+  // A venda subiu, mas algum item pode não ter mexido no estoque. Guarda a
+  // dívida para a fila de reparo em vez de deixar a diferença correr solta.
+  for (const f of res?.falhasEstoque || []) {
+    db.estoqueReparo.registrar({
+      vendaId, produtoRemoteId: f.produto_id, produtoNome: f.produto_nome,
+      delta: f.delta, contexto: f.contexto, etapa: f.etapa, motivo: f.motivo,
+      saldoJaBaixado: f.saldoJaBaixado,
+    });
+  }
   // registrarVenda pode ter resolvido um cliente_id diferente do que
   // mandamos (o em cache não existia mais no Supabase — ver
   // _resolverOuCriarClienteRemoto em api.js). Atualiza o cache local pra
@@ -620,7 +630,12 @@ async function processarFilaSync() {
       if (item.entidade === 'estoque') {
         const mov = db.db().prepare('SELECT * FROM movimentacoes_estoque WHERE id = ?').get(payload.mov_id);
         if (mov) {
-          await api.enviarMovimentacaoEstoque(mov);
+          // O produto pode ter sido criado no balcão e só depois ganhar
+          // remote_id — sem ele o ajuste não tem onde pegar no Supabase.
+          const prod = mov.produto_id
+            ? db.db().prepare('SELECT remote_id FROM produtos WHERE id = ?').get(mov.produto_id)
+            : null;
+          await api.enviarMovimentacaoEstoque({ ...mov, produto_remote_id: prod?.remote_id });
           db.db().prepare("UPDATE movimentacoes_estoque SET sync_status = 'synced' WHERE id = ?").run(mov.id);
         }
       }
@@ -686,6 +701,50 @@ async function recuperarClientesPendentes() {
   }
 }
 
+// ─── Reparo de estoque: retentar o que o Supabase recusou ─────────
+//
+// Uma baixa que não passou continua devendo até passar. Só a parte que
+// faltou é refeita: quando produtos.estoque já saiu e o que falhou foi o
+// espelho por depósito ou o rastro, refazer o ajuste inteiro tiraria o
+// saldo duas vezes — por isso saldo_ja_baixado existe.
+async function processarReparoEstoque() {
+  const pendentes = db.estoqueReparo.getPendentes();
+  if (!pendentes.length) return;
+
+  console.log(`[SYNC] Reparo de estoque: ${pendentes.length} pendência(s)`);
+  let resolvidas = 0;
+
+  for (const p of pendentes) {
+    try {
+      const contexto = JSON.parse(p.contexto || '{}');
+
+      if (p.saldo_ja_baixado) {
+        // produtos.estoque já foi baixado nesta venda; refazer o CAS
+        // duplicaria a saída. Estas ficam registradas para o painel web
+        // reconciliar (espelho por depósito e rastro), sem mexer no saldo.
+        db.estoqueReparo.marcarTentativa(p.id, p.motivo);
+        continue;
+      }
+
+      const r = await api.ajustarEstoqueRemoto(p.produto_remote_id, Number(p.delta), contexto);
+      if (r?.ok) {
+        db.estoqueReparo.marcarResolvido(p.id);
+        resolvidas++;
+        console.log(`[SYNC] Estoque reparado: ${p.produto_nome} (${p.delta})`);
+      } else {
+        db.estoqueReparo.marcarTentativa(p.id, `${r?.etapa || 'desconhecida'}: ${r?.motivo || 'sem detalhe'}`);
+      }
+    } catch (err) {
+      db.estoqueReparo.marcarTentativa(p.id, err.message);
+      console.warn(`[SYNC] Reparo de estoque falhou para ${p.produto_nome}:`, err.message);
+    }
+  }
+
+  const restantes = db.estoqueReparo.contarPendentes();
+  console.log(`[SYNC] Reparo de estoque: ${resolvidas} resolvida(s), ${restantes} pendente(s)`);
+  if (restantes) emitir(mainWindowRef, 'sync:update', { ...syncStatus, estoquePendente: restantes });
+}
+
 // ─── Recuperar vendas pendentes sem entrada na fila ───────────────
 async function recuperarVendasPendentes() {
   // Busca vendas locais sem remote_id (nunca sincronizadas) que não estão na fila ativa
@@ -714,6 +773,13 @@ async function recuperarVendasPendentes() {
         db.db().prepare('UPDATE vendas SET remote_id = ?, sync_status = ?, synced_at = ? WHERE id = ?')
           .run(res.id, 'synced', now, id);
         console.log(`[SYNC] Venda #${venda.numero} recuperada → Base44 ${res.id}`);
+      }
+      for (const f of res?.falhasEstoque || []) {
+        db.estoqueReparo.registrar({
+          vendaId: id, produtoRemoteId: f.produto_id, produtoNome: f.produto_nome,
+          delta: f.delta, contexto: f.contexto, etapa: f.etapa, motivo: f.motivo,
+          saldoJaBaixado: f.saldoJaBaixado,
+        });
       }
     } catch (err) {
       console.error(`[SYNC] Falha ao recuperar venda ${id}:`, err.message);

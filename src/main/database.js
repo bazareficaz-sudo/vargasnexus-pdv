@@ -208,6 +208,29 @@ function createTables() {
       processado INTEGER DEFAULT 0
     );
 
+    -- Baixa de estoque que o Supabase não aceitou. A venda já subiu; o que
+    -- ficou faltando é o ajuste de saldo/rastro de um item dela. Fica aqui
+    -- até dar certo, para que uma recusa momentânea (privilégio, rede,
+    -- disputa entre caixas) não vire buraco permanente de inventário —
+    -- foi exatamente isso que aconteceu entre 30/08 e 02/09/2026, quando a
+    -- falha só existia como um console.warn que ninguém podia ler.
+    CREATE TABLE IF NOT EXISTS estoque_reparo (
+      id TEXT PRIMARY KEY,
+      venda_id TEXT,                 -- id local da venda de origem (se houver)
+      produto_remote_id TEXT,        -- uuid do produto no Supabase
+      produto_nome TEXT,
+      delta REAL NOT NULL,           -- negativo baixa, positivo devolve
+      contexto TEXT NOT NULL,        -- JSON do contexto de _ajustarEstoqueCAS
+      etapa TEXT,                    -- onde falhou
+      motivo TEXT,                   -- o que o banco respondeu
+      saldo_ja_baixado INTEGER DEFAULT 0, -- 1 = produtos.estoque já saiu; falta só espelho/rastro
+      tentativas INTEGER DEFAULT 0,
+      created_at TEXT NOT NULL,
+      resolvido INTEGER DEFAULT 0,
+      resolvido_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_estoque_reparo_pendente ON estoque_reparo (resolvido, created_at);
+
     -- Vendedores
     CREATE TABLE IF NOT EXISTS vendedores (
       id TEXT PRIMARY KEY,
@@ -1930,6 +1953,55 @@ const syncQueue = {
   }
 };
 
+// ─── REPARO DE ESTOQUE ───────────────────────────────────────────
+// Fila do que o Supabase recusou na hora de mexer no estoque. Ver a tabela
+// estoque_reparo no schema para o porquê de ela existir.
+const estoqueReparo = {
+  registrar({ vendaId, produtoRemoteId, produtoNome, delta, contexto, etapa, motivo, saldoJaBaixado }) {
+    // Não duplica: a mesma pendência (mesma venda, produto e etapa) pode ser
+    // relatada de novo numa retentativa da venda inteira.
+    const existente = db.prepare(`
+      SELECT id FROM estoque_reparo
+      WHERE resolvido = 0 AND IFNULL(venda_id,'') = IFNULL(?,'')
+        AND IFNULL(produto_remote_id,'') = IFNULL(?,'') AND IFNULL(etapa,'') = IFNULL(?,'')
+    `).get(vendaId || null, produtoRemoteId || null, etapa || null);
+    if (existente) {
+      db.prepare('UPDATE estoque_reparo SET motivo = ? WHERE id = ?').run(motivo || null, existente.id);
+      return existente.id;
+    }
+
+    const id = uuidv4();
+    db.prepare(`
+      INSERT INTO estoque_reparo (id, venda_id, produto_remote_id, produto_nome, delta,
+        contexto, etapa, motivo, saldo_ja_baixado, created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?)
+    `).run(id, vendaId || null, produtoRemoteId || null, produtoNome || null, delta,
+      JSON.stringify(contexto || {}), etapa || null, motivo || null,
+      saldoJaBaixado ? 1 : 0, new Date().toISOString());
+    return id;
+  },
+
+  getPendentes(limite = 50) {
+    return db.prepare(`
+      SELECT * FROM estoque_reparo WHERE resolvido = 0 ORDER BY created_at ASC LIMIT ?
+    `).all(limite);
+  },
+
+  contarPendentes() {
+    return db.prepare('SELECT COUNT(*) AS n FROM estoque_reparo WHERE resolvido = 0').get().n;
+  },
+
+  marcarResolvido(id) {
+    db.prepare('UPDATE estoque_reparo SET resolvido = 1, resolvido_at = ? WHERE id = ?')
+      .run(new Date().toISOString(), id);
+  },
+
+  marcarTentativa(id, motivo) {
+    db.prepare('UPDATE estoque_reparo SET tentativas = tentativas + 1, motivo = ? WHERE id = ?')
+      .run(motivo || null, id);
+  },
+};
+
 // ─── Marketplace Pedidos ───────────────────────────────────────────
 const mktPedidos = {
   salvar(contaId, canal, pedido) {
@@ -2331,6 +2403,7 @@ module.exports = {
   entregas,
   orcamentos,
   sync: syncQueue,
+  estoqueReparo,
   mktAnuncios,
   mktPedidos,
 };
