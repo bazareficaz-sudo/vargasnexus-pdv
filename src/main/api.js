@@ -61,46 +61,95 @@ async function _resolverDepositoAjuste(depositoIdHint, empresaId) {
 // Espelha o ajuste de estoque na linha de produto_estoque do par
 // (produto, depósito) — é o que a tela de estoque por depósito do painel
 // web lê. Cria a linha se ainda não existir.
+//
+// A versão anterior descartava o erro do INSERT e tratava QUALQUER falha
+// como "outra escrita criou a linha primeiro": voltava ao topo do laço e,
+// depois de 5 voltas, desistia dizendo "conflito de concorrência". Como a
+// maioria dos produtos ainda não tem linha neste depósito, o caminho normal
+// é o INSERT — e um INSERT recusado (privilégio, coluna obrigatória,
+// constraint) virava, na leitura de quem investigava, um problema de
+// concorrência que nunca existiu. Agora o erro é lido: só é conflito quando
+// o banco diz que é (23505, chave duplicada); o resto é falha e volta como
+// falha, com a mensagem do banco junto.
 async function _ajustarEstoqueDeposito(produtoId, delta, depositoId, empresaId) {
+  let ultimoMotivo = null;
+
   for (let tentativa = 0; tentativa < 5; tentativa++) {
-    const { data: linha } = await supabase.from('produto_estoque')
+    const { data: linha, error: errSel } = await supabase.from('produto_estoque')
       .select('id, quantidade').eq('produto_id', produtoId).eq('deposito_id', depositoId).maybeSingle();
+    if (errSel) return { ok: false, motivo: `leitura de produto_estoque: ${errSel.message}` };
 
     if (!linha) {
       const { error: errIns } = await supabase.from('produto_estoque').insert({
         empresa_id: empresaId, deposito_id: depositoId, produto_id: produtoId, quantidade: delta,
       });
-      if (!errIns) return;
-      continue; // outra escrita criou a linha entre o select e o insert — tenta de novo (agora como update)
+      if (!errIns) return { ok: true };
+      // 23505 = a linha nasceu entre o select e o insert. Aí sim vale voltar
+      // ao topo e tratá-la como update. Qualquer outro erro é erro.
+      if (errIns.code !== '23505') return { ok: false, motivo: `insert em produto_estoque: ${errIns.message} (${errIns.code})` };
+      ultimoMotivo = 'linha criada por outra escrita durante o insert';
+      continue;
     }
 
     const novaQuantidade = Number(linha.quantidade || 0) + delta;
-    const { data: atualizado } = await supabase.from('produto_estoque')
+    const { data: atualizado, error: errUpd } = await supabase.from('produto_estoque')
       .update({ quantidade: novaQuantidade })
       .eq('id', linha.id).eq('quantidade', linha.quantidade)
       .select('id').maybeSingle();
-    if (atualizado) return;
+    if (errUpd) return { ok: false, motivo: `update em produto_estoque: ${errUpd.message} (${errUpd.code})` };
+    if (atualizado) return { ok: true };
+    ultimoMotivo = 'quantidade mudou entre a leitura e a gravação';
   }
-  console.warn('[ESTOQUE] Conflito de concorrência persistente em produto_estoque para produto', produtoId);
+
+  return { ok: false, motivo: `5 tentativas sem sucesso — ${ultimoMotivo || 'sem detalhe'}` };
 }
 
+// Baixa (delta < 0) ou devolve (delta > 0) estoque no Supabase, nas três
+// tabelas que precisam andar juntas: produtos.estoque (saldo consolidado),
+// produto_estoque.quantidade (saldo por depósito) e estoque_movimentacoes
+// (o rastro). Devolve o que aconteceu em cada uma — quem chama decide o que
+// fazer com a parte que não deu certo, em vez de nunca ficar sabendo.
+//
 // contexto: { produtoNome, tipo ('venda'|'devolucao'), referenciaId,
-// referenciaTipo, depositoId, motivo, observacao }
+// referenciaTipo, depositoId, empresaId, motivo, observacao }
 async function _ajustarEstoqueCAS(produtoId, delta, contexto = {}) {
-  if (!produtoId) return;
   const usuario = store.get('auth.usuario') || {};
-  const empresaId = usuario.empresa_estoque_id || usuario.empresa_id;
+  // O empresa_id do contexto (o da própria venda) entra como fallback: sem
+  // ele, uma sessão sem operador em cache mandava empresa_id undefined e o
+  // insert da movimentação morria em NOT NULL — de novo, calado.
+  const empresaId = usuario.empresa_estoque_id || usuario.empresa_id || contexto.empresaId || null;
+
+  if (!produtoId) {
+    console.warn('[ESTOQUE] Item sem produto_id resolvido — nada foi baixado para', contexto.produtoNome || '(sem nome)');
+    return { ok: false, etapa: 'produto', motivo: 'item sem produto_id resolvido no Supabase' };
+  }
+
   const depositoId = await _resolverDepositoAjuste(contexto.depositoId, empresaId);
 
-  let estoqueAnterior = null, estoqueNovo = null, venceu = false;
+  let estoqueAnterior = null, estoqueNovo = null, venceu = false, motivoCAS = null;
   for (let tentativa = 0; tentativa < 5; tentativa++) {
-    const { data: produto } = await supabase.from('produtos').select('estoque').eq('id', produtoId).single();
-    if (!produto) return;
+    const { data: produto, error: errSel } = await supabase.from('produtos')
+      .select('estoque').eq('id', produtoId).single();
+    if (errSel || !produto) {
+      const motivo = errSel ? `${errSel.message} (${errSel.code})` : 'produto não encontrado no Supabase';
+      console.warn(`[ESTOQUE] Não deu para ler o estoque de ${produtoId}: ${motivo}`);
+      return { ok: false, etapa: 'produtos.select', motivo };
+    }
+
     const novoEstoque = Number(produto.estoque || 0) + delta;
-    const { data: atualizado } = await supabase.from('produtos')
+    const { data: atualizado, error: errUpd } = await supabase.from('produtos')
       .update({ estoque: novoEstoque })
       .eq('id', produtoId).eq('estoque', produto.estoque)
       .select('id').maybeSingle();
+
+    // Erro é erro: sem esta distinção, um UPDATE recusado por privilégio se
+    // disfarçava de disputa entre dois caixas e sumia depois de 5 voltas.
+    if (errUpd) {
+      const motivo = `${errUpd.message} (${errUpd.code})`;
+      console.warn(`[ESTOQUE] UPDATE em produtos recusado para ${produtoId}: ${motivo}`);
+      return { ok: false, etapa: 'produtos.update', motivo };
+    }
+
     if (atualizado) {
       // Grava os valores da tentativa que VENCEU o CAS — se gravasse os da
       // primeira tentativa e ela tivesse perdido para uma venda concorrente,
@@ -110,25 +159,41 @@ async function _ajustarEstoqueCAS(produtoId, delta, contexto = {}) {
       venceu = true;
       break;
     }
-  }
-  if (!venceu) {
-    console.warn('[ESTOQUE] Conflito de concorrência persistente para produto', produtoId);
-    return;
+    motivoCAS = 'o saldo mudou entre a leitura e a gravação';
   }
 
-  // A partir daqui o estoque já foi baixado de verdade. Nada abaixo pode
-  // derrubar a venda — na pior hipótese perde-se só o rastro de auditoria.
+  if (!venceu) {
+    console.warn(`[ESTOQUE] 5 tentativas sem baixar ${produtoId} — ${motivoCAS}`);
+    return { ok: false, etapa: 'produtos.update', motivo: `5 tentativas sem sucesso — ${motivoCAS}` };
+  }
+
+  // Daqui em diante o saldo consolidado já foi baixado de verdade. O que
+  // falhar abaixo não derruba a venda, mas volta relatado para quem chamou:
+  // é dívida a acertar, não silêncio.
+  const pendencias = [];
+
   if (depositoId) {
     try {
-      await _ajustarEstoqueDeposito(produtoId, delta, depositoId, empresaId);
+      const r = await _ajustarEstoqueDeposito(produtoId, delta, depositoId, empresaId);
+      if (!r.ok) {
+        console.warn(`[ESTOQUE] produto_estoque não ajustado para ${produtoId}: ${r.motivo}`);
+        pendencias.push({ etapa: 'produto_estoque', motivo: r.motivo });
+      }
     } catch (err) {
-      console.warn('[ESTOQUE] Falha ao ajustar produto_estoque (não bloqueia a venda):', err.message);
+      console.warn('[ESTOQUE] Falha ao ajustar produto_estoque:', err.message);
+      pendencias.push({ etapa: 'produto_estoque', motivo: err.message });
     }
   } else {
-    console.warn('[ESTOQUE] Sem depósito do operador nem principal da empresa — produto_estoque não ajustado para', produtoId);
+    const motivo = 'sem depósito do operador nem principal da empresa';
+    console.warn(`[ESTOQUE] ${motivo} — produto_estoque não ajustado para ${produtoId}`);
+    pendencias.push({ etapa: 'produto_estoque', motivo });
   }
 
   try {
+    // Sem .select() de propósito: o papel anônimo perdeu SELECT nesta tabela
+    // em 30/08/2026 (supabase-fechar-anon-onda1.sql, §4). O terminal escreve
+    // aqui e nunca lê — pedir a linha de volta faria o INSERT ser recusado
+    // com 42501 mesmo tendo permissão de inserir.
     const { error: errMov } = await supabase.from('estoque_movimentacoes').insert({
       empresa_id: empresaId,
       deposito_id: depositoId,
@@ -144,10 +209,17 @@ async function _ajustarEstoqueCAS(produtoId, delta, contexto = {}) {
       usuario: usuario.nome || null,
       observacao: contexto.observacao || null,
     });
-    if (errMov) console.warn('[ESTOQUE] Falha ao registrar estoque_movimentacoes (não bloqueia a venda):', errMov.message);
+    if (errMov) {
+      const motivo = `${errMov.message} (${errMov.code})`;
+      console.warn(`[ESTOQUE] Movimentação de ${produtoId} não registrada: ${motivo}`);
+      pendencias.push({ etapa: 'estoque_movimentacoes', motivo });
+    }
   } catch (err) {
-    console.warn('[ESTOQUE] Falha ao registrar estoque_movimentacoes (não bloqueia a venda):', err.message);
+    console.warn('[ESTOQUE] Movimentação não registrada:', err.message);
+    pendencias.push({ etapa: 'estoque_movimentacoes', motivo: err.message });
   }
+
+  return { ok: true, baixou: true, estoqueAnterior, estoqueNovo, pendencias };
 }
 
 // ─── Produtos ─────────────────────────────────────────────────────────
@@ -290,6 +362,7 @@ async function registrarVenda(venda) {
   }));
 
   const depositoIdVenda = usuario.deposito_id || venda.deposito_id || null;
+  const falhasEstoque = [];
 
   let clienteIdVenda = _comoUuid(venda.cliente_remote_id);
   const montarInsert = () => ({
@@ -347,15 +420,35 @@ async function registrarVenda(venda) {
     if (errItens) console.warn('[VENDA] Erro ao inserir venda_itens:', errItens.message);
 
     for (const i of itensPayload) {
-      await _ajustarEstoqueCAS(i.produto_id, -Number(i.quantidade || 0), {
+      const contexto = {
         produtoNome: i.produto_nome, tipo: 'venda',
         referenciaId: novaVenda.id, referenciaTipo: 'venda',
-        depositoId: depositoIdVenda,
-      });
+        depositoId: depositoIdVenda, empresaId,
+      };
+      const r = await _ajustarEstoqueCAS(i.produto_id, -Number(i.quantidade || 0), contexto);
+      // O que não baixou volta descrito, com o necessário para tentar de
+      // novo. Antes isso morria dentro da função e a venda seguia como se
+      // o estoque tivesse saído — foi assim que 343 produtos ficaram com
+      // saldo alto demais sem ninguém perceber.
+      if (!r.ok) {
+        falhasEstoque.push({ produto_id: i.produto_id, produto_nome: i.produto_nome,
+          delta: -Number(i.quantidade || 0), contexto, etapa: r.etapa, motivo: r.motivo });
+      } else if (r.pendencias?.length) {
+        for (const p of r.pendencias) {
+          falhasEstoque.push({ produto_id: i.produto_id, produto_nome: i.produto_nome,
+            delta: -Number(i.quantidade || 0), contexto, etapa: p.etapa, motivo: p.motivo,
+            saldoJaBaixado: true });
+        }
+      }
     }
   }
 
-  return { id: novaVenda.id, cliente_id_usado: clienteIdVenda };
+  if (falhasEstoque.length) {
+    console.warn(`[VENDA] #${venda.numero}: ${falhasEstoque.length} pendência(s) de estoque —`,
+      falhasEstoque.map(f => `${f.produto_nome}: ${f.etapa} (${f.motivo})`).join(' | '));
+  }
+
+  return { id: novaVenda.id, cliente_id_usado: clienteIdVenda, falhasEstoque };
 }
 
 // UPDATE em vendas e DELETE em venda_itens foram revogados do anon — passa
@@ -411,14 +504,54 @@ async function cancelarVenda(remoteId, motivo) {
   const depositoIdVenda = linhas[0].deposito_id || null;
 
   const { data: itens } = await supabase.from('venda_itens').select('produto_id, produto_nome, quantidade').eq('venda_id', remoteId);
+  const falhasEstoque = [];
   for (const i of itens || []) {
-    await _ajustarEstoqueCAS(i.produto_id, Number(i.quantidade || 0), {
+    const contexto = {
       produtoNome: i.produto_nome, tipo: 'devolucao',
       referenciaId: remoteId, referenciaTipo: 'venda',
       motivo, depositoId: depositoIdVenda,
-    });
+    };
+    const r = await _ajustarEstoqueCAS(i.produto_id, Number(i.quantidade || 0), contexto);
+    if (!r.ok) {
+      falhasEstoque.push({ produto_id: i.produto_id, produto_nome: i.produto_nome,
+        delta: Number(i.quantidade || 0), contexto, etapa: r.etapa, motivo: r.motivo });
+    }
   }
-  return { ok: true };
+  if (falhasEstoque.length) {
+    console.warn(`[VENDA] Cancelamento ${remoteId}: ${falhasEstoque.length} item(ns) não voltaram ao estoque —`,
+      falhasEstoque.map(f => `${f.produto_nome}: ${f.motivo}`).join(' | '));
+  }
+  return { ok: true, falhasEstoque };
+}
+
+// Movimentação avulsa (entrada, ajuste, perda) lançada no próprio terminal.
+//
+// sync.js já chamava api.enviarMovimentacaoEstoque() para a entidade
+// 'estoque' da fila, mas a função nunca existiu neste módulo depois da
+// migração do Base44 para o Supabase: a chamada estourava
+// "api.enviarMovimentacaoEstoque is not a function", a fila marcava erro e
+// nenhuma movimentação lançada no balcão jamais subiu.
+async function enviarMovimentacaoEstoque(mov) {
+  const usuario = store.get('auth.usuario') || {};
+  const empresaId = usuario.empresa_estoque_id || usuario.empresa_id || mov.empresa_id || null;
+
+  // A quantidade local é sempre positiva; é o tipo que diz a direção — o
+  // mesmo contrato que a baixa de venda usa em estoque_movimentacoes.
+  const quantidade = Math.abs(Number(mov.quantidade || 0));
+  const entrada = ['entrada', 'devolucao', 'ajuste_positivo'].includes(mov.tipo);
+  const delta = entrada ? quantidade : -quantidade;
+
+  const produtoId = _comoUuid(mov.produto_remote_id) || _comoUuid(mov.produto_id);
+  if (!produtoId) throw new Error('Movimentação sem produto sincronizado no Supabase');
+
+  const r = await _ajustarEstoqueCAS(produtoId, delta, {
+    produtoNome: mov.produto_nome, tipo: mov.tipo || (entrada ? 'entrada' : 'saida'),
+    referenciaId: _comoUuid(mov.referencia_id), referenciaTipo: mov.referencia_tipo || 'ajuste',
+    depositoId: mov.deposito_id || usuario.deposito_id || null,
+    empresaId, motivo: mov.motivo || null, observacao: mov.observacao || null,
+  });
+  if (!r.ok) throw new Error(`Estoque não ajustado (${r.etapa}): ${r.motivo}`);
+  return { ok: true, pendencias: r.pendencias || [] };
 }
 
 async function listarVendasCloud(data) {
@@ -1170,6 +1303,8 @@ module.exports = {
   registrarVenda,
   editarVenda,
   cancelarVenda,
+  enviarMovimentacaoEstoque,
+  ajustarEstoqueRemoto: _ajustarEstoqueCAS, // usado pela fila de reparo de estoque (sync.js)
   listarVendasCloud,
   sincronizarVendedores,
   registrarCliente,

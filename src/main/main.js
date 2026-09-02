@@ -1,3 +1,7 @@
+// Primeiro require de todos: liga o log em arquivo antes que qualquer outro
+// módulo escreva a primeira linha (ver log.js).
+require('./log');
+
 const { app, BrowserWindow, ipcMain, Menu, Tray, dialog, nativeTheme, shell, screen } = require('electron');
 const path = require('path');
 const Store = require('electron-store');
