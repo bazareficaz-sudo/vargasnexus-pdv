@@ -22,6 +22,7 @@ const focusnfe = require('./focusnfe');
 const ia       = require('./ia');
 const shopee   = require('./shopee');
 const tiktok   = require('./tiktok');
+const terminal = require('./terminal');
 
 // Roteador: retorna o módulo certo conforme o canal da conta
 function _mkt(contaId) {
@@ -232,6 +233,9 @@ app.whenReady().then(() => {
   // Captura deep link se o app foi aberto pelo protocolo vargas://
   const deepUrl = process.argv.find(a => a.startsWith('vargas://'));
   if (deepUrl) setTimeout(() => handleDeepLink(deepUrl), 2000);
+  // Identidade do terminal: só faz algo em terminal já ativado, e falhar aqui
+  // não impede venda nenhuma. Ver o cabeçalho de terminal.js.
+  terminal.iniciarRenovacao();
   app.on('activate', () => { if (!mainWindow) createWindow(); });
 });
 
@@ -1108,6 +1112,14 @@ ipcMain.handle('vendas:atualizarNfce', (_, id, dados) => {
   try { db.vendas.atualizarNfce(id, dados); return { ok: true }; }
   catch (err) { console.warn('[vendas:atualizarNfce]', err.message); return { ok: false }; }
 });
+
+// Identidade do terminal (Etapa A — convive com o modo antigo)
+ipcMain.handle('terminal:estado',   () => terminal.estado());
+ipcMain.handle('terminal:ativar',   (_, codigo) => terminal.ativar(codigo));
+ipcMain.handle('terminal:esquecer', () => terminal.esquecer());
+// De propósito NÃO existe um `terminal:token`: o token é do processo
+// principal. Expor no renderer seria devolver a credencial justamente para o
+// lado que esta etapa está tirando de circulação.
 
 // Atualização
 ipcMain.handle('update:check', () => updater.checarAgora());

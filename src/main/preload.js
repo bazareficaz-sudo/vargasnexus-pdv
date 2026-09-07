@@ -226,6 +226,13 @@ contextBridge.exposeInMainWorld('pdv', {
     enviar: (tipo, id, telefone, dadosExtras) => ipcRenderer.invoke('whatsapp:enviar', tipo, id, telefone, dadosExtras),
   },
 
+  // Identidade do terminal — só estado e ativação. O token não passa por aqui.
+  terminal: {
+    estado:   () => ipcRenderer.invoke('terminal:estado'),
+    ativar:   (codigo) => ipcRenderer.invoke('terminal:ativar', codigo),
+    esquecer: () => ipcRenderer.invoke('terminal:esquecer'),
+  },
+
   // App
   app: {
     version: () => ipcRenderer.invoke('app:version'),

@@ -2440,6 +2440,18 @@ const Config = {
     <button class="btn btn-ghost btn-sm" style="margin-left:8px" onclick="Config.testarIA()">Testar IA</button>
   </div>
 
+  <!-- Identidade do terminal. Discreta de propósito: o operador de caixa não
+       tem nada a fazer aqui, e um terminal que nunca for ativado continua
+       vendendo normalmente. Quem ativa é quem instala. -->
+  <div class="card" style="margin-bottom:16px">
+    <div style="font-size:13px;font-weight:600;margin-bottom:4px">🔐 Identidade do terminal</div>
+    <div style="font-size:12px;color:var(--text3);margin-bottom:14px">
+      Vincula este computador a uma empresa no servidor. Enquanto não for ativado,
+      o terminal funciona exatamente como sempre funcionou.
+    </div>
+    <div id="cfg-terminal-identidade" style="font-size:12px;color:var(--text2)">Carregando...</div>
+  </div>
+
   <div class="card">
     <div style="font-size:13px;font-weight:600;margin-bottom:14px">👤 Sessão</div>
     <div id="cfg-session" style="font-size:13px;color:var(--text2);margin-bottom:12px">Carregando...</div>
@@ -2453,6 +2465,7 @@ const Config = {
     const f = v => document.getElementById(v);
     if (f('cfg-appid')) f('cfg-appid').value = cfg['config.app_id'] || '';
     if (f('cfg-terminal')) f('cfg-terminal').value = cfg['config.terminal_id'] || 'PDV-001';
+    this.terminalCarregar();
 
     // Toggles — electron-store usa notação de ponto como caminho aninhado
     const estoqueNeg = await window.pdv.config.get('config.vender_estoque_negativo') === true;
@@ -2552,6 +2565,85 @@ const Config = {
           <div><span style="color:var(--text3);font-size:11px">ESTOQUE / DEPÓSITO</span><br><strong>${emEstoque}</strong> · ${dep}${user.unificar_estoque ? ' <span style="color:var(--accent);font-size:10px">(unificado)</span>' : ''}</div>
         </div>`;
     }
+  },
+
+  // ─── Identidade do terminal ────────────────────────────────────────────
+  //
+  // Três estados, e cada um diz a mesma coisa de um jeito diferente: em qual
+  // deles o terminal está e o que muda por causa disso. O estado padrão — não
+  // ativado — precisa parecer normal, porque é normal.
+
+  async terminalCarregar() {
+    const el = document.getElementById('cfg-terminal-identidade');
+    if (!el) return;
+    const s = await window.pdv.terminal.estado().catch(() => null);
+    if (!s) { el.textContent = 'Não foi possível ler o estado da identidade.'; return; }
+
+    if (!s.cifragem_disponivel) {
+      el.innerHTML = `<div style="background:rgba(251,191,36,.1);color:var(--orange);padding:10px 12px;border-radius:8px">
+        Este computador não oferece armazenamento seguro para credenciais, então a
+        ativação está indisponível aqui. O terminal continua operando no modo de sempre.
+      </div>`;
+      return;
+    }
+
+    if (s.ativado) {
+      el.innerHTML = `
+        <div style="background:rgba(34,197,94,.12);color:var(--green);padding:10px 12px;border-radius:8px;margin-bottom:10px">
+          ✓ Ativado como <strong>${s.terminal_nome || '—'}</strong> · ${s.empresa_nome || '—'}
+        </div>
+        <div style="color:var(--text3);font-size:11px;line-height:1.7">
+          Credencial guardada com cifragem do sistema operacional.<br>
+          Token ${s.token_valido ? 'válido' : 'ainda não renovado nesta sessão'}${s.ultimo_erro ? ` · último erro: ${s.ultimo_erro}` : ''}<br>
+          As vendas continuam pelo caminho de sempre — trocar isso é a etapa seguinte.
+        </div>
+        <button class="btn btn-ghost btn-sm" style="margin-top:12px" onclick="Config.terminalEsquecer()">
+          Desvincular este computador
+        </button>`;
+      return;
+    }
+
+    el.innerHTML = `
+      <div style="margin-bottom:10px">Este terminal ainda não foi ativado — operando no modo de sempre.</div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input class="input" id="cfg-terminal-codigo" placeholder="AB7F-K93X" maxlength="16"
+               style="max-width:200px;text-transform:uppercase;letter-spacing:2px;font-family:monospace">
+        <button class="btn btn-primary btn-sm" onclick="Config.terminalAtivar()">Ativar</button>
+      </div>
+      <div style="font-size:11px;color:var(--text3);margin-top:8px">
+        O código é gerado no sistema web, em Terminais de PDV, e vale por 15 minutos.
+      </div>`;
+    document.getElementById('cfg-terminal-codigo')?.addEventListener('keydown', e => {
+      if (e.key === 'Enter') this.terminalAtivar();
+    });
+  },
+
+  async terminalAtivar() {
+    const codigo = document.getElementById('cfg-terminal-codigo')?.value.trim();
+    if (!codigo) { Toast.show('Digite o código de ativação', 'error'); return; }
+    const btn = document.querySelector('[onclick="Config.terminalAtivar()"]');
+    if (btn) { btn.disabled = true; btn.textContent = 'Ativando...'; }
+    try {
+      const r = await window.pdv.terminal.ativar(codigo);
+      if (!r.ok) { Toast.show(r.erro, 'error'); return; }
+      Toast.show(r.ja_ativado ? 'Terminal já estava ativado' : 'Terminal ativado!', 'success');
+      await this.terminalCarregar();
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Ativar'; }
+    }
+  },
+
+  async terminalEsquecer() {
+    // Desvincular é local. A linha no painel continua lá — revogar de verdade
+    // é ato de quem administra, não deste computador.
+    const ok = await window.pdv.app.confirm(
+      'Apagar a identidade deste computador?\n\nEle volta ao modo antigo e precisará de um novo código para ser ativado. ' +
+      'Isto não revoga nada no servidor — quem administra ainda deve revogar o terminal no painel.'
+    );
+    if (!ok) return;
+    await window.pdv.terminal.esquecer();
+    Toast.show('Identidade apagada deste computador', 'success');
+    await this.terminalCarregar();
   },
 
   async salvarIA() {
