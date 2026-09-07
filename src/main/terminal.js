@@ -227,6 +227,67 @@ async function obterToken({ forcar = false } = {}) {
   }
 }
 
+// ─── Chamada autenticada ──────────────────────────────────────────────────
+
+/**
+ * Chama uma rota protegida com o token deste terminal.
+ *
+ * Devolve `{ ok, dados }` no sucesso e `{ ok: false, motivo, erro }` na
+ * recusa. O `motivo` é o que interessa a quem chama, porque nem toda recusa é
+ * um problema:
+ *
+ *   sem_identidade  → este terminal não foi ativado. Normal. Use o legado.
+ *   rota_desligada  → a rota nova ainda não foi ligada para ele. Normal.
+ *   token_expirado  → renova e repete, uma vez.
+ *   qualquer_outro  → é problema, e precisa aparecer no log.
+ *
+ * A distinção importa: tratar "ainda não foi minha vez" como erro encheria o
+ * log de alarme falso justamente durante o rollout, que é quando alguém
+ * precisa conseguir enxergar o alarme verdadeiro.
+ */
+async function chamarProtegida(rota, corpo, { jaRenovou = false } = {}) {
+  const token = await obterToken();
+  if (!token) return { ok: false, motivo: 'sem_identidade', erro: 'Terminal não ativado' };
+
+  let res;
+  try {
+    res = await fetch(`${baseUrl()}${rota}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        // No cabeçalho, nunca na URL: token em query string vaza por log de
+        // acesso, histórico e Referer.
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(corpo),
+    });
+  } catch (err) {
+    return { ok: false, motivo: 'rede', erro: err.message };
+  }
+
+  const texto = await res.text();
+  let json;
+  try { json = JSON.parse(texto); }
+  catch { return { ok: false, motivo: 'resposta_invalida', erro: `HTTP ${res.status}` }; }
+
+  if (json.ok) return { ok: true, dados: json };
+
+  // Token vencido no meio do caminho: renova UMA vez e repete. Sem o limite,
+  // um servidor que recuse por outro motivo viraria laço infinito.
+  if (json.motivo === 'token_expirado' && !jaRenovou) {
+    await obterToken({ forcar: true });
+    return chamarProtegida(rota, corpo, { jaRenovou: true });
+  }
+
+  return { ok: false, motivo: json.motivo || 'recusado', erro: json.erro || `HTTP ${res.status}` };
+}
+
+/** Chave de idempotência estável para a MESMA intenção. */
+function chaveDe(prefixo, conteudo) {
+  const h = crypto.createHash('sha256').update(String(conteudo)).digest('hex').slice(0, 32);
+  return `${prefixo}:${h}`;
+}
+
 // ─── Estado, para a tela de configurações ─────────────────────────────────
 
 function estado() {
@@ -277,4 +338,7 @@ function iniciarRenovacao() {
   setInterval(tentar, 60 * 60 * 1000);   // de hora em hora
 }
 
-module.exports = { ativar, obterToken, estado, esquecer, iniciarRenovacao };
+module.exports = {
+  ativar, obterToken, estado, esquecer, iniciarRenovacao,
+  chamarProtegida, chaveDe,
+};

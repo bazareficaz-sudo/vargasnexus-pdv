@@ -1192,7 +1192,51 @@ async function chamarPdvProxy(_action, params) {
 
 // ─── Impressão em rede (URL do tunnel do terminal-caixa) ──────────────
 
+// A PRIMEIRA ESCRITA QUE TENTA A ROTA PROTEGIDA.
+//
+// Ordem: rota autenticada primeiro; caminho antigo só quando este terminal
+// ainda não tem identidade ou ainda não foi liberado no rollout.
+//
+// ── SOBRE O FALLBACK ─────────────────────────────────────────────────────
+//
+// Voltar ao caminho antigo aqui é seguro, e é seguro por um motivo específico
+// que NÃO vale para venda: o caminho antigo desta operação já não funciona. O
+// `anon` perdeu INSERT e UPDATE em `pdv_impressao` numa onda de fechamento de
+// privilégios, então o upsert abaixo falha sempre. O "fallback" é, na prática,
+// continuar sem publicar — que é o estado de hoje. Não há duplicidade
+// possível, não há inconsistência a criar, e nada de segurança se perde.
+//
+// Quando `vendas` migrar, este raciocínio não se repete: lá o caminho antigo
+// FUNCIONA, e cair nele em silêncio depois de a rota nova falhar significaria
+// gravar venda sem autenticação sempre que a API tivesse um soluço. A
+// estratégia lá é fila offline com idempotência e replay autenticado, nunca
+// escrita direta como plano B.
 async function atualizarUrlImpressao(url) {
+  const terminal = require('./terminal');
+
+  const r = await terminal.chamarProtegida('/api/pdv/impressao', {
+    print_server_url: url,
+    // Mesma URL, mesma chave: republicar a mesma coisa não é operação nova.
+    // Túnel novo gera URL nova, e aí a chave muda sozinha.
+    idempotency_key: terminal.chaveDe('impressao', url),
+  });
+
+  if (r.ok) {
+    console.log('[IMPRESSAO] URL publicada pela rota autenticada' + (r.dados.repetido ? ' (repetida)' : ''));
+    return;
+  }
+
+  // Recusa esperada durante o rollout não é erro — é "ainda não é a vez deste
+  // terminal". Só elas caem no caminho antigo sem alarde.
+  const esperado = ['sem_identidade', 'rota_desligada'];
+  if (!esperado.includes(r.motivo)) {
+    console.warn(`[IMPRESSAO] Rota autenticada recusou (${r.motivo}): ${r.erro}`);
+    // Rede fora é o único caso em que ainda vale tentar o caminho antigo: o
+    // nosso servidor pode estar inacessível e o Supabase não. Nos demais,
+    // insistir pelo caminho velho só mascararia o que precisa ser visto.
+    if (r.motivo !== 'rede') return;
+  }
+
   const usuario = store.get('auth.usuario') || {};
   const empresaId = usuario.empresa_estoque_id || usuario.empresa_id;
   if (!empresaId) return;
@@ -1202,7 +1246,7 @@ async function atualizarUrlImpressao(url) {
     terminal_id: store.get('config.terminal_id') || null,
     updated_at: new Date().toISOString(),
   }, { onConflict: 'empresa_id' });
-  if (error) console.warn('[IMPRESSAO] Erro ao publicar URL:', error.message);
+  if (error) console.warn('[IMPRESSAO] Caminho antigo também falhou:', error.message);
 }
 
 async function buscarUrlImpressao() {
