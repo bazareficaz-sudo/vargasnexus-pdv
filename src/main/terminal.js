@@ -51,9 +51,39 @@ const Store = require('electron-store');
 
 const store = new Store();
 
-/** Onde ficam as rotas de identidade. O padrão é a produção. */
+// Onde ficam as rotas de identidade.
+//
+// ── O HOST TEM QUE SER O CANÔNICO, COM `www` ─────────────────────────────
+//
+// `sistemavargas.com.br` responde 308 para `www.sistemavargas.com.br`, e isso
+// não é detalhe cosmético: `fetch` REMOVE o cabeçalho `Authorization` ao
+// seguir um redirecionamento para outra origem. O pedido chegaria ao servidor
+// sem token nenhum e voltaria `sem_token` — um erro que parece problema de
+// credencial e é problema de URL.
+//
+// Medido em produção em 07/09/2026, antes de qualquer terminal ser ativado:
+//
+//   POST https://sistemavargas.com.br/api/pdv/impressao  + Bearer  → sem_token
+//   POST https://www.sistemavargas.com.br/api/pdv/impressao + Bearer → chega
+const URL_PADRAO = 'https://www.sistemavargas.com.br';
+
 function baseUrl() {
-  return String(store.get('config.web_url') || 'https://sistemavargas.com.br').replace(/\/+$/, '');
+  return String(store.get('config.web_url') || URL_PADRAO).replace(/\/+$/, '');
+}
+
+/**
+ * Um redirecionamento numa rota autenticada é sempre erro, nunca desvio.
+ *
+ * Seguir calado seria pior do que falhar: o token some no caminho e a resposta
+ * vira "credencial ausente", mandando quem for investigar olhar para o lugar
+ * errado. Melhor dizer, com todas as letras, que a URL está errada.
+ */
+function erroDeRedirecionamento(res) {
+  if (res.status < 300 || res.status >= 400) return null;
+  const destino = res.headers.get('location') || '(sem Location)';
+  return `A URL do servidor redireciona para ${destino}. `
+       + `O cabecalho de autenticacao se perde no redirecionamento — `
+       + `ajuste config.web_url para o endereco final.`;
 }
 
 function arquivoSegredo()   { return path.join(app.getPath('userData'), 'terminal-identidade.bin'); }
@@ -117,7 +147,10 @@ async function postar(rota, corpo) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(corpo),
+    redirect: 'manual',
   });
+  const desvio = erroDeRedirecionamento(res);
+  if (desvio) throw new Error(desvio);
   const texto = await res.text();
   let json;
   try { json = JSON.parse(texto); }
@@ -260,10 +293,16 @@ async function chamarProtegida(rota, corpo, { jaRenovou = false } = {}) {
         Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify(corpo),
+      // Manual de proposito: ver `erroDeRedirecionamento`. Seguir um 308 aqui
+      // faria o token evaporar sem aviso.
+      redirect: 'manual',
     });
   } catch (err) {
     return { ok: false, motivo: 'rede', erro: err.message };
   }
+
+  const desvio = erroDeRedirecionamento(res);
+  if (desvio) return { ok: false, motivo: 'url_redireciona', erro: desvio };
 
   const texto = await res.text();
   let json;
