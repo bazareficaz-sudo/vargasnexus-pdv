@@ -327,6 +327,24 @@ function chaveDe(prefixo, conteudo) {
   return `${prefixo}:${h}`;
 }
 
+/**
+ * Avisa o servidor que uma operação precisou do caminho antigo.
+ *
+ * Existe para que "fallback" seja um número e não uma suposição. É o dado que
+ * vai autorizar — ou barrar — o corte do `anon`: ausência de erro no legado
+ * não prova que ninguém o usou, mas esta contagem prova quem usou.
+ *
+ * Falhar aqui é inofensivo e silencioso de propósito: perder o registro de um
+ * fallback não pode, ele mesmo, virar um segundo problema em cima do primeiro.
+ */
+async function registrarFallback(operacao, chave, motivo) {
+  if (!chave) return;
+  await chamarProtegida('/api/pdv/fallback', {
+    operacao, idempotency_key: chave, motivo,
+    versao_pdv: app.getVersion(),
+  });
+}
+
 // ─── Estado, para a tela de configurações ─────────────────────────────────
 
 function estado() {
@@ -419,5 +437,5 @@ function iniciarHeartbeat() {
 
 module.exports = {
   ativar, obterToken, estado, esquecer, iniciarRenovacao, iniciarHeartbeat,
-  chamarProtegida, chaveDe,
+  chamarProtegida, chaveDe, registrarFallback,
 };

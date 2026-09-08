@@ -13,6 +13,11 @@ const Store = require('electron-store');
 const store = new Store();
 const supabase = require('./supabaseClient');
 
+// `app` do Electron so para a versao; require tardio evita ciclo com main.js.
+function app_getVersion() {
+  try { return require('electron').app.getVersion(); } catch { return null; }
+}
+
 function _naoDisponivel(nome) {
   return async () => {
     throw new Error(`${nome}: recurso ainda não migrado nesta versão do VargasNexus PDV`);
@@ -901,7 +906,72 @@ async function usarCreditoEmConta(contaId, contaValor, creditoId, creditoSaldoAt
 
 // ─── Faltas ───────────────────────────────────────────────────────────
 
+// PRIMEIRA OPERACAO DE NEGOCIO COM ROTA AUTENTICADA.
+//
+// O `falta.id` local ja existe: `db.faltas.registrar()` o gera e grava no
+// SQLite ANTES de qualquer envio. Ele e a chave de idempotencia natural —
+// sobrevive a queda, timeout, fechamento, reinicio e replay, porque nasce em
+// disco e nao em memoria.
+//
+// O legado abaixo gera um uuid NOVO a cada envio, e e por isso que uma
+// resposta perdida vira linha duplicada: o `remote_id` nunca chega, o guard
+// `!falta.remote_id` nao protege, e o retry insere de novo.
+//
+// SOBRE O FALLBACK, e a diferenca em relacao a `impressao`:
+//
+// Aqui o caminho antigo FUNCIONA. Cair nele em silencio seria gravar sem
+// autenticacao toda vez que a rota nova tivesse um solucco — e, pior, poderia
+// duplicar justamente no caso de resposta perdida. Entao:
+//
+//   sem_identidade / rota_desligada  -> legado, sem alarde (rollout normal)
+//   timeout / rede / 5xx             -> NAO cai no legado. Deixa na fila.
+//   qualquer outra recusa            -> NAO cai no legado. Registra e para.
+//
+// A ambiguidade do timeout e o motivo. Se o servidor gravou e a resposta se
+// perdeu, tentar o legado criaria a segunda linha. O certo e reenviar pela
+// MESMA rota com a MESMA chave — o servidor devolve o resultado ja
+// processado. Isso e o retry da fila, e ele ja acontece sozinho.
 async function registrarFalta(falta) {
+  const terminal = require('./terminal');
+
+  // A chave e o id local. Sem ele nao ha idempotencia possivel, e ai o unico
+  // caminho honesto e o legado.
+  if (falta.id) {
+    const r = await terminal.chamarProtegida('/api/pdv/faltas', {
+      idempotency_key: falta.id,
+      produto_id: _comoUuid(falta.produto_remote_id),
+      produto_nome: falta.produto_nome,
+      produto_sku: falta.produto_sku || null,
+      cliente_nome: falta.cliente_nome || null,
+      cliente_telefone: falta.cliente_telefone || null,
+      quantidade_solicitada: falta.quantidade_solicitada || 1,
+      observacao: falta.observacao || null,
+      status: falta.status || 'pendente',
+      origem: falta.origem || 'pdv',
+      usuario_nome: falta.usuario_nome || (store.get('auth.usuario') || {}).nome || null,
+      tipo: falta.tipo === 'encomenda' ? 'encomenda' : 'falta',
+      prazo_desejado: falta.prazo_desejado || null,
+      preco_negociado: falta.preco_negociado != null ? Number(falta.preco_negociado) : null,
+      terminal_id: store.get('config.terminal_id') || null,
+      versao_pdv: app_getVersion(),
+    });
+
+    if (r.ok) {
+      console.log(`[FALTA] Registrada pela rota autenticada${r.dados.repetido || r.dados.ja_existia ? ' (ja existia)' : ''}`);
+      return { id: r.dados.falta_id };
+    }
+
+    const rolloutNormal = ['sem_identidade', 'rota_desligada'];
+    if (!rolloutNormal.includes(r.motivo)) {
+      // Nao cai no legado. Lanca para a fila tentar de novo com a MESMA
+      // chave, que e a unica forma segura de sair de um timeout ambiguo.
+      throw new Error(`Rota autenticada de faltas recusou (${r.motivo}): ${r.erro}`);
+    }
+    // Chegou aqui: este terminal ainda nao foi migrado. Segue o legado, e o
+    // servidor fica sabendo — ver `registrarFallbackFalta` no fim do arquivo.
+    terminal.registrarFallback('faltas.registrar', falta.id, r.motivo).catch(() => {});
+  }
+
   const usuario = store.get('auth.usuario') || {};
   const empresaId = usuario.empresa_estoque_id || usuario.empresa_id;
   const id = uuidv4();
