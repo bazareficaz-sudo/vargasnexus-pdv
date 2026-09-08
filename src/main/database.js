@@ -503,6 +503,11 @@ function runMigrations() {
     // Conflito nao pode virar retry infinito nem sumir calado: vira estado
     // visivel, para alguem recarregar e refazer.
     'ALTER TABLE orcamentos ADD COLUMN conflito_em TEXT',
+    // FASE 0.6C.1 — a chave da operacao em voo, PERSISTIDA antes da primeira
+    // tentativa de rede. Nao e derivada na hora do envio: se fosse, um
+    // timeout seguido de reinicio poderia remonta-la diferente. Nao-nula
+    // significa "existe uma operacao ainda nao confirmada com esta chave".
+    'ALTER TABLE orcamentos ADD COLUMN op_chave TEXT',
     // Endereçamento de estoque — só o endereço de picking (ou o de maior
     // quantidade) do produto no depósito deste terminal, pro vendedor achar
     // a mercadoria. Tabela pequena e substituída inteira a cada sync (ver
@@ -1944,6 +1949,18 @@ const entregas = {
 
 // ─── SYNC QUEUE ──────────────────────────────────────────────────
 const syncQueue = {
+  // FASE 0.6C.1 — sucesso imediato encerra o item da fila.
+  //
+  // Sem isto, a chamada imediata grava (revisao 1), a fila roda depois, monta
+  // a chave da revisao seguinte e cria uma REVISAO FANTASMA com o mesmo
+  // conteudo. A fila e retry, nao um segundo caminho.
+  concluirPendentesDeOrcamento(orcamentoId) {
+    return db.prepare(`
+      UPDATE sync_queue SET processado = 1
+       WHERE entidade = 'orcamento' AND processado = 0 AND payload LIKE ?
+    `).run(`%"orcamento_id":"${orcamentoId}"%`).changes;
+  },
+
   getPendentes() {
     return db.prepare(`
       SELECT * FROM sync_queue WHERE processado = 0
@@ -2201,6 +2218,34 @@ const orcamentos = {
     })();
 
     return { id, numero };
+  },
+
+  // ── FASE 0.6C.1 — estado da operacao autenticada ────────────────────
+  //
+  // A chave nasce AQUI, antes de qualquer rede, e so morre quando o servidor
+  // confirma. Enquanto ela existir, toda tentativa — imediata, retry da fila,
+  // depois de reiniciar — usa a MESMA, e o servidor reconhece o replay.
+  marcarOperacaoPendente(id, chave) {
+    db.prepare('UPDATE orcamentos SET op_chave = ? WHERE id = ? AND op_chave IS NULL').run(chave, id);
+  },
+
+  // Confirmado pelo servidor: guarda o que ele decidiu e encerra a operacao.
+  // `revisao` e `remote_id` sao dele; o `id` local NAO muda — as tres
+  // identidades (local, remota, numero comercial) seguem separadas.
+  confirmarSincronizacao(id, { remote_id, revisao }) {
+    db.prepare(`
+      UPDATE orcamentos
+         SET remote_id = COALESCE(?, remote_id),
+             revisao_base = COALESCE(?, revisao_base),
+             sync_status = 'synced', synced_at = ?, op_chave = NULL, conflito_em = NULL
+       WHERE id = ?
+    `).run(remote_id || null, revisao == null ? null : Number(revisao), new Date().toISOString(), id);
+  },
+
+  // Conflito de versao: nao repete, nao cai no legado, nao some. Fica visivel.
+  marcarConflito(id) {
+    db.prepare("UPDATE orcamentos SET sync_status = 'conflito', conflito_em = ?, op_chave = NULL WHERE id = ?")
+      .run(new Date().toISOString(), id);
   },
 
   // Garante retry via fila caso a tentativa imediata (feita por quem chamou)

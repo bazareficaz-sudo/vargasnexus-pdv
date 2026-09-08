@@ -641,64 +641,15 @@ async function processarFilaSync() {
       }
 
       if (item.entidade === 'orcamento') {
-        const orc = db.orcamentos.getById(payload.orcamento_id);
-        if (orc) {
-          const orcPayload = db.orcamentos.payloadSync(orc.id);
-
-          // ── ROTA NOVA: create e update sao O MESMO COMANDO ─────────────
-          //
-          // A chave de idempotencia e montada AQUI, no dreno, a partir da
-          // revisao confirmada AGORA — nao na hora de enfileirar. Montar
-          // antes fixaria a chave numa versao que talvez nunca seja enviada,
-          // porque o coalescing faz v1 e v2 desaparecerem.
-          const r = await api.salvarOrcamentoAutenticado(
-            { ...orc, ...orcPayload, id: orc.id, revisao_base: orc.revisao_base || 0 },
-            orcPayload.itens,
-          );
-
-          if (r.tipo === 'ok') {
-            // Guarda a revisao que o servidor confirmou. E ela que vai como
-            // `revisao_base` na proxima edicao — o cliente nunca incrementa.
-            db.db().prepare(
-              "UPDATE orcamentos SET remote_id = ?, revisao_base = ?, sync_status = 'synced', synced_at = ?, conflito_em = NULL WHERE id = ?"
-            ).run(r.dados.orcamento_id || orc.id, r.dados.revisao || 0, new Date().toISOString(), orc.id);
-            console.log(`[ORC] ${r.dados.estado} nº ${r.dados.numero} rev ${r.dados.revisao} pela rota autenticada`);
-            db.sync.marcarProcessado(item.id);
-            continue;
-          }
-
-          if (r.tipo === 'conflito') {
-            // NAO repetir, NAO cair no legado, NAO marcar processado calado.
-            // Alguem editou este orcamento noutro terminal; insistir daqui
-            // sobrescreveria a edicao do outro, que e exatamente a perda
-            // silenciosa que esta fase existe para remover.
-            db.db().prepare("UPDATE orcamentos SET sync_status = 'conflito', conflito_em = ? WHERE id = ?")
-              .run(new Date().toISOString(), orc.id);
-            console.warn(`[ORC] Conflito de versao no orcamento ${orc.id} — precisa recarregar antes de reenviar`);
-            db.sync.marcarProcessado(item.id);
-            continue;
-          }
-
-          if (r.tipo === 'erro') {
-            // Transitorio: deixa na fila para tentar de novo com a MESMA
-            // chave. Nao cai no legado — num timeout o servidor pode ter
-            // gravado, e o legado criaria um segundo orcamento.
-            throw new Error(`Rota autenticada de orcamento recusou (${r.motivo}): ${r.erro}`);
-          }
-
-          // r.tipo === 'legado': este terminal ainda nao foi migrado.
-          if (item.operacao === 'create' && !orc.remote_id) {
-            const res = await api.sincronizarOrcamento(montarPayloadOrcamentoRemoto(orcPayload));
-            if (res?.id) db.orcamentos.atualizarRemoteId(orc.id, res.id);
-          } else if (item.operacao === 'update' && orc.remote_id) {
-            await api.atualizarStatusOrcamento(orc.remote_id, statusOrcamentoRemoto(orc.status));
-            await api.atualizarOrcamento(orc.remote_id, {
-              cliente_nome: orcPayload.cliente_nome, subtotal: orcPayload.subtotal, desconto: orcPayload.desconto,
-              total: orcPayload.total, observacao: orcPayload.observacao, validade_dias: orcPayload.validade_dias,
-              itens: orcPayload.itens,
-            });
-          }
-        }
+        // A fila e TRANSPORTE da mesma operacao, nao uma segunda
+        // implementacao da regra. Ela reexecuta o comando com a MESMA chave
+        // persistida — e e por isso que imediata + retry dao um efeito so.
+        const { criarComandoOrcamento } = require('./orcamentoComando');
+        const cmd = criarComandoOrcamento({ db, api, terminal: require('./terminal') });
+        const r = await cmd.executar(payload.orcamento_id, payload.acao || 'salvar');
+        // 'erro' e transitorio: lanca para o item continuar na fila com a
+        // mesma chave. Os demais desfechos ja encerraram o item.
+        if (r.tipo === 'erro') throw new Error(r.erro || 'Falha ao sincronizar orcamento');
       }
 
       db.sync.marcarProcessado(item.id);

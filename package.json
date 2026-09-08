@@ -9,7 +9,8 @@
     "postinstall": "electron-rebuild -f -w better-sqlite3",
     "build": "electron-builder --win --x64",
     "build:dir": "electron-builder --win --x64 --dir",
-    "publish": "electron-builder --win --x64 --publish always"
+    "publish": "electron-builder --win --x64 --publish always",
+    "test": "node --test tests/*.test.js"
   },
   "build": {
     "appId": "com.vargas.pdv",

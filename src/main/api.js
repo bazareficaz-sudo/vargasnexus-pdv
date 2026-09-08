@@ -1054,34 +1054,40 @@ function _validadeIso(validadeDias) {
 //
 // A chave (`<id>:r<revisao_base>`) e montada no SERVIDOR a partir do corpo, e
 // nao aqui — o cliente nao escolhe a identidade da propria tentativa.
-async function salvarOrcamentoAutenticado(orc, itens) {
+async function salvarOrcamentoAutenticado(cmd) {
   const terminal = require('./terminal');
+  const orc = cmd.orc || {};
   const r = await terminal.chamarProtegida('/api/pdv/orcamentos', {
-    orcamento_id: orc.id,
-    // A revisao que o SERVIDOR confirmou por ultimo. Nunca um contador local.
-    revisao_base: Number(orc.revisao_base || 0),
+    // Identidade EFETIVA: `remote_id ?? id_local`. Decidida pelo orquestrador,
+    // nao aqui — o transporte nao escolhe identidade.
+    orcamento_id: cmd.orcamento_id,
+    revisao_base: cmd.revisao_base,
+    idempotency_key: cmd.idempotency_key,
+    acao: cmd.acao,
     cabecalho: {
       cliente_nome: orc.cliente_nome || null,
       operador_nome: orc.vendedor_nome || null,
       // Mesmo mapeamento de sync.js: 'pendente' local e 'aberto' remoto.
-      status: orc.status === 'pendente' ? 'aberto' : orc.status,
+      status: cmd.acao === 'cancelar' ? 'cancelado'
+            : (orc.status === 'pendente' ? 'aberto' : orc.status),
       subtotal: orc.subtotal, desconto: orc.desconto, total: orc.total,
       observacao: orc.observacao || null,
       validade: _validadeIso(orc.validade_dias),
     },
-    itens: (itens || []).map(i => ({
+    itens: (cmd.itens || []).map(i => ({
       produto_remote_id: i.produto_remote_id, produto_id: i.produto_id,
       produto_nome: i.produto_nome, produto_sku: i.produto_sku || null,
       quantidade: i.quantidade, preco_unitario: i.preco_unitario,
-      desconto: i.desconto || 0, total: i.total ?? i.subtotal,
+      desconto: i.desconto || 0, total: i.total != null ? i.total : i.subtotal,
     })),
     versao_pdv: app_getVersion(),
   });
 
   if (r.ok) return { tipo: 'ok', dados: r.dados };
-  if (r.motivo === 'sem_identidade' || r.motivo === 'rota_desligada') return { tipo: 'legado', motivo: r.motivo };
-  // O 409 chega como recusa; distinguimos pelo corpo, nao pelo motivo.
-  if (String(r.erro || '').includes('conflito_versao') || r.motivo === 'conflito_versao') {
+  if (r.motivo === 'sem_identidade' || r.motivo === 'rota_desligada') {
+    return { tipo: 'legado', motivo: r.motivo };
+  }
+  if (r.motivo === 'conflito_versao' || String(r.erro || '').includes('conflito')) {
     return { tipo: 'conflito', erro: r.erro };
   }
   return { tipo: 'erro', erro: r.erro, motivo: r.motivo };

@@ -23,6 +23,12 @@ const ia       = require('./ia');
 const shopee   = require('./shopee');
 const tiktok   = require('./tiktok');
 const terminal = require('./terminal');
+const { criarComandoOrcamento } = require('./orcamentoComando');
+
+// UM orquestrador para orcamento, usado pelos tres caminhos imediatos e pela
+// fila. A fila e transporte/reexecucao da MESMA operacao, nao uma segunda
+// implementacao da regra — ver o cabecalho de orcamentoComando.js.
+const orcamentoCmd = criarComandoOrcamento({ db, api, terminal });
 
 // Roteador: retorna o módulo certo conforme o canal da conta
 function _mkt(contaId) {
@@ -421,9 +427,7 @@ ipcMain.handle('orcamentos:registrar', async (_, orc) => {
   // quando a conexão voltar.
   setImmediate(async () => {
     try {
-      const payload = db.orcamentos.payloadSync(result.id);
-      const res = await api.sincronizarOrcamento(sync.montarPayloadOrcamentoRemoto(payload));
-      if (res?.id || res?._id) db.orcamentos.atualizarRemoteId(result.id, res.id || res._id);
+      await orcamentoCmd.executar(result.id, 'salvar');
     } catch (err) {
       console.warn('[ORC] Sync imediato falhou, será reenviado pela fila:', err.message);
     }
@@ -440,10 +444,12 @@ ipcMain.handle('orcamentos:getByIdCloud', async (_, remoteId) => {
 ipcMain.handle('orcamentos:getById', (_, id) => db.orcamentos.getById(id));
 ipcMain.handle('orcamentos:cancelar', async (_, id) => {
   db.orcamentos.cancelar(id);
-  const orc = db.orcamentos.getById(id);
-  if (orc?.remote_id) {
-    try { await api.atualizarStatusOrcamento(orc.remote_id, 'cancelado'); } catch {}
-  }
+  // Cancelamento tem CHAVE PROPRIA (`:cancelar`), separada da de salvar: sao
+  // intencoes diferentes, e um replay de uma nao pode ser confundido com a
+  // outra. Cancelar duas vezes pela mesma chave e um efeito so.
+  try {
+    await orcamentoCmd.executar(id, 'cancelar');
+  } catch (e) { console.warn('[ORC] Erro ao cancelar na nuvem:', e.message); }
   return { ok: true };
 });
 ipcMain.handle('orcamentos:marcarConvertido', async (_, id) => {
@@ -456,18 +462,9 @@ ipcMain.handle('orcamentos:marcarConvertido', async (_, id) => {
 });
 ipcMain.handle('orcamentos:atualizar', async (_, id, dados) => {
   db.orcamentos.atualizar(id, dados);
-  const orc = db.orcamentos.getById(id);
-  if (orc?.remote_id) {
-    try {
-      await api.atualizarOrcamento(orc.remote_id, {
-        cliente_id: dados.cliente_id, cliente_nome: dados.cliente_nome,
-        cliente_telefone: dados.cliente_telefone, forma_pagamento: dados.forma_pagamento,
-        validade_dias: dados.validade_dias, subtotal: dados.subtotal,
-        desconto: dados.desconto, total: dados.total, observacao: dados.observacao,
-        itens: dados.itens,
-      });
-    } catch(e) { console.warn('[ORC] Erro ao atualizar cloud:', e.message); }
-  }
+  try {
+    await orcamentoCmd.executar(id, 'salvar');
+  } catch (e) { console.warn('[ORC] Erro ao atualizar cloud:', e.message); }
   return { ok: true };
 });
 
