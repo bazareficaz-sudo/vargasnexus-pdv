@@ -340,6 +340,8 @@ function estado() {
     token_valido: !!(tokenAtual && Date.now() < tokenExpiraEm),
     token_expira_em: tokenExpiraEm ? new Date(tokenExpiraEm).toISOString() : null,
     cifragem_disponivel: cifragemDisponivel(),
+    ultimo_heartbeat: ultimoHeartbeat,
+    ultimo_heartbeat_erro: ultimoHeartbeatErro,
     terminal_id_legado: store.get('config.terminal_id') || null,
     versao: app.getVersion(),
     ultimo_erro: ultimoErro,
@@ -364,12 +366,16 @@ function esquecer() {
 // ─── Renovação em segundo plano ───────────────────────────────────────────
 
 /**
- * Mantém o token fresco e o "visto por último" do painel atualizado.
+ * Mantém o token fresco.
  *
- * É deliberadamente inofensiva: se o terminal não está ativado ela não faz
- * nada, e se a rede cair ela erra em silêncio no log. A telemetria que ela
- * alimenta é o que decide quando a etapa seguinte pode acontecer — sem ela o
- * painel não teria como distinguir "ativado" de "ativado e vivo".
+ * ATENÇÃO ao que esta função NÃO é: ela não é sinal de vida. `obterToken`
+ * devolve o token de memória sem falar com o servidor enquanto ele valer, e
+ * com token de 12 h isso significa que estes tiques horários podem passar
+ * 11h30 sem produzir uma única requisição. Eu escrevi na 0.6A que esta rotina
+ * serviria de telemetria; não serve, e a auditoria mostrou o preço disso —
+ * quatro rodadas sem conseguir distinguir "não reiniciou" de "quebrou".
+ *
+ * Quem responde "estou vivo" é `iniciarHeartbeat`, abaixo.
  */
 function iniciarRenovacao() {
   const tentar = () => { obterToken().catch(() => {}); };
@@ -377,7 +383,41 @@ function iniciarRenovacao() {
   setInterval(tentar, 60 * 60 * 1000);   // de hora em hora
 }
 
+/** De quanto em quanto tempo dizemos ao servidor que estamos de pé. */
+const INTERVALO_HEARTBEAT_MS = 5 * 60 * 1000;
+
+let ultimoHeartbeat = null;
+let ultimoHeartbeatErro = null;
+
+/**
+ * Heartbeat: "este terminal está ligado agora".
+ *
+ * Responsabilidade separada da renovação de token de propósito. O JWT diz
+ * QUEM é o terminal; o heartbeat diz que ele ESTÁ AÍ. Uma coisa muda a cada
+ * 12 h, a outra precisa ser sabida a cada poucos minutos.
+ *
+ * Ele reaproveita o token em memória — `obterToken` só chama o servidor
+ * quando o token está perto de vencer — então uma batida custa uma requisição
+ * e nada mais. Falhar é silencioso no painel e visível no log: o terminal
+ * simplesmente aparece como offline, que é a informação correta.
+ */
+function iniciarHeartbeat() {
+  const bater = async () => {
+    const r = await chamarProtegida('/api/pdv/heartbeat', { versao_pdv: app.getVersion() });
+    if (r.ok) {
+      ultimoHeartbeat = new Date().toISOString();
+      ultimoHeartbeatErro = null;
+    } else if (r.motivo !== 'sem_identidade') {
+      // Terminal sem identidade não é erro — é a maioria do parque hoje.
+      ultimoHeartbeatErro = `${r.motivo}: ${r.erro}`;
+      console.warn('[TERMINAL] Heartbeat falhou:', ultimoHeartbeatErro);
+    }
+  };
+  setTimeout(bater, 30_000);                  // depois da renovação inicial
+  setInterval(bater, INTERVALO_HEARTBEAT_MS);
+}
+
 module.exports = {
-  ativar, obterToken, estado, esquecer, iniciarRenovacao,
+  ativar, obterToken, estado, esquecer, iniciarRenovacao, iniciarHeartbeat,
   chamarProtegida, chaveDe,
 };

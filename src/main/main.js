@@ -236,6 +236,8 @@ app.whenReady().then(() => {
   // Identidade do terminal: só faz algo em terminal já ativado, e falhar aqui
   // não impede venda nenhuma. Ver o cabeçalho de terminal.js.
   terminal.iniciarRenovacao();
+  // Sinal de vida, separado da renovação — ver `iniciarHeartbeat`.
+  terminal.iniciarHeartbeat();
   app.on('activate', () => { if (!mainWindow) createWindow(); });
 });
 
