@@ -1040,6 +1040,53 @@ function _validadeIso(validadeDias) {
   return d.toISOString().slice(0, 10);
 }
 
+// ORCAMENTO COMO COMANDO UNICO — a rota nova.
+//
+// Devolve um resultado RICO de proposito, porque quem chama precisa distinguir
+// coisas que o caminho antigo tratava igual:
+//
+//   ok        gravou; `revisao` e a nova confirmada, para guardar localmente
+//   conflito  409 — NAO repetir. O cliente partiu de um estado velho e
+//             precisa recarregar. Repetir automaticamente aqui seria laco
+//             infinito, e cair no legado seria sobrescrever a edicao de outro.
+//   legado    este terminal ainda nao foi migrado
+//   erro      transitorio; a fila tenta de novo com a MESMA chave
+//
+// A chave (`<id>:r<revisao_base>`) e montada no SERVIDOR a partir do corpo, e
+// nao aqui — o cliente nao escolhe a identidade da propria tentativa.
+async function salvarOrcamentoAutenticado(orc, itens) {
+  const terminal = require('./terminal');
+  const r = await terminal.chamarProtegida('/api/pdv/orcamentos', {
+    orcamento_id: orc.id,
+    // A revisao que o SERVIDOR confirmou por ultimo. Nunca um contador local.
+    revisao_base: Number(orc.revisao_base || 0),
+    cabecalho: {
+      cliente_nome: orc.cliente_nome || null,
+      operador_nome: orc.vendedor_nome || null,
+      // Mesmo mapeamento de sync.js: 'pendente' local e 'aberto' remoto.
+      status: orc.status === 'pendente' ? 'aberto' : orc.status,
+      subtotal: orc.subtotal, desconto: orc.desconto, total: orc.total,
+      observacao: orc.observacao || null,
+      validade: _validadeIso(orc.validade_dias),
+    },
+    itens: (itens || []).map(i => ({
+      produto_remote_id: i.produto_remote_id, produto_id: i.produto_id,
+      produto_nome: i.produto_nome, produto_sku: i.produto_sku || null,
+      quantidade: i.quantidade, preco_unitario: i.preco_unitario,
+      desconto: i.desconto || 0, total: i.total ?? i.subtotal,
+    })),
+    versao_pdv: app_getVersion(),
+  });
+
+  if (r.ok) return { tipo: 'ok', dados: r.dados };
+  if (r.motivo === 'sem_identidade' || r.motivo === 'rota_desligada') return { tipo: 'legado', motivo: r.motivo };
+  // O 409 chega como recusa; distinguimos pelo corpo, nao pelo motivo.
+  if (String(r.erro || '').includes('conflito_versao') || r.motivo === 'conflito_versao') {
+    return { tipo: 'conflito', erro: r.erro };
+  }
+  return { tipo: 'erro', erro: r.erro, motivo: r.motivo };
+}
+
 async function sincronizarOrcamento(payload) {
   const { data: orc, error } = await supabase.from('orcamentos').insert({
     empresa_id: payload.empresa_id,
@@ -1457,6 +1504,7 @@ module.exports = {
   mapearAnuncioBase44: _naoDisponivel('Marketplace'),
   getIdProdutoGenerico: _naoDisponivel('Marketplace'),
   sincronizarOrcamento,
+  salvarOrcamentoAutenticado,
   sincronizarOrcamentos,
   atualizarStatusOrcamento,
   atualizarOrcamento,

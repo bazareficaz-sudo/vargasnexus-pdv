@@ -495,6 +495,14 @@ function runMigrations() {
     'ALTER TABLE faltas ADD COLUMN preco_negociado REAL',
     'ALTER TABLE faltas ADD COLUMN quantidade_atendida REAL DEFAULT 0',
     'ALTER TABLE faltas ADD COLUMN terminal_id TEXT',
+    // FASE 0.6C — a revisao CONFIRMADA pelo servidor. O cliente nunca a
+    // incrementa: ele so guarda o que o servidor devolveu, para mandar como
+    // `revisao_base` na proxima edicao. Nasce 0 = "o servidor ainda nao
+    // conhece este orcamento".
+    'ALTER TABLE orcamentos ADD COLUMN revisao_base INTEGER DEFAULT 0',
+    // Conflito nao pode virar retry infinito nem sumir calado: vira estado
+    // visivel, para alguem recarregar e refazer.
+    'ALTER TABLE orcamentos ADD COLUMN conflito_em TEXT',
     // Endereçamento de estoque — só o endereço de picking (ou o de maior
     // quantidade) do produto no depósito deste terminal, pro vendedor achar
     // a mercadoria. Tabela pequena e substituída inteira a cada sync (ver
