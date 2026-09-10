@@ -374,8 +374,15 @@ async function syncDownOrcamentos() {
   try {
     const orcamentos = await api.sincronizarOrcamentos();
     if (orcamentos.length > 0) {
-      db.orcamentos.upsertBatch(orcamentos);
-      console.log(`[SYNC] Orçamentos: ${orcamentos.length} sincronizados de todos os terminais`);
+      const r = db.orcamentos.upsertBatch(orcamentos);
+      console.log(`[SYNC] Orçamentos: ${r.total} do servidor — ${r.atualizados} atualizados, `
+        + `${r.inseridos} novos, ${r.preservados} preservados (edição local pendente)`);
+      // Uma linha que falha não derruba as outras desde a 0.6C.3. Mas também
+      // não some: o que não foi aplicado é dito, com quem e por quê.
+      if (r.falhas.length) {
+        console.warn(`[SYNC] Orçamentos: ${r.falhas.length} não aplicados —`,
+          r.falhas.slice(0, 3).map(f => `nº${f.numero}: ${f.erro}`).join(' | '));
+      }
     }
   } catch (err) {
     console.warn('[SYNC] Orçamentos: erro (não crítico):', err.message);

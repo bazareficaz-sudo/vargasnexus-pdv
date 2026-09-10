@@ -2280,14 +2280,16 @@ const orcamentos = {
     `).all(...params);
   },
 
-  // Importa orçamentos de outros terminais vindos do cloud
+  // Importa orçamentos de outros terminais vindos do cloud.
+  //
+  // FASE 0.6C.3 — a identidade é resolvida ANTES de escrever, e cada linha
+  // vai no seu SAVEPOINT. Antes era um upsert por `ON CONFLICT(id)` dentro de
+  // uma transação única: um orçamento nascido no legado (id local != id
+  // remoto) virava INSERT, batia em `remote_id UNIQUE` e o rollback levava o
+  // lote inteiro. Devolve o resumo para quem chamou poder contar.
   upsertBatch(orcamentos) {
-    const upsert = db.prepare(orcSql.SQL_UPSERT_DOWNSYNC);
     const now = new Date().toISOString();
-    const run = db.transaction((items) => {
-      for (const o of items) upsert.run(...orcSql.paramsUpsert(o, now));
-    });
-    run(orcamentos);
+    return db.transaction((items) => orcSql.reconciliarDoCloud(db, items, now))(orcamentos);
   },
 
   getById(id) {

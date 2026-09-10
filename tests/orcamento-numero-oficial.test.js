@@ -265,11 +265,8 @@ describe('5. down-sync alinha o número sem tocar na identidade', () => {
     id: 'loc-1', remote_id: 'loc-1', numero: 60, status: 'aberto',
     cliente_nome: 'Eliane', total: 194.5, created_at: '2026-09-09T23:27:47.551Z', ...over,
   });
-  const baixar = (sq, lista) => {
-    const st = sq.prepare(orcSql.SQL_UPSERT_DOWNSYNC);
-    const agora = new Date().toISOString();
-    for (const o of lista) st.run(...orcSql.paramsUpsert(o, agora));
-  };
+  // 0.6C.3: a descida passou a resolver identidade e a isolar cada linha.
+  const baixar = (sq, lista) => orcSql.reconciliarDoCloud(sq, lista, new Date().toISOString());
 
   test('mesmo id: atualiza número e status, preserva tudo que é identidade', () => {
     const sq = bancoReal({ remote_id: 'loc-1', numero: 59, sync_status: 'synced', revisao_base: 1 });
@@ -280,7 +277,7 @@ describe('5. down-sync alinha o número sem tocar na identidade', () => {
     assert.equal(l.id, 'loc-1', 'id preservado');
     assert.equal(l.remote_id, 'loc-1', 'remote_id preservado');
     assert.equal(l.numero, 60, 'número alinhado');
-    assert.equal(l.status, 'aberto', 'status alinhado');
+    assert.equal(l.status, 'pendente', '0.6C.3: o status local NÃO é sobrescrito — ver orcamentoSql.js');
     assert.equal(l.revisao_base, 1, 'revisão preservada — o cloud não a conhece');
     assert.equal(l.created_at, '2026-09-09T23:27:47.404Z', 'created_at local preservado');
     assert.equal(itens(sq).length, 1, 'itens não são tocados pelo cabeçalho');
@@ -295,11 +292,12 @@ describe('5. down-sync alinha o número sem tocar na identidade', () => {
   test('linha com edição local pendente NÃO é sobrescrita', () => {
     // Proteção que já existia e não pode ter sido perdida na mudança.
     const sq = bancoReal({ remote_id: 'loc-1', numero: 59, sync_status: 'pending' });
-    baixar(sq, [doCloud({ numero: 60, status: 'cancelado' })]);
+    const r = baixar(sq, [doCloud({ numero: 60, status: 'cancelado' })]);
     const l = linha(sq);
     assert.equal(l.numero, 59, 'o que ainda não subiu não é atropelado');
     assert.equal(l.status, 'pendente');
     assert.equal(l.sync_status, 'pending');
+    assert.equal(r.preservados, 1, 'e a preservação é contada, não muda');
   });
 
   test('documento de outro terminal é inserido, não confundido com o local', () => {
