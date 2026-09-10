@@ -106,12 +106,15 @@ function paramsConfirmar(id, { remote_id, revisao, numero } = {}, agora) {
 //                       esta fase inteira existe para remover. Fica de fora,
 //                       de propósito: com a revisão velha, a próxima edição
 //                       leva 409 e PARA, que é o desfecho correto.
+// Sem LIMIT: a contagem de correspondencias E a informacao. Zero linhas
+// significa documento novo, uma linha significa identidade resolvida, e DUAS
+// OU MAIS significam que o estado local nao consegue dizer quem e o documento
+// — ver `reconciliarDoCloud`.
 const SQL_LOCALIZAR_DO_CLOUD = `
-  SELECT id, remote_id, sync_status
+  SELECT id, remote_id, numero, sync_status
     FROM orcamentos
    WHERE remote_id = ? OR id = ?
-   ORDER BY (remote_id = ?) DESC
-   LIMIT 1
+   ORDER BY id
 `;
 
 const SQL_ATUALIZAR_DO_CLOUD = `
@@ -170,14 +173,40 @@ function reconciliarDoCloud(db, lista, agora) {
   const atualizar = db.prepare(SQL_ATUALIZAR_DO_CLOUD);
   const inserir = db.prepare(SQL_INSERIR_DO_CLOUD);
 
-  const r = { total: 0, inseridos: 0, atualizados: 0, preservados: 0, falhas: [] };
+  const r = {
+    total: 0, inseridos: 0, atualizados: 0, preservados: 0,
+    ambiguos: 0, ambiguidades: [], falhas: [],
+  };
 
   for (const o of lista || []) {
     r.total++;
     db.exec('SAVEPOINT orc_down');
     try {
       const idRemoto = o.id;
-      const local = localizar.get(idRemoto, idRemoto, idRemoto);
+      const encontrados = localizar.all(idRemoto, idRemoto);
+
+      if (encontrados.length > 1) {
+        // IDENTIDADE AMBIGUA — duas ou mais linhas locais dizem ser este
+        // documento. Isso so acontece com o historico ja corrompido, e a
+        // correcao NAO E DESTA CAMADA: escolher uma seria transformar uma
+        // corrupcao possivel numa decisao automatica invisivel.
+        //
+        // Nada e apagado, fundido, recriado ou alterado. A linha do lote sai
+        // preservada e o caso vai INTEIRO para quem chamou poder registrar.
+        r.ambiguos++;
+        r.ambiguidades.push({
+          motivo: 'identidade_ambigua',
+          cloud_id: idRemoto,
+          numero_cloud: o.numero ?? null,
+          ids_locais: encontrados.map((l) => l.id),
+          remote_ids_locais: encontrados.map((l) => l.remote_id),
+          numeros_locais: encontrados.map((l) => l.numero),
+        });
+        db.exec('RELEASE orc_down');
+        continue;
+      }
+
+      const local = encontrados[0];
       if (!local) {
         inserir.run(...paramsInserirDoCloud(o, agora));
         r.inseridos++;

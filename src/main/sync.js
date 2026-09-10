@@ -376,7 +376,18 @@ async function syncDownOrcamentos() {
     if (orcamentos.length > 0) {
       const r = db.orcamentos.upsertBatch(orcamentos);
       console.log(`[SYNC] Orçamentos: ${r.total} do servidor — ${r.atualizados} atualizados, `
-        + `${r.inseridos} novos, ${r.preservados} preservados (edição local pendente)`);
+        + `${r.inseridos} novos, ${r.preservados} preservados, ${r.ambiguos} ambíguos, `
+        + `${r.falhas.length} falhas`);
+      // Identidade ambígua: duas ou mais linhas locais dizem ser o mesmo
+      // documento. Nada foi escrito, de propósito — decidir aqui esconderia
+      // uma corrupção histórica atrás de uma escolha automática. Vai inteiro
+      // para o log, com todos os ids e números envolvidos.
+      for (const a of r.ambiguidades) {
+        console.warn(`[SYNC] Orçamentos: ${a.motivo} — cloud ${a.cloud_id} (nº${a.numero_cloud})`
+          + ` casa com ids locais [${a.ids_locais.join(', ')}]`
+          + ` remote_ids [${a.remote_ids_locais.join(', ')}]`
+          + ` números [${a.numeros_locais.join(', ')}] — nada alterado`);
+      }
       // Uma linha que falha não derruba as outras desde a 0.6C.3. Mas também
       // não some: o que não foi aplicado é dito, com quem e por quê.
       if (r.falhas.length) {

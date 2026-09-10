@@ -124,18 +124,79 @@ describe('1-3. o caso real: id_local ≠ remote_id', () => {
     assert.equal(ler(sq, 'b').numero, 22);
   });
 
-  test('quando o id do cloud existe como PK de uma e como remote_id de outra, o remote_id vence', () => {
-    // Ambiguidade não medida em produção (0 casos), mas possível. A escolha é
-    // determinística e é a mesma regra do resto do sistema: `remote_id ?? id`.
+  test('GUARDRAIL: duas linhas locais para o mesmo cloud.id → nada é escrito', () => {
+    // local A: id=A, remote_id=X
+    // local B: id=X
+    // cloud:   id=X
+    //
+    // As duas dizem ser o documento X. Escolher uma — como o `LIMIT 1` fazia —
+    // seria transformar uma corrupção histórica numa decisão automática
+    // invisível. A camada de descida não tem informação para decidir isso, e
+    // por isso não decide.
     const sq = banco();
-    local(sq, { id: 'X', remote_id: null, numero: 1 });
-    local(sq, { id: 'outro', remote_id: 'X', numero: 2 });
+    local(sq, { id: 'A', remote_id: 'X', numero: 11, total: 100 });
+    local(sq, { id: 'X', remote_id: null, numero: 22, total: 200 });
+    local(sq, { id: 'c', remote_id: 'c', numero: 33, total: 300 });
+    item(sq, 'iA', 'A', 'CIMENTO');
+    item(sq, 'iX', 'X', 'GESSO');
 
-    baixar(sq, [doCloud({ id: 'X', numero: 99 })]);
+    const antesA = ler(sq, 'A');
+    const antesX = ler(sq, 'X');
 
-    assert.equal(quantas(sq), 2, 'nenhuma linha criada');
-    assert.equal(ler(sq, 'outro').numero, 99, 'quem declara remote_id = X é o documento X');
-    assert.equal(ler(sq, 'X').numero, 1, 'a outra linha fica intacta');
+    const r = baixar(sq, [
+      doCloud({ id: 'X', numero: 99, total: 999 }),   // o ambíguo
+      doCloud({ id: 'c', numero: 44, total: 400 }),   // o resto do lote
+    ]);
+
+    // 1. o item saiu como conflito, e o caso foi registrado por inteiro
+    assert.equal(r.ambiguos, 1);
+    assert.equal(r.atualizados, 1, 'só o item são do lote foi aplicado');
+    assert.equal(r.inseridos, 0);
+    assert.deepEqual(r.falhas, [], 'ambiguidade não é falha de banco — é decisão recusada');
+
+    const a = r.ambiguidades[0];
+    assert.equal(a.motivo, 'identidade_ambigua');
+    assert.equal(a.cloud_id, 'X');
+    assert.equal(a.numero_cloud, 99);
+    assert.deepEqual(a.ids_locais, ['A', 'X']);
+    assert.deepEqual(a.remote_ids_locais, ['X', null]);
+    assert.deepEqual(a.numeros_locais, [11, 22]);
+
+    // 2. nenhuma linha apagada, nenhuma terceira criada
+    assert.equal(quantas(sq), 3);
+    assert.ok(ler(sq, 'A'));
+    assert.ok(ler(sq, 'X'));
+
+    // 3. nenhuma sobrescrita — nem um campo
+    assert.deepEqual(ler(sq, 'A'), antesA);
+    assert.deepEqual(ler(sq, 'X'), antesX);
+    assert.equal(sq.prepare('SELECT COUNT(*) n FROM orcamento_itens').get().n, 2, 'itens intactos');
+
+    // 4. o resto do lote seguiu
+    assert.equal(ler(sq, 'c').numero, 44);
+    assert.equal(ler(sq, 'c').total, 400);
+
+    // 5. rerun determinístico
+    const r2 = baixar(sq, [
+      doCloud({ id: 'X', numero: 99, total: 999 }),
+      doCloud({ id: 'c', numero: 44, total: 400 }),
+    ]);
+    assert.equal(r2.ambiguos, 1);
+    assert.equal(r2.inseridos, 0);
+    assert.deepEqual(r2.ambiguidades[0], a, 'mesmo relato, sem deriva');
+    assert.deepEqual(ler(sq, 'A'), antesA);
+    assert.deepEqual(ler(sq, 'X'), antesX);
+    assert.equal(quantas(sq), 3);
+  });
+
+  test('uma correspondência só continua resolvendo normalmente', () => {
+    // O guardrail não pode ter tornado o caso normal mais frouxo.
+    const sq = banco();
+    local(sq, { id: 'A', remote_id: 'X', numero: 11 });
+    const r = baixar(sq, [doCloud({ id: 'X', numero: 99 })]);
+    assert.equal(r.ambiguos, 0);
+    assert.equal(r.atualizados, 1);
+    assert.equal(ler(sq, 'A').numero, 99);
   });
 });
 
