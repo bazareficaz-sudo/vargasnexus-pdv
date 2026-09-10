@@ -91,11 +91,9 @@ const Orcamentos = (() => {
       window.pdv.orcamentos.listarCloud({ status }),
     ]);
 
-    // Mesclar: cloud sobrescreve locais pelo numero (prioriza local se tiver remote_id igual)
-    const mapa = new Map();
-    for (const o of cloud) mapa.set(String(o.numero), { ...o, _origem: 'cloud' });
-    for (const o of locais) mapa.set(String(o.numero), { ...o, _origem: o.remote_id ? 'sync' : 'local' });
-    let lista = Array.from(mapa.values());
+    // Mesclar por IDENTIDADE (`remote_id ?? id`), nunca pelo numero — ver
+    // lib/identidadeOrcamento.js para o que o numero como chave causava.
+    let lista = IdentidadeOrcamento.mesclar(locais, cloud);
 
     // Filtro de busca para os cloud (db local já filtrou)
     if (busca) {

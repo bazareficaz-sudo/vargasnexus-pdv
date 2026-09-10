@@ -8,6 +8,7 @@ const Database = require('better-sqlite3');
 const path = require('path');
 const { app } = require('electron');
 const { v4: uuidv4 } = require('uuid');
+const orcSql = require('./orcamentoSql');
 
 const DB_PATH = path.join(app.getPath('userData'), 'pdv-vargas.db');
 let db;
@@ -2186,6 +2187,10 @@ const orcamentos = {
   registrar(orc) {
     const id = uuidv4();
     const now = new Date().toISOString();
+    // Numero PROVISORIO. O oficial nasce no servidor (`nextval`), que aceita
+    // buracos por desenho — entao este palpite pode errar, e erra. Ele existe
+    // so para a tela nao ficar sem referencia enquanto o sync nao volta;
+    // `confirmarSincronizacao` o substitui pelo oficial.
     const ultimo = db.prepare('SELECT MAX(numero) as n FROM orcamentos').get();
     const numero = (ultimo?.n || 0) + 1;
 
@@ -2230,16 +2235,17 @@ const orcamentos = {
   },
 
   // Confirmado pelo servidor: guarda o que ele decidiu e encerra a operacao.
-  // `revisao` e `remote_id` sao dele; o `id` local NAO muda — as tres
-  // identidades (local, remota, numero comercial) seguem separadas.
-  confirmarSincronizacao(id, { remote_id, revisao }) {
-    db.prepare(`
-      UPDATE orcamentos
-         SET remote_id = COALESCE(?, remote_id),
-             revisao_base = COALESCE(?, revisao_base),
-             sync_status = 'synced', synced_at = ?, op_chave = NULL, conflito_em = NULL
-       WHERE id = ?
-    `).run(remote_id || null, revisao == null ? null : Number(revisao), new Date().toISOString(), id);
+  // `revisao`, `remote_id` e `numero` sao dele; o `id` local NAO muda — as
+  // tres identidades (local, remota, numero comercial) seguem separadas.
+  //
+  // FASE 0.6C.2 — o `numero` passou a ser gravado aqui. Antes o servidor
+  // devolvia o numero oficial e o cliente o descartava, ficando com o palpite
+  // `MAX(numero)+1` para sempre. Quando o palpite errava (a sequencia do
+  // servidor tem buracos, por desenho), o mesmo documento aparecia duas vezes
+  // na tela: uma pelo numero local, outra pelo numero oficial vindo do cloud.
+  confirmarSincronizacao(id, dados = {}) {
+    db.prepare(orcSql.SQL_CONFIRMAR_SINCRONIZACAO)
+      .run(...orcSql.paramsConfirmar(id, dados, new Date().toISOString()));
   },
 
   // Conflito de versao: nao repete, nao cai no legado, nao some. Fica visivel.
@@ -2276,32 +2282,10 @@ const orcamentos = {
 
   // Importa orçamentos de outros terminais vindos do cloud
   upsertBatch(orcamentos) {
-    const upsert = db.prepare(`
-      INSERT INTO orcamentos
-        (id, remote_id, numero, status, cliente_id, cliente_nome, cliente_telefone,
-         vendedor_nome, forma_pagamento, validade_dias, subtotal, desconto, total,
-         observacao, created_at, synced_at, sync_status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced')
-      ON CONFLICT(id) DO UPDATE SET
-        status          = excluded.status,
-        cliente_nome    = excluded.cliente_nome,
-        cliente_telefone= excluded.cliente_telefone,
-        total           = excluded.total,
-        synced_at       = excluded.synced_at,
-        sync_status     = 'synced'
-      WHERE sync_status = 'synced'
-    `);
+    const upsert = db.prepare(orcSql.SQL_UPSERT_DOWNSYNC);
     const now = new Date().toISOString();
     const run = db.transaction((items) => {
-      for (const o of items) {
-        upsert.run(
-          o.id, o.remote_id, o.numero, o.status,
-          o.cliente_id || null, o.cliente_nome || null, o.cliente_telefone || null,
-          o.vendedor_nome || null, o.forma_pagamento || null, o.validade_dias || 7,
-          o.subtotal || 0, o.desconto || 0, o.total || 0,
-          o.observacao || null, o.created_at, now
-        );
-      }
+      for (const o of items) upsert.run(...orcSql.paramsUpsert(o, now));
     });
     run(orcamentos);
   },

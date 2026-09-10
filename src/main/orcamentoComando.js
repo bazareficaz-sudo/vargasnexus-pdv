@@ -26,6 +26,8 @@
  *     remote_id     como o servidor conhece o documento. Pode ter nascido
  *                   diferente do id local, nos 55 orçamentos anteriores.
  *     numero        referência comercial, do servidor, imutável após criar.
+ *                   O que o cliente calcula antes de sincronizar é PALPITE;
+ *                   `confirmarSincronizacao` troca pelo oficial (0.6C.2).
  *
  * `orcamento_id_efetivo = remote_id ?? id_local` serve só para LOCALIZAR o
  * documento no servidor. Sem essa regra, editar um orçamento antigo mandaria
@@ -84,6 +86,8 @@ function criarComandoOrcamento({ db, api, terminal, log = console }) {
       db.orcamentos.confirmarSincronizacao(orc.id, {
         remote_id: r.dados.orcamento_id || idEfetivo,
         revisao: r.dados.revisao,
+        // O numero local era um palpite (`MAX(numero)+1`). Este e o oficial.
+        numero: r.dados.numero,
       });
       // E só agora a fila é encerrada, senão ela criaria uma revisão fantasma.
       db.sync.concluirPendentesDeOrcamento(orc.id);
@@ -137,7 +141,13 @@ function criarComandoOrcamento({ db, api, terminal, log = console }) {
           // O legado gera o id no servidor. Guardamos como `remote_id` — e é
           // exatamente por isso que `orcamento_id_efetivo` existe: da próxima
           // vez, a rota nova vai localizar ESTE documento em vez de criar outro.
-          db.orcamentos.confirmarSincronizacao(orc.id, { remote_id: res.id, revisao: null });
+          //
+          // O numero tambem e do servidor aqui: o insert legado devolve a
+          // linha gravada. Reconciliar nos dois caminhos e o que impede que a
+          // divergencia volte pelo lado que ainda usa o `anon`.
+          db.orcamentos.confirmarSincronizacao(orc.id, {
+            remote_id: res.id, revisao: null, numero: res.numero,
+          });
         }
       } else {
         await api.atualizarOrcamento(orc.remote_id, {
