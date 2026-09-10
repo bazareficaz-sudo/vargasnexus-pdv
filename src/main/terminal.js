@@ -278,21 +278,27 @@ async function obterToken({ forcar = false } = {}) {
  * log de alarme falso justamente durante o rollout, que é quando alguém
  * precisa conseguir enxergar o alarme verdadeiro.
  */
-async function chamarProtegida(rota, corpo, { jaRenovou = false } = {}) {
+// `metodo` existe desde a 0.6C.5, quando a leitura de orcamento alheio passou a
+// ser autenticada. Tudo o que vale a pena aqui — renovacao de token, armadilha
+// de redirecionamento, mapeamento de motivo — continua num lugar so; o verbo e
+// a unica coisa que varia.
+async function chamarProtegida(rota, corpo, { jaRenovou = false, metodo = 'POST' } = {}) {
   const token = await obterToken();
   if (!token) return { ok: false, motivo: 'sem_identidade', erro: 'Terminal não ativado' };
+
+  const temCorpo = metodo !== 'GET' && corpo != null;
 
   let res;
   try {
     res = await fetch(`${baseUrl()}${rota}`, {
-      method: 'POST',
+      method: metodo,
       headers: {
-        'Content-Type': 'application/json',
+        ...(temCorpo ? { 'Content-Type': 'application/json' } : {}),
         // No cabeçalho, nunca na URL: token em query string vaza por log de
         // acesso, histórico e Referer.
         Authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify(corpo),
+      ...(temCorpo ? { body: JSON.stringify(corpo) } : {}),
       // Manual de proposito: ver `erroDeRedirecionamento`. Seguir um 308 aqui
       // faria o token evaporar sem aviso.
       redirect: 'manual',
@@ -315,10 +321,21 @@ async function chamarProtegida(rota, corpo, { jaRenovou = false } = {}) {
   // um servidor que recuse por outro motivo viraria laço infinito.
   if (json.motivo === 'token_expirado' && !jaRenovou) {
     await obterToken({ forcar: true });
-    return chamarProtegida(rota, corpo, { jaRenovou: true });
+    // O metodo tem que ir junto: sem isto, um GET que pega token expirado
+    // voltaria como POST e a rota responderia 405.
+    return chamarProtegida(rota, corpo, { jaRenovou: true, metodo });
   }
 
-  return { ok: false, motivo: json.motivo || 'recusado', erro: json.erro || `HTTP ${res.status}` };
+  // `status` e `corpo` sao aditivos (0.6C.5): quem so lia `motivo`/`erro`
+  // continua igual, e quem precisa distinguir 404 de recusa passa a conseguir
+  // sem inventar heuristica em cima da mensagem.
+  return {
+    ok: false,
+    motivo: json.motivo || 'recusado',
+    erro: json.erro || `HTTP ${res.status}`,
+    status: res.status,
+    corpo: json,
+  };
 }
 
 /** Chave de idempotência estável para a MESMA intenção. */

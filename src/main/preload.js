@@ -88,6 +88,8 @@ contextBridge.exposeInMainWorld('pdv', {
     atualizarCliente:(id, clienteId, nome, tel) => ipcRenderer.invoke('orcamentos:atualizarCliente', id, clienteId, nome, tel),
     listarCloud:     (filtros)    => ipcRenderer.invoke('orcamentos:listarCloud', filtros),
     getByIdCloud:    (remoteId)   => ipcRenderer.invoke('orcamentos:getByIdCloud', remoteId),
+    lerAlheio:       (id)         => ipcRenderer.invoke('orcamentos:lerAlheio', id),
+    acaoAlheia:      (op)         => ipcRenderer.invoke('orcamentos:acaoAlheia', op),
     atualizar:       (id, dados)  => ipcRenderer.invoke('orcamentos:atualizar', id, dados),
   },
 

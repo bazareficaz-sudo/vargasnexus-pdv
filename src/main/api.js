@@ -1093,6 +1093,70 @@ async function salvarOrcamentoAutenticado(cmd) {
   return { tipo: 'erro', erro: r.erro, motivo: r.motivo };
 }
 
+// FASE 0.6C.5 — snapshot de um orcamento que este terminal NAO mantem.
+//
+// Uma leitura, um estado logico: cabecalho, itens e revisao saem da mesma
+// instrucao SQL na RPC. `getOrcamentoCloud` (abaixo) faz duas consultas
+// separadas e continua existindo so como fallback para terminal sem a flag.
+//
+// A `revisao` devolvida aqui e o que vira `revisao_base` na gravacao seguinte.
+// A RPC fala a lingua do servidor (`orcamento_id`, `validade` como data). A
+// tela fala a do SQLite (`id`, `validade_dias`). A traducao mora aqui, num
+// lugar so — e `revisao` vem junto, porque e ela que vira `revisao_base` na
+// gravacao seguinte.
+function _snapshotParaTela(s) {
+  const criado = s.created_at ? new Date(s.created_at) : null;
+  const validade = s.validade ? new Date(s.validade) : null;
+  const dias = criado && validade
+    ? Math.max(1, Math.round((validade - criado) / 86400000))
+    : 7;
+  return {
+    id: s.orcamento_id,
+    remote_id: s.orcamento_id,
+    numero: s.numero,
+    status: s.status,
+    revisao: s.revisao,
+    empresa_id: s.empresa_id,
+    terminal_id: s.terminal_id,
+    cliente_id: s.cliente_id || null,
+    cliente_nome: s.cliente_nome || null,
+    cliente_telefone: null,
+    vendedor_nome: s.operador_nome || null,
+    forma_pagamento: null,
+    validade_dias: dias,
+    subtotal: Number(s.subtotal || 0),
+    desconto: Number(s.desconto || 0),
+    total: Number(s.total || 0),
+    observacao: s.observacao || null,
+    created_at: s.created_at,
+    itens: (s.itens || []).map((i) => ({
+      produto_id: i.produto_id, produto_nome: i.produto_nome, produto_sku: i.produto_sku,
+      quantidade: Number(i.quantidade || 0), preco_unitario: Number(i.preco_unitario || 0),
+      desconto: Number(i.desconto || 0), total: Number(i.total || 0),
+    })),
+  };
+}
+
+async function lerOrcamentoAutenticado(orcamentoId) {
+  const terminal = require('./terminal');
+  const r = await terminal.chamarProtegida(
+    `/api/pdv/orcamentos/${encodeURIComponent(orcamentoId)}`, null, { metodo: 'GET' });
+
+  if (r.ok) return { tipo: 'ok', dados: _snapshotParaTela(r.dados) };
+  if (r.motivo === 'sem_identidade' || r.motivo === 'rota_desligada') {
+    return { tipo: 'legado', motivo: r.motivo };
+  }
+  // Offline e um desfecho proprio: a tela precisa dizer "sem conexao", nunca
+  // "nao encontrado".
+  if (r.motivo === 'rede' || r.motivo === 'url_redireciona') {
+    return { tipo: 'offline', erro: r.erro };
+  }
+  if (r.status === 404 || r.corpo?.estado === 'nao_encontrado') {
+    return { tipo: 'nao_encontrado' };
+  }
+  return { tipo: 'erro', motivo: r.motivo, erro: r.erro };
+}
+
 async function sincronizarOrcamento(payload) {
   const { data: orc, error } = await supabase.from('orcamentos').insert({
     empresa_id: payload.empresa_id,
@@ -1547,6 +1611,7 @@ module.exports = {
   salvarOrcamentoAutenticado,
   sincronizarOrcamentos,
   orcamentosCanceladosNoServidor,
+  lerOrcamentoAutenticado,
   atualizarStatusOrcamento,
   atualizarOrcamento,
   listarOrcamentosCloud,

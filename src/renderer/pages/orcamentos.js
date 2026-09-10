@@ -196,13 +196,24 @@ const Orcamentos = (() => {
   }
 
   async function abrirEdicao(id) {
-    const orc = await window.pdv.orcamentos.getById(id);
-    if (!orc) { Toast.show('Orçamento não encontrado', 'error'); return; }
+    let orc = await window.pdv.orcamentos.getById(id);
+    let alheio = null;
+
+    if (!orc) {
+      // 0.6C.5 — documento de outro terminal. A revisão do snapshot vira a
+      // `revisao_base` da gravação: se alguém editar no intervalo, o servidor
+      // recusa em vez de deixar um sobrescrever o outro.
+      const r = await _carregarAlheio(id);
+      if (!r) return;
+      orc = r;
+      alheio = { revisao: r.revisao };
+    }
+
     if (!AcoesOrcamento.podeEditar(orc)) {
       Toast.show('Este orçamento não pode ser editado', 'error'); return;
     }
     Modal.close();
-    _orcamentoEditando = { id: orc.id, numero: orc.numero };
+    _orcamentoEditando = { id: orc.id, numero: orc.numero, alheio };
     _cliente = orc.cliente_id ? { id: orc.cliente_id, nome: orc.cliente_nome, telefone: orc.cliente_telefone } : null;
     _cart = (orc.itens || []).map(i => ({
       produto_id: i.produto_id, produto_nome: i.produto_nome,
@@ -905,7 +916,26 @@ const Orcamentos = (() => {
     btns.forEach(b => { b.disabled=true; b.textContent='Salvando...'; });
 
     try {
-      if (_orcamentoEditando) {
+      if (_orcamentoEditando?.alheio) {
+        // Documento alheio: a operação vai para a fila (com a chave em disco) e
+        // sobe pela rota autenticada. Nada é gravado como documento local.
+        const r = await window.pdv.orcamentos.acaoAlheia({
+          orcamento_id: _orcamentoEditando.id,
+          revisao_base: _orcamentoEditando.alheio.revisao,
+          acao: 'salvar', orc, itens: orc.itens,
+        });
+        if (r.tipo === 'conflito') {
+          btns.forEach(b => { b.disabled=false; b.textContent='Salvar'; });
+          _avisarConflito(_orcamentoEditando.numero);
+          return;
+        }
+        if (r.tipo !== 'ok') throw new Error(r.erro || 'Falha ao salvar o orçamento');
+        Toast.show(`Orçamento #${_orcamentoEditando.numero} atualizado!`, 'success');
+        _orcamentoEditando = null;
+        _modoNovo = false;
+        document.getElementById('orc-root').innerHTML = _renderLista();
+        load();
+      } else if (_orcamentoEditando) {
         await window.pdv.orcamentos.atualizar(_orcamentoEditando.id, orc);
         Toast.show(`Orçamento #${_orcamentoEditando.numero} atualizado!`, 'success');
         _orcamentoEditando = null;
@@ -939,8 +969,29 @@ const Orcamentos = (() => {
     let isCloudOnly = false;
     let orc = await window.pdv.orcamentos.getById(id);
     if (!orc) {
-      // Buscar no cloud (orçamento de outro terminal)
-      orc = await window.pdv.orcamentos.getByIdCloud(id);
+      // 0.6C.5 — documento de outro terminal: snapshot sob demanda, coerente,
+      // pela rota autenticada. Nada disto é gravado aqui.
+      const r = await window.pdv.orcamentos.lerAlheio(id);
+
+      if (r.tipo === 'offline') {
+        // NUNCA "não encontrado": o documento existe, o que falta é conexão.
+        // Dizer a coisa errada aqui já custou confiança do operador antes.
+        Modal.open(`
+<div style="padding:8px 4px;line-height:1.6">
+  <p>Este orçamento foi criado em outro terminal. É necessária conexão com a
+  internet para carregar os itens e realizar alterações.</p>
+  <p style="color:var(--text3);font-size:12px;margin-top:12px">
+  Assim que a conexão voltar, abra novamente.</p>
+</div>`, 'Orçamento de outro terminal');
+        return;
+      }
+      if (r.tipo === 'nao_encontrado') { Toast.show('Orçamento não encontrado', 'error'); return; }
+      if (r.tipo !== 'ok') { Toast.show(r.erro || 'Falha ao carregar o orçamento', 'error'); return; }
+
+      // Só o snapshot ATÔMICO habilita ação cruzada. A leitura legada faz duas
+      // consultas e pode trazer cabeçalho e itens de revisões diferentes —
+      // serve para ver, não para agir.
+      orc = { ...r.dados, _origem: r.origem === 'autenticada' ? 'snapshot' : 'cloud' };
       isCloudOnly = true;
     }
     if (!orc) { Toast.show('Orçamento não encontrado', 'error'); return; }
@@ -953,7 +1004,8 @@ const Orcamentos = (() => {
     const badge = { pendente:'<span class="badge badge-yellow">Pendente</span>', aprovado:'<span class="badge badge-green">Aprovado</span>', convertido:'<span class="badge" style="background:var(--accent-bg);color:var(--accent)">Convertido</span>', cancelado:'<span class="badge badge-red">Cancelado</span>', expirado:'<span class="badge" style="background:var(--bg3);color:var(--text3)">Expirado</span>' }[st] || `<span class="badge">${st}</span>`;
 
     const descItens = (orc.itens||[]).reduce((s,i)=>s+(i.desconto||0), 0);
-    const podeAcionar = !isCloudOnly && !AcoesOrcamento.ehTerminal(orc);
+    const podeAcionar = AcoesOrcamento.podeEditar(orc) || AcoesOrcamento.podeCancelar(orc);
+    const ehAlheio = AcoesOrcamento.ehSnapshotAlheio(orc);
 
     Modal.open(`
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
@@ -1006,10 +1058,15 @@ ${orc.observacao?`<div style="background:var(--bg3);border-radius:8px;padding:10
   </tfoot>
 </table>
 <div class="modal-actions" style="gap:8px">
-  ${podeAcionar?`
-  <button class="btn btn-primary" onclick="Orcamentos.converterEmVenda('${orc.id}');Modal.close()">🛒 Converter em Venda</button>
-  <button class="btn btn-ghost" onclick="Orcamentos.abrirEdicao('${orc.id}')">✏️ Editar</button>
+  ${AcoesOrcamento.podeConverter(orc)?`
+  <button class="btn btn-primary" onclick="Orcamentos.converterEmVenda('${orc.id}');Modal.close()">🛒 Converter em Venda</button>`:''}
+  ${AcoesOrcamento.podeEditar(orc)?`
+  <button class="btn btn-ghost" onclick="Orcamentos.abrirEdicao('${orc.id}')">✏️ Editar</button>`:''}
+  ${AcoesOrcamento.podeCancelar(orc)?`
   <button class="btn btn-ghost" onclick="Orcamentos.cancelar('${orc.id}');Modal.close()">🗑️ Cancelar</button>`:''}
+  ${ehAlheio?`<span style="font-size:11px;color:var(--text3);align-self:center">
+    de outro terminal · revisão ${orc.revisao} · conversão em venda ainda não disponível
+  </span>`:''}
   <button class="btn btn-ghost" style="color:#25D366"
     onclick="${orc.cliente_telefone ? `WA.abrirModal('Enviar orçamento via WhatsApp','${(orc.cliente_telefone||'').replace(/'/g,"\\'")}','orcamento','${orc.id}')` : `WA.abrirModalCapturaCliente('orcamento','${orc.id}','${(orc.cliente_nome||'').replace(/'/g,"\\'")}')` }">${WA_ICON} WhatsApp</button>
   <button class="btn btn-ghost" onclick="Orcamentos._imprimirOrcamento('${orc.id}')">🖨️ Imprimir</button>
@@ -1027,15 +1084,73 @@ ${orc.observacao?`<div style="background:var(--bg3);border-radius:8px;padding:10
     Toast.show(`Orçamento #${orc.numero} carregado no PDV — finalize a venda normalmente`, 'success');
   }
 
+  /**
+   * Snapshot de documento alheio, com as três respostas honestas.
+   * Devolve `null` quando já mostrou a mensagem certa ao operador.
+   */
+  async function _carregarAlheio(id) {
+    const r = await window.pdv.orcamentos.lerAlheio(id);
+    if (r.tipo === 'offline') {
+      Toast.show('Sem conexão. Este orçamento é de outro terminal e precisa de internet.', 'error');
+      return null;
+    }
+    if (r.tipo === 'nao_encontrado') { Toast.show('Orçamento não encontrado', 'error'); return null; }
+    if (r.tipo !== 'ok') { Toast.show(r.erro || 'Falha ao carregar o orçamento', 'error'); return null; }
+    if (r.origem !== 'autenticada') {
+      // Leitura legada faz duas consultas: pode misturar revisões. Serve para
+      // ver, nunca para agir.
+      Toast.show('Este terminal ainda não pode alterar orçamentos de outros terminais.', 'error');
+      return null;
+    }
+    return { ...r.dados, _origem: 'snapshot' };
+  }
+
+  /** Conflito de revisão em documento alheio NÃO pode virar estado silencioso. */
+  function _avisarConflito(numero) {
+    Modal.open(`
+<div style="padding:8px 4px;line-height:1.6">
+  <p>O orçamento <strong>#${numero}</strong> foi alterado em outro terminal
+  enquanto você editava.</p>
+  <p>Nada foi sobrescrito. Recarregue para ver a versão atual e refazer a
+  alteração, se ainda fizer sentido.</p>
+</div>
+<div class="modal-actions">
+  <button class="btn btn-primary" onclick="Modal.close();Orcamentos.load()">Recarregar</button>
+</div>`, 'Versão desatualizada');
+  }
+
   async function cancelar(id) {
     // 0.6C.4: a partir daqui um orçamento pode chegar cancelado sozinho, vindo
     // de outro terminal. Esconder o botão não basta — a regra tem que existir.
-    const atual = await window.pdv.orcamentos.getById(id);
+    let atual = await window.pdv.orcamentos.getById(id);
+    let alheio = null;
+
+    if (!atual) {
+      // 0.6C.5 — cancelar documento alheio não depende de ter os itens aqui:
+      // depende da identidade remota e da revisão atual.
+      atual = await _carregarAlheio(id);
+      if (!atual) return;
+      alheio = { revisao: atual.revisao };
+    }
+
     if (!AcoesOrcamento.podeCancelar(atual)) {
       Toast.show('Este orçamento não pode ser cancelado', 'error'); return;
     }
     const ok = await window.pdv.app.confirm('Cancelar este orçamento?');
     if (!ok) return;
+
+    if (alheio) {
+      const r = await window.pdv.orcamentos.acaoAlheia({
+        orcamento_id: atual.id, revisao_base: alheio.revisao, acao: 'cancelar',
+        orc: { ...atual, status: 'cancelado' }, itens: atual.itens || [],
+      });
+      if (r.tipo === 'conflito') { _avisarConflito(atual.numero); return; }
+      if (r.tipo !== 'ok') { Toast.show(r.erro || 'Falha ao cancelar', 'error'); return; }
+      Toast.show(`Orçamento #${atual.numero} cancelado`, 'success');
+      load();
+      return;
+    }
+
     await window.pdv.orcamentos.cancelar(id);
     Toast.show('Orçamento cancelado', 'success');
     load();

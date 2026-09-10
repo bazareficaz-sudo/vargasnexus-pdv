@@ -166,7 +166,71 @@ function criarComandoOrcamento({ db, api, terminal, log = console }) {
     }
   }
 
-  return { executar };
+  /**
+   * FASE 0.6C.5 — operacao sobre um orcamento que este terminal NAO mantem.
+   *
+   * ── A FRONTEIRA ─────────────────────────────────────────────────────
+   *
+   * O documento alheio NAO vira local: nada e escrito em `orcamentos` nem em
+   * `orcamento_itens`. O que existe em disco e a OPERACAO — payload, revisao
+   * base e chave — na `sync_queue`, e ela some quando o servidor confirma.
+   *
+   * Essa distincao nao e formal. `orcamento_itens` local significa "documento
+   * que este terminal mantem": e o que a tela usa para decidir se pode editar
+   * offline, e o que a 0.6C.5 decidiu nao replicar. Payload de operacao
+   * pendente e outra categoria de dado — e o que ja acontece com qualquer
+   * item da fila.
+   *
+   * ── POR QUE PASSA PELA FILA ─────────────────────────────────────────
+   *
+   * Poderia ser so memoria, e ai um timeout deixaria o operador sem saber se
+   * gravou. A chave nasce em disco ANTES da primeira tentativa, como no resto
+   * da fase — e e isso que faz imediata + retry darem um efeito so.
+   *
+   * `revisao_base` vem do SNAPSHOT que a tela leu, nunca de estado local:
+   * este terminal nao tem estado desse documento.
+   */
+  async function executarAlheio(op) {
+    if (!op || !op.orcamento_id) return { tipo: 'sem_orcamento' };
+    if (!ACOES.includes(op.acao)) throw new Error(`Ação de orçamento desconhecida: ${op.acao}`);
+
+    const r = await api.salvarOrcamentoAutenticado({
+      orcamento_id: op.orcamento_id,
+      revisao_base: Number(op.revisao_base || 0),
+      idempotency_key: op.op_chave,
+      acao: op.acao,
+      orc: op.orc || {},
+      itens: op.itens || [],
+    });
+
+    if (r.tipo === 'ok') {
+      log.log(`[ORC] ${op.acao} alheio nº ${r.dados.numero} rev ${r.dados.revisao}`
+        + `${r.dados.repetido ? ' (replay)' : ''} pela rota autenticada`);
+      return { tipo: 'ok', dados: r.dados };
+    }
+
+    if (r.tipo === 'conflito') {
+      // Alguem editou entre o snapshot e a gravacao. Nao insiste, nao cai no
+      // legado — e, diferente do documento local, isto NAO pode virar estado
+      // silencioso: quem esta olhando a tela precisa saber e recarregar.
+      log.warn(`[ORC] Conflito de versão em documento alheio ${op.orcamento_id}`);
+      return { tipo: 'conflito', erro: r.erro };
+    }
+
+    if (r.tipo === 'legado') {
+      // Sem rota autenticada nao ha como agir sobre documento alheio com
+      // garantia de revisao. O legado nao valida revisao nenhuma, entao usa-lo
+      // aqui seria sobrescrever a edicao de outro terminal em silencio.
+      await registrarFallback(op.acao, op.op_chave, r.motivo);
+      log.warn(`[ORC] Documento alheio exige rota autenticada (${r.motivo}) — recusado`);
+      return { tipo: 'indisponivel', motivo: r.motivo };
+    }
+
+    log.warn(`[ORC] Rota autenticada recusou documento alheio (${r.motivo}): ${r.erro}`);
+    return { tipo: 'erro', motivo: r.motivo, erro: r.erro };
+  }
+
+  return { executar, executarAlheio };
 }
 
 module.exports = { criarComandoOrcamento, ACOES };

@@ -441,6 +441,57 @@ ipcMain.handle('orcamentos:listarCloud', async (_, filtros) => {
 ipcMain.handle('orcamentos:getByIdCloud', async (_, remoteId) => {
   try { return await api.getOrcamentoCloud(remoteId); } catch(e) { return null; }
 });
+
+// FASE 0.6C.5 — SNAPSHOT DE DOCUMENTO ALHEIO.
+//
+// Devolve o TIPO do desfecho, nunca `null`. Foi por devolver `null` que a tela
+// dizia "Orçamento não encontrado" quando o problema era falta de rede — uma
+// mentira sobre um documento que existe.
+//
+// Nada disto grava no SQLite: o documento alheio continua alheio.
+ipcMain.handle('orcamentos:lerAlheio', async (_, orcamentoId) => {
+  const r = await api.lerOrcamentoAutenticado(orcamentoId);
+
+  if (r.tipo === 'ok') return { tipo: 'ok', dados: r.dados, origem: 'autenticada' };
+  if (r.tipo === 'offline' || r.tipo === 'nao_encontrado') return r;
+
+  if (r.tipo === 'legado') {
+    // Terminal ainda nao migrado: cai no caminho antigo, contado como sempre.
+    // Ele NAO garante o par cabecalho+itens — sao duas consultas — entao o
+    // snapshot vem marcado, e a acao cruzada nao e oferecida em cima dele.
+    try {
+      await terminal.registrarFallback('orcamentos.ler', `ler:${orcamentoId}`, r.motivo);
+    } catch (e) { console.warn('[ORC] Não consegui registrar o fallback de leitura:', e.message); }
+    try {
+      const orc = await api.getOrcamentoCloud(orcamentoId);
+      if (!orc) return { tipo: 'nao_encontrado' };
+      return { tipo: 'ok', dados: orc, origem: 'legado' };
+    } catch (e) {
+      return { tipo: 'offline', erro: e.message };
+    }
+  }
+  return { tipo: 'erro', erro: r.erro || 'Falha ao carregar o orçamento' };
+});
+
+// FASE 0.6C.5 — AGIR SOBRE DOCUMENTO ALHEIO.
+//
+// A operacao entra na fila ANTES da primeira tentativa (a chave nasce em
+// disco) e e executada em seguida. Se a rede cair no meio, o retry usa a mesma
+// chave e o servidor reconhece o replay — um efeito so.
+//
+// `revisao_base` vem do snapshot que a tela leu. Se alguem editou no intervalo,
+// o servidor responde conflito e NADA e sobrescrito.
+ipcMain.handle('orcamentos:acaoAlheia', async (_, op) => {
+  const fila = db.orcamentos.enfileirarOperacaoAlheia(op);
+  const { criarComandoOrcamento } = require('./orcamentoComando');
+  const cmd = criarComandoOrcamento({ db, api, terminal });
+  const r = await cmd.executarAlheio({ ...op, op_chave: fila.op_chave });
+
+  // Sucesso, conflito e indisponivel encerram o item: repetir nao muda nada.
+  // 'erro' e transitorio e fica na fila, com a MESMA chave.
+  if (r.tipo !== 'erro') db.sync.marcarProcessado(fila.id);
+  return { ...r, op_chave: fila.op_chave };
+});
 ipcMain.handle('orcamentos:getById', (_, id) => db.orcamentos.getById(id));
 ipcMain.handle('orcamentos:cancelar', async (_, id) => {
   db.orcamentos.cancelar(id);

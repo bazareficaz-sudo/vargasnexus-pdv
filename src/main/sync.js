@@ -713,6 +713,18 @@ async function processarFilaSync() {
         if (r.tipo === 'erro') throw new Error(r.erro || 'Falha ao sincronizar orcamento');
       }
 
+      if (item.entidade === 'orcamento_alheio') {
+        // 0.6C.5 — documento de outro terminal. A fila carrega a operacao
+        // inteira porque nao ha documento local de onde reconstrui-la.
+        const { criarComandoOrcamento } = require('./orcamentoComando');
+        const cmd = criarComandoOrcamento({ db, api, terminal: require('./terminal') });
+        const r = await cmd.executarAlheio(payload);
+        // 'erro' e transitorio e volta para a fila com a MESMA chave.
+        // 'conflito' e 'indisponivel' nao se resolvem repetindo: encerram aqui
+        // e ja foram ditos no log.
+        if (r.tipo === 'erro') throw new Error(r.erro || 'Falha em orcamento alheio');
+      }
+
       db.sync.marcarProcessado(item.id);
     } catch (err) {
       console.error(`[SYNC] Erro ao processar item ${item.id}:`, err.message);

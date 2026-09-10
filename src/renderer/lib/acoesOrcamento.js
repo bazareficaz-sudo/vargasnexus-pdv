@@ -35,14 +35,43 @@
     return !!o && TERMINAIS.indexOf(o.status) !== -1;
   }
 
-  /** Sem dados locais (só cabeçalho do cloud) não há o que editar ou vender. */
+  /**
+   * Só o cabeçalho, vindo da listagem do cloud. Não dá para editar nem vender
+   * o que não tem itens.
+   */
   function ehSomenteNuvem(o) {
     return !!o && o._origem === 'cloud';
   }
 
+  /**
+   * FASE 0.6C.5 — snapshot completo de documento alheio, lido sob demanda.
+   *
+   * Tem cabeçalho, itens E revisão, tudo do mesmo instante. Dá para agir em
+   * cima dele — mas online, e com a revisão do snapshot valendo como base:
+   * se alguém editou no intervalo, o servidor recusa.
+   */
+  function ehSnapshotAlheio(o) {
+    return !!o && o._origem === 'snapshot';
+  }
+
   function podeEditar(o) { return !!o && !ehTerminal(o) && !ehSomenteNuvem(o); }
-  function podeConverter(o) { return !!o && !ehTerminal(o) && !ehSomenteNuvem(o); }
   function podeCancelar(o) { return !!o && !ehTerminal(o) && !ehSomenteNuvem(o); }
+
+  /**
+   * Converter em venda é a ÚNICA ação que documento alheio não recebe nesta
+   * fase — decisão D-a.
+   *
+   * O motivo não é a leitura: é a escrita do outro lado. `marcarConvertido`
+   * ainda é um quinto caminho, fora do `orcamentoComando`, gravando pelo
+   * `anon` sem `registrarFallback`, e com o erro engolido em duas camadas — a
+   * venda entra e o orçamento pode continuar aberto, em silêncio. Fazer
+   * conversão cruzada em cima disso seria construir sobre um defeito conhecido.
+   *
+   * Sai do bloqueio na 0.6C.6, que trata a conversão inteira.
+   */
+  function podeConverter(o) {
+    return !!o && !ehTerminal(o) && !ehSomenteNuvem(o) && !ehSnapshotAlheio(o);
+  }
 
   /**
    * Regra dos botões da LISTA, mantida como estava: lá só aparecem para os
@@ -54,7 +83,8 @@
     return podeEditar(o) && (o.status === 'pendente' || o.status === 'aprovado');
   }
 
-  const api = { TERMINAIS, ehTerminal, ehSomenteNuvem, podeEditar, podeConverter, podeCancelar, botoesDeEdicaoNaLista };
+  const api = { TERMINAIS, ehTerminal, ehSomenteNuvem, ehSnapshotAlheio,
+    podeEditar, podeConverter, podeCancelar, botoesDeEdicaoNaLista };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else raiz.AcoesOrcamento = api;

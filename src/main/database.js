@@ -2292,6 +2292,25 @@ const orcamentos = {
     return db.transaction((items) => orcSql.reconciliarDoCloud(db, items, now))(orcamentos);
   },
 
+  // FASE 0.6C.5 — operacao sobre documento que este terminal NAO mantem.
+  //
+  // Grava a OPERACAO, nunca o DOCUMENTO: nada entra em `orcamentos` nem em
+  // `orcamento_itens`. A chave nasce aqui, em disco, antes da primeira
+  // tentativa — e e ela que faz imediata + retry darem um efeito so.
+  enfileirarOperacaoAlheia(op) {
+    const chave = op.op_chave || `${op.orcamento_id}:r${Number(op.revisao_base || 0)}:${op.acao}`;
+    const jaNaFila = db.prepare(
+      "SELECT id FROM sync_queue WHERE entidade='orcamento_alheio' AND payload LIKE ? AND processado=0"
+    ).get(`%"op_chave":"${chave}"%`);
+    if (jaNaFila) return { id: jaNaFila.id, op_chave: chave, repetida: true };
+
+    const id = uuidv4();
+    db.prepare(`INSERT INTO sync_queue (id, entidade, operacao, payload, created_at) VALUES (?,?,?,?,?)`)
+      .run(id, 'orcamento_alheio', op.acao, JSON.stringify({ ...op, op_chave: chave }),
+           new Date().toISOString());
+    return { id, op_chave: chave, repetida: false };
+  },
+
   // FASE 0.6C.4 — as identidades que este terminal conhece, na forma como o
   // SERVIDOR as conhece (`remote_id ?? id`). E o que limita a busca por
   // cancelamentos ao que pode ser aplicado aqui.
