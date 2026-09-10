@@ -1194,6 +1194,40 @@ async function sincronizarOrcamentos() {
   return (data || []).map(_mapOrcamentoRemoto);
 }
 
+// FASE 0.6C.4 — quais dos documentos QUE ESTE TERMINAL CONHECE o servidor ja
+// cancelou.
+//
+// Perguntar so pelas identidades locais, em vez de baixar todo cancelado que
+// existe, tem tres consequencias boas: o custo fica limitado pela tabela local
+// e nao cresce com o historico; nao volta tombstone que teria de ser
+// descartado (cancelamento NAO cria documento); e a descida A, validada na
+// 0.6C.3, nao e tocada.
+//
+// O filtro de UUID nao e decorativo: este terminal tem um resquicio Base44
+// com `remote_id = '6a481d1dc98da82e12921a85'`, e mandar isso para uma coluna
+// uuid derruba a consulta INTEIRA com 22P02 — medido. Um id de outra era nao
+// pode cegar a sincronizacao dos demais.
+const _UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+async function orcamentosCanceladosNoServidor(identidades) {
+  const usuario = store.get('auth.usuario') || {};
+  const empresaId = usuario.empresa_estoque_id || usuario.empresa_id;
+  const uuids = [...new Set((identidades || []).filter((x) => _UUID.test(String(x))))];
+  const achados = [];
+  // Em lotes: 200 uuids numa querystring passariam de 7 KB.
+  for (let i = 0; i < uuids.length; i += 100) {
+    let query = supabase.from('orcamentos')
+      .select('id, numero, status')
+      .eq('status', 'cancelado')
+      .in('id', uuids.slice(i, i + 100));
+    if (empresaId) query = query.eq('empresa_id', empresaId);
+    const { data, error } = await query;
+    if (error) throw new Error(error.message);
+    achados.push(...(data || []));
+  }
+  return achados;
+}
+
 async function listarOrcamentosCloud(filtros = {}) {
   const usuario = store.get('auth.usuario') || {};
   const empresaId = usuario.empresa_estoque_id || usuario.empresa_id;
@@ -1512,6 +1546,7 @@ module.exports = {
   sincronizarOrcamento,
   salvarOrcamentoAutenticado,
   sincronizarOrcamentos,
+  orcamentosCanceladosNoServidor,
   atualizarStatusOrcamento,
   atualizarOrcamento,
   listarOrcamentosCloud,

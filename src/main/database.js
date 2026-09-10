@@ -2292,6 +2292,20 @@ const orcamentos = {
     return db.transaction((items) => orcSql.reconciliarDoCloud(db, items, now))(orcamentos);
   },
 
+  // FASE 0.6C.4 — as identidades que este terminal conhece, na forma como o
+  // SERVIDOR as conhece (`remote_id ?? id`). E o que limita a busca por
+  // cancelamentos ao que pode ser aplicado aqui.
+  identidadesConhecidas(limite = 200) {
+    return db.prepare(`SELECT COALESCE(remote_id, id) ident FROM orcamentos
+       ORDER BY created_at DESC LIMIT ?`).all(limite).map((r) => r.ident);
+  },
+
+  // Cancelamento vindo do servidor. Estado terminal, nunca exclusao.
+  aplicarCancelamentos(tombstones) {
+    const now = new Date().toISOString();
+    return db.transaction((itens) => orcSql.aplicarCancelamentosDoCloud(db, itens, now))(tombstones);
+  },
+
   getById(id) {
     const orc = db.prepare('SELECT * FROM orcamentos WHERE id = ?').get(id);
     if (!orc) return null;

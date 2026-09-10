@@ -106,6 +106,7 @@ async function syncNow(win) {
     await syncDownUrlImpressao();
     await syncDownFaltas();
     await syncDownOrcamentos();
+    await syncDownCancelamentosOrcamentos();
 
     // Atualizar timestamps
     const agora = new Date().toISOString();
@@ -397,6 +398,48 @@ async function syncDownOrcamentos() {
     }
   } catch (err) {
     console.warn('[SYNC] Orçamentos: erro (não crítico):', err.message);
+  }
+}
+
+// FASE 0.6C.4 — cancelamento não desce pela consulta de ativos.
+//
+// `syncDownOrcamentos` busca `status IN ('aberto')`. Um orçamento cancelado
+// noutro terminal simplesmente some do lote, e a linha local fica 'aberto'
+// para sempre — com botão de editar, converter em venda e cancelar de novo.
+// Este segundo fluxo pergunta, só pelos documentos que ESTE terminal já tem,
+// quais o servidor considera cancelados.
+//
+// Fluxo separado de propósito: a descida de ativos, validada na 0.6C.3, não é
+// tocada, e uma falha aqui não pode atrapalhar aquela.
+async function syncDownCancelamentosOrcamentos() {
+  try {
+    const identidades = db.orcamentos.identidadesConhecidas();
+    if (!identidades.length) return;
+    const cancelados = await api.orcamentosCanceladosNoServidor(identidades);
+    if (!cancelados.length) return;
+
+    const r = db.orcamentos.aplicarCancelamentos(cancelados);
+    console.log(`[SYNC] Orçamentos cancelados: ${r.total} recebidos, ${r.aplicados} aplicados, `
+      + `${r.ja_cancelados} já cancelados, ${r.conflitos.length} conflitos, `
+      + `${r.desconhecidos} desconhecidos, ${r.ambiguos} ambíguos, ${r.falhas.length} falhas`);
+
+    // Conflito não se resolve sozinho, então precisa ser dito.
+    for (const c of r.conflitos) {
+      console.warn(`[SYNC] Orçamento nº${c.numero}: cancelamento remoto não aplicado —`
+        + ` existe operação local pendente (${c.sync_status}`
+        + `${c.tem_op_chave ? ', com chave de operação viva' : ''}).`);
+    }
+    for (const a of r.ambiguidades) {
+      console.warn(`[SYNC] Orçamentos cancelados: ${a.motivo} — cloud ${a.cloud_id} (nº${a.numero_cloud})`
+        + ` casa com ids locais [${a.ids_locais.join(', ')}]`
+        + ` remote_ids [${a.remote_ids_locais.join(', ')}] — nada alterado`);
+    }
+    if (r.falhas.length) {
+      console.warn(`[SYNC] Orçamentos cancelados: ${r.falhas.length} não aplicados —`,
+        r.falhas.slice(0, 3).map((f) => `nº${f.numero}: ${f.erro}`).join(' | '));
+    }
+  } catch (err) {
+    console.warn('[SYNC] Orçamentos cancelados: erro (não crítico):', err.message);
   }
 }
 

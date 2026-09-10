@@ -111,7 +111,7 @@ function paramsConfirmar(id, { remote_id, revisao, numero } = {}, agora) {
 // OU MAIS significam que o estado local nao consegue dizer quem e o documento
 // — ver `reconciliarDoCloud`.
 const SQL_LOCALIZAR_DO_CLOUD = `
-  SELECT id, remote_id, numero, sync_status
+  SELECT id, remote_id, numero, status, sync_status, op_chave
     FROM orcamentos
    WHERE remote_id = ? OR id = ?
    ORDER BY id
@@ -229,10 +229,127 @@ function reconciliarDoCloud(db, lista, agora) {
   return r;
 }
 
+// ─── DESCIDA B: CANCELAMENTO ─────────────────────────────────────────────
+//
+// ── A LACUNA (0.6C.4) ───────────────────────────────────────────────────
+//
+// A descida A busca `status IN ('aberto')`. Um orcamento cancelado no
+// servidor simplesmente PARA DE DESCER — nao chega nenhuma noticia dele. Se
+// este terminal ja tinha o documento, a linha local fica 'aberto' para sempre
+// e a tela segue oferecendo editar, converter em venda e cancelar de novo,
+// sobre um documento que nao existe mais como ativo.
+//
+// Cancelamento e ESTADO TERMINAL, nao exclusao: nada e apagado, nada e
+// recriado, o historico continua visivel.
+//
+// ── POR QUE SO O `status` E ESCRITO ─────────────────────────────────────
+//
+// A mesma regra da 0.6C.3: nao se escreve coluna que o payload nao consegue
+// expressar. O tombstone diz UMA coisa — "este documento foi cancelado". Nao
+// traz itens, nao traz a revisao correspondente, nao traz cabecalho novo.
+// Entao numero, total, revisao_base, id, remote_id e itens ficam intactos.
+//
+// ── O VOCABULARIO ───────────────────────────────────────────────────────
+//
+// Servidor e Electron NAO usam as mesmas palavras: 'aberto' no servidor
+// corresponde a 'pendente' aqui, e foi por confundir os dois que a 0.6C.3
+// parou de escrever `status` na descida A. 'cancelado' e a UNICA palavra que
+// as duas pontas usam com o mesmo sentido — e por isso a traducao e explicita
+// e cobre so ela.
+const STATUS_REMOTO_PARA_LOCAL = { cancelado: 'cancelado' };
+
+const SQL_MARCAR_CANCELADO = `
+  UPDATE orcamentos
+     SET status = ?, synced_at = ?
+   WHERE id = ?
+`;
+
+// Conflito: existe operacao local pendente sobre um documento que o servidor
+// ja cancelou. NAO se resolve automaticamente — nem apagando a operacao, nem
+// sobrescrevendo, nem marcando como sincronizado. `conflito_em` e a estrutura
+// que ja existe para "olhe este documento"; e escrito UMA vez, e nada mais na
+// linha e tocado. Em particular `op_chave` SOBREVIVE: e ela que garante que a
+// operacao local, quando subir, nao vire um segundo efeito.
+const SQL_MARCAR_CONFLITO_DE_CANCELAMENTO = `
+  UPDATE orcamentos
+     SET conflito_em = ?
+   WHERE id = ? AND conflito_em IS NULL
+`;
+
+/**
+ * Aplica os tombstones de cancelamento, um por vez.
+ *
+ * Mesma disciplina da descida A: identidade resolvida antes de escrever,
+ * ambiguidade nunca resolvida em silencio, SAVEPOINT por linha, resumo
+ * contado e devolvido.
+ */
+function aplicarCancelamentosDoCloud(db, lista, agora) {
+  const localizar = db.prepare(SQL_LOCALIZAR_DO_CLOUD);
+  const cancelar = db.prepare(SQL_MARCAR_CANCELADO);
+  const marcarConflito = db.prepare(SQL_MARCAR_CONFLITO_DE_CANCELAMENTO);
+
+  const r = {
+    total: 0, aplicados: 0, ja_cancelados: 0, desconhecidos: 0,
+    conflitos: [], ambiguos: 0, ambiguidades: [], falhas: [],
+  };
+
+  for (const o of lista || []) {
+    r.total++;
+    db.exec('SAVEPOINT orc_cancel');
+    try {
+      const encontrados = localizar.all(o.id, o.id);
+
+      if (encontrados.length > 1) {
+        r.ambiguos++;
+        r.ambiguidades.push({
+          motivo: 'identidade_ambigua',
+          cloud_id: o.id,
+          numero_cloud: o.numero ?? null,
+          ids_locais: encontrados.map((l) => l.id),
+          remote_ids_locais: encontrados.map((l) => l.remote_id),
+          numeros_locais: encontrados.map((l) => l.numero),
+        });
+      } else if (encontrados.length === 0) {
+        // Documento que este terminal nunca teve. Um tombstone NAO cria
+        // documento: registrar um cancelamento de algo que nunca existiu aqui
+        // seria inventar historico.
+        r.desconhecidos++;
+      } else {
+        const local = encontrados[0];
+        const alvo = STATUS_REMOTO_PARA_LOCAL[o.status || 'cancelado'];
+        if (!alvo) {
+          r.desconhecidos++;                       // status que nao traduzimos
+        } else if (local.status === alvo) {
+          r.ja_cancelados++;                       // idempotente: nada a fazer
+        } else if (local.sync_status !== 'synced' || local.op_chave) {
+          marcarConflito.run(agora, local.id);
+          r.conflitos.push({
+            motivo: 'operacao_local_pendente',
+            id_local: local.id, remote_id: local.remote_id,
+            numero: local.numero, status_local: local.status,
+            sync_status: local.sync_status, tem_op_chave: !!local.op_chave,
+          });
+        } else {
+          cancelar.run(alvo, agora, local.id);
+          r.aplicados++;
+        }
+      }
+      db.exec('RELEASE orc_cancel');
+    } catch (e) {
+      db.exec('ROLLBACK TO orc_cancel');
+      db.exec('RELEASE orc_cancel');
+      r.falhas.push({ id: o.id, numero: o.numero, erro: e.message });
+    }
+  }
+  return r;
+}
+
 module.exports = {
   numeroOficial,
   SQL_CONFIRMAR_SINCRONIZACAO, paramsConfirmar,
   SQL_LOCALIZAR_DO_CLOUD, SQL_ATUALIZAR_DO_CLOUD, SQL_INSERIR_DO_CLOUD,
   paramsInserirDoCloud, paramsAtualizarDoCloud,
   reconciliarDoCloud,
+  STATUS_REMOTO_PARA_LOCAL, SQL_MARCAR_CANCELADO,
+  SQL_MARCAR_CONFLITO_DE_CANCELAMENTO, aplicarCancelamentosDoCloud,
 };

@@ -198,7 +198,7 @@ const Orcamentos = (() => {
   async function abrirEdicao(id) {
     const orc = await window.pdv.orcamentos.getById(id);
     if (!orc) { Toast.show('Orçamento não encontrado', 'error'); return; }
-    if (orc.status === 'cancelado' || orc.status === 'convertido') {
+    if (!AcoesOrcamento.podeEditar(orc)) {
       Toast.show('Este orçamento não pode ser editado', 'error'); return;
     }
     Modal.close();
@@ -953,7 +953,7 @@ const Orcamentos = (() => {
     const badge = { pendente:'<span class="badge badge-yellow">Pendente</span>', aprovado:'<span class="badge badge-green">Aprovado</span>', convertido:'<span class="badge" style="background:var(--accent-bg);color:var(--accent)">Convertido</span>', cancelado:'<span class="badge badge-red">Cancelado</span>', expirado:'<span class="badge" style="background:var(--bg3);color:var(--text3)">Expirado</span>' }[st] || `<span class="badge">${st}</span>`;
 
     const descItens = (orc.itens||[]).reduce((s,i)=>s+(i.desconto||0), 0);
-    const podeAcionar = !isCloudOnly && orc.status !== 'cancelado' && orc.status !== 'convertido';
+    const podeAcionar = !isCloudOnly && !AcoesOrcamento.ehTerminal(orc);
 
     Modal.open(`
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
@@ -1021,13 +1021,19 @@ ${orc.observacao?`<div style="background:var(--bg3);border-radius:8px;padding:10
   async function converterEmVenda(id) {
     const orc = await window.pdv.orcamentos.getById(id);
     if (!orc) { Toast.show('Orçamento não encontrado', 'error'); return; }
-    if (orc.status === 'cancelado' || orc.status === 'convertido') { Toast.show('Este orçamento não pode ser convertido', 'error'); return; }
+    if (!AcoesOrcamento.podeConverter(orc)) { Toast.show('Este orçamento não pode ser convertido', 'error'); return; }
     App.navigate('pdv');
     await PDV.carregarDoOrcamento(orc);
     Toast.show(`Orçamento #${orc.numero} carregado no PDV — finalize a venda normalmente`, 'success');
   }
 
   async function cancelar(id) {
+    // 0.6C.4: a partir daqui um orçamento pode chegar cancelado sozinho, vindo
+    // de outro terminal. Esconder o botão não basta — a regra tem que existir.
+    const atual = await window.pdv.orcamentos.getById(id);
+    if (!AcoesOrcamento.podeCancelar(atual)) {
+      Toast.show('Este orçamento não pode ser cancelado', 'error'); return;
+    }
     const ok = await window.pdv.app.confirm('Cancelar este orçamento?');
     if (!ok) return;
     await window.pdv.orcamentos.cancelar(id);
