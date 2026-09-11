@@ -196,18 +196,11 @@ const Orcamentos = (() => {
   }
 
   async function abrirEdicao(id) {
-    let orc = await window.pdv.orcamentos.getById(id);
-    let alheio = null;
-
-    if (!orc) {
-      // 0.6C.5 — documento de outro terminal. A revisão do snapshot vira a
-      // `revisao_base` da gravação: se alguém editar no intervalo, o servidor
-      // recusa em vez de deixar um sobrescrever o outro.
-      const r = await _carregarAlheio(id);
-      if (!r) return;
-      orc = r;
-      alheio = { revisao: r.revisao };
-    }
+    // 0.6C.5.1 — NUNCA abrir o formulário com carrinho vazio por não ter os
+    // itens aqui. Ou o documento é operável localmente, ou vem o snapshot.
+    const carga = await _carregarParaAcao(id, 'editar');
+    if (!carga) return;
+    const { orc, alheio } = carga;
 
     if (!AcoesOrcamento.podeEditar(orc)) {
       Toast.show('Este orçamento não pode ser editado', 'error'); return;
@@ -967,13 +960,24 @@ const Orcamentos = (() => {
   async function verDetalhes(id) {
     // id pode ser local UUID ou remote_id do Base44
     let isCloudOnly = false;
-    let orc = await window.pdv.orcamentos.getById(id);
+    const localBruto = await window.pdv.orcamentos.getById(id);
+    let orc = AcoesOrcamento.possuiItensLocais(localBruto) ? localBruto : null;
+
     if (!orc) {
-      // 0.6C.5 — documento de outro terminal: snapshot sob demanda, coerente,
-      // pela rota autenticada. Nada disto é gravado aqui.
+      // 0.6C.5.1 — ter linha local não é ter o documento. Se os itens não estão
+      // aqui, isto é documento alheio, mesmo que o cabeçalho tenha descido no
+      // sync. Snapshot sob demanda, nada gravado.
       const r = await window.pdv.orcamentos.lerAlheio(id);
 
       if (r.tipo === 'offline') {
+        // Se o cabeçalho está aqui, mostre-o — sem os itens e sem ação. Some
+        // dado é pior que dado parcial ANUNCIADO como parcial.
+        if (localBruto) {
+          orc = { ...localBruto, itens: [], _origem: 'cloud' };
+          isCloudOnly = true;
+          Modal.open(_detalheSemItens(localBruto), `Orçamento #${localBruto.numero}`);
+          return;
+        }
         // NUNCA "não encontrado": o documento existe, o que falta é conexão.
         // Dizer a coisa errada aqui já custou confiança do operador antes.
         Modal.open(`
@@ -1076,12 +1080,57 @@ ${orc.observacao?`<div style="background:var(--bg3);border-radius:8px;padding:10
 
   // ─── Converter em venda ───────────────────────────────────────────
   async function converterEmVenda(id) {
-    const orc = await window.pdv.orcamentos.getById(id);
-    if (!orc) { Toast.show('Orçamento não encontrado', 'error'); return; }
+    // 0.6C.5.1 — sem os itens aqui, converter carregaria o PDV com carrinho
+    // vazio. Passa pela mesma classificação; e documento alheio continua
+    // bloqueado para conversão por decisão D-a (ver acoesOrcamento.js).
+    const carga = await _carregarParaAcao(id, 'converter em venda');
+    if (!carga) return;
+    const orc = carga.orc;
     if (!AcoesOrcamento.podeConverter(orc)) { Toast.show('Este orçamento não pode ser convertido', 'error'); return; }
     App.navigate('pdv');
     await PDV.carregarDoOrcamento(orc);
     Toast.show(`Orçamento #${orc.numero} carregado no PDV — finalize a venda normalmente`, 'success');
+  }
+
+  /** Cabeçalho local sem itens, offline: mostra o que se tem, diz o que falta. */
+  function _detalheSemItens(orc) {
+    return `
+<div style="padding:8px 4px;line-height:1.6">
+  <div style="display:flex;justify-content:space-between;margin-bottom:12px">
+    <span style="color:var(--text3)">Cliente</span>
+    <strong>${orc.cliente_nome || '—'}</strong>
+  </div>
+  <div style="display:flex;justify-content:space-between;margin-bottom:12px">
+    <span style="color:var(--text3)">Total</span>
+    <strong style="color:var(--accent)">R$ ${fmtMoney(orc.total)}</strong>
+  </div>
+  <div style="background:var(--bg3);padding:12px;border-radius:8px;margin-top:16px">
+    <p style="margin:0">Este orçamento foi criado em outro terminal. É necessária
+    conexão com a internet para carregar os itens e realizar alterações.</p>
+  </div>
+</div>`;
+  }
+
+  /**
+   * 0.6C.5.1 — decide, num lugar só, se este orçamento pode ser operado com o
+   * que existe em disco ou se precisa do snapshot do servidor.
+   *
+   * Devolve `null` quando já mostrou ao operador a razão de não dar para seguir.
+   * NUNCA devolve documento sem itens: é disso que vinha a perda de dado.
+   */
+  async function _carregarParaAcao(id, acao) {
+    const local = await window.pdv.orcamentos.getById(id);
+    if (AcoesOrcamento.possuiItensLocais(local)) return { orc: local, alheio: null };
+
+    const snap = await _carregarAlheio(id);
+    if (!snap) {
+      if (local) {
+        Toast.show(`Sem os itens deste orçamento. Ele é de outro terminal e `
+          + `precisa de conexão para ${acao}.`, 'error');
+      }
+      return null;
+    }
+    return { orc: snap, alheio: { revisao: snap.revisao } };
   }
 
   /**
@@ -1122,16 +1171,12 @@ ${orc.observacao?`<div style="background:var(--bg3);border-radius:8px;padding:10
   async function cancelar(id) {
     // 0.6C.4: a partir daqui um orçamento pode chegar cancelado sozinho, vindo
     // de outro terminal. Esconder o botão não basta — a regra tem que existir.
-    let atual = await window.pdv.orcamentos.getById(id);
-    let alheio = null;
-
-    if (!atual) {
-      // 0.6C.5 — cancelar documento alheio não depende de ter os itens aqui:
-      // depende da identidade remota e da revisão atual.
-      atual = await _carregarAlheio(id);
-      if (!atual) return;
-      alheio = { revisao: atual.revisao };
-    }
+    // Cancelar não precisa dos itens para decidir, mas precisa da REVISÃO — e
+    // ela só existe no snapshot quando o documento não é deste terminal.
+    const carga = await _carregarParaAcao(id, 'cancelar');
+    if (!carga) return;
+    const atual = carga.orc;
+    const alheio = carga.alheio;
 
     if (!AcoesOrcamento.podeCancelar(atual)) {
       Toast.show('Este orçamento não pode ser cancelado', 'error'); return;
@@ -1158,9 +1203,12 @@ ${orc.observacao?`<div style="background:var(--bg3);border-radius:8px;padding:10
 
   // ─── Impressão ────────────────────────────────────────────────────
   async function _imprimirOrcamento(id) {
-    let orc = await window.pdv.orcamentos.getById(id);
-    if (!orc) orc = await window.pdv.orcamentos.getByIdCloud(id);
-    if (!orc) { Toast.show('Orçamento não encontrado', 'error'); return; }
+    // 0.6C.5.1 — mesma regra: sem itens aqui, o documento é alheio. Imprimir o
+    // cabeçalho sem itens sairia como um orçamento vazio na mão do cliente.
+    const local = await window.pdv.orcamentos.getById(id);
+    let orc = AcoesOrcamento.possuiItensLocais(local) ? local : null;
+    if (!orc) orc = await _carregarAlheio(id);
+    if (!orc) return;
     try {
       await window.pdv.print.orcamento(orc);
     } catch (e) { Toast.show('Erro ao imprimir: ' + e.message, 'error'); }

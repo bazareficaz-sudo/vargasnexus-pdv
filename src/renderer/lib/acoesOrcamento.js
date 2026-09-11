@@ -44,6 +44,30 @@
   }
 
   /**
+   * FASE 0.6C.5.1 — A PERGUNTA CERTA.
+   *
+   * Ter linha local NÃO é ter o documento. O down-sync insere cabeçalho de todo
+   * orçamento `aberto` da empresa, inclusive os criados em outros terminais —
+   * medido no Escritório: 58 linhas locais, 55 delas com ZERO itens, e todas as
+   * 55 com itens no servidor.
+   *
+   * Antes desta correção, `getById` achava essas linhas e a tela tratava como
+   * documento próprio: abrir → editar → carrinho VAZIO → adicionar um produto →
+   * salvar substituía, via DELETE+INSERT da RPC, os itens reais do orçamento de
+   * outro terminal. Dois cliques até perda de dado.
+   *
+   * A pergunta deixa de ser "existe linha?" e passa a ser "tenho os itens?".
+   *
+   * Premissa verificada nos dados reais antes de adotar: nenhum orçamento do
+   * servidor tem zero itens, então "zero itens locais" só pode significar "só
+   * tenho o cabeçalho". Se um dia existir orçamento legitimamente vazio, este
+   * critério precisa ser revisto — e é por isso que ele mora num lugar só.
+   */
+  function possuiItensLocais(o) {
+    return !!o && Array.isArray(o.itens) && o.itens.length > 0;
+  }
+
+  /**
    * FASE 0.6C.5 — snapshot completo de documento alheio, lido sob demanda.
    *
    * Tem cabeçalho, itens E revisão, tudo do mesmo instante. Dá para agir em
@@ -83,7 +107,7 @@
     return podeEditar(o) && (o.status === 'pendente' || o.status === 'aprovado');
   }
 
-  const api = { TERMINAIS, ehTerminal, ehSomenteNuvem, ehSnapshotAlheio,
+  const api = { TERMINAIS, ehTerminal, ehSomenteNuvem, ehSnapshotAlheio, possuiItensLocais,
     podeEditar, podeConverter, podeCancelar, botoesDeEdicaoNaLista };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
