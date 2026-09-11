@@ -636,6 +636,66 @@ async function processarFilaSync() {
         }
       }
 
+      // FASE 0.6C.6A — a conversao, pela rota autenticada.
+      //
+      // A distincao que a fila NAO fazia e que agora faz:
+      //
+      //   erro transitorio  (rede, 5xx)      -> retry, e continua na fila
+      //   conflito de negocio (outra venda)  -> DESFECHO TERMINAL, zero retry
+      //   sucesso idempotente (mesma venda)  -> processado, sem segundo efeito
+      //
+      // Antes, qualquer um dos tres virava "erro" e levava cinco tentativas
+      // inuteis antes de `marcarProcessado` esquecer o caso em silencio. Para
+      // conflito isso e o pior desfecho possivel: a venda perdedora ficava
+      // igualzinha a uma venda que so nao subiu por falta de internet.
+      if (item.entidade === 'orcamento_converter') {
+        const r = await api.converterOrcamentoAutenticado(payload);
+
+        if (r.tipo === 'conflito_conversao') {
+          // Outra venda levou este orcamento. Repetir nunca vai mudar isso.
+          const vencedora = r.dados?.venda_vencedora_id || null;
+          db.vendas.marcarConflitoConversao(payload.venda_id, {
+            tipo: 'conflito_orcamento',
+            orcamento_id: payload.orcamento_id,
+            numero_orcamento: r.dados?.numero ?? null,
+            venda_local_id: payload.venda_id,
+            venda_vencedora_id: vencedora,
+          });
+          console.warn(`[CONV] Orçamento nº${r.dados?.numero ?? '?'} já foi convertido pela venda `
+            + `${vencedora} em outro terminal. A venda local ${payload.venda_id} NÃO subirá: `
+            + `ficou em conflito_orcamento, com os efeitos locais preservados.`);
+          // Cai no marcarProcessado abaixo: o item da fila cumpriu o papel dele.
+          // O caso nao se perde — ele mora na venda, nao na fila.
+        } else if (r.tipo === 'recusado') {
+          db.vendas.marcarConflitoConversao(payload.venda_id, {
+            tipo: r.estado, orcamento_id: payload.orcamento_id,
+            venda_local_id: payload.venda_id, detalhe: r.dados ?? null,
+          });
+          console.warn(`[CONV] Conversão recusada (${r.estado}) para o orçamento `
+            + `${payload.orcamento_id} — venda ${payload.venda_id} em conflito.`);
+        } else if (r.tipo === 'legado') {
+          // Terminal sem a flag: NAO existe caminho legado seguro para
+          // conversao. O antigo escrevia pelo `anon` sem arbitragem nenhuma —
+          // era exatamente ele que deixava duas vendas levarem o mesmo
+          // orcamento. Recusar e melhor que arriscar.
+          try {
+            await require('./terminal').registrarFallback(
+              'orcamentos.converter', `${payload.orcamento_id}:conv:${payload.venda_id}`, r.motivo);
+          } catch (e) { console.warn('[CONV] Não consegui registrar o fallback:', e.message); }
+          console.warn(`[CONV] Rota de conversão indisponível (${r.motivo}) — `
+            + `o vínculo local existe, mas o servidor não foi avisado.`);
+        } else if (r.tipo === 'erro') {
+          // Transitorio de verdade: volta para a fila com o mesmo payload.
+          throw new Error(r.erro || 'Falha ao converter orçamento');
+        } else if (r.estado === 'ja_convertido') {
+          console.log(`[CONV] Orçamento nº${r.dados?.numero} já constava convertido por esta `
+            + `mesma venda — replay reconhecido, sem segundo efeito.`);
+        } else {
+          console.log(`[CONV] Orçamento nº${r.dados?.numero} convertido na venda `
+            + `${payload.venda_id} — revisão ${r.dados?.revisao}`);
+        }
+      }
+
       if (item.entidade === 'falta') {
         const falta = db.db().prepare('SELECT * FROM faltas WHERE id = ?').get(payload.falta_id);
         if (falta) {

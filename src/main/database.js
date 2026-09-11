@@ -509,6 +509,26 @@ function runMigrations() {
     // timeout seguido de reinicio poderia remonta-la diferente. Nao-nula
     // significa "existe uma operacao ainda nao confirmada com esta chave".
     'ALTER TABLE orcamentos ADD COLUMN op_chave TEXT',
+    // FASE 0.6C.6A — o vinculo orcamento <-> venda, que ate aqui so existia em
+    // `window._orcamentoParaConverter`, memoria do renderer que sumia num F5.
+    'ALTER TABLE vendas ADD COLUMN orcamento_id TEXT',
+    'ALTER TABLE orcamentos ADD COLUMN venda_id TEXT',
+    // A perdedora de uma corrida entre terminais nao pode ficar parecendo uma
+    // venda que so nao subiu por falta de internet. Guarda o caso INTEIRO, em
+    // JSON: quem ganhou, quando, e por que esta aqui.
+    'ALTER TABLE vendas ADD COLUMN conflito_conversao TEXT',
+    // PROTECAO LOCAL — e so isso que ela e.
+    //
+    // Impede duplo clique, retry local e crash/restart criarem DUAS vendas para
+    // o mesmo orcamento NESTE terminal. Como ela vive dentro da transacao de
+    // `vendas.registrar`, a violacao desfaz tambem o estoque e a movimentacao:
+    // o segundo clique nao baixa nada.
+    //
+    // Ela NAO resolve dois terminais. Cada um tem seu SQLite, e o indice de um
+    // nao enxerga o banco do outro: offline, A e B vao commitar os dois. A
+    // arbitragem entre terminais e do Postgres, em `orcamentos.venda_id`.
+    `CREATE UNIQUE INDEX IF NOT EXISTS vendas_orcamento_unico
+       ON vendas (orcamento_id) WHERE orcamento_id IS NOT NULL`,
     // Endereçamento de estoque — só o endereço de picking (ou o de maior
     // quantidade) do produto no depósito deste terminal, pro vendedor achar
     // a mercadoria. Tabela pequena e substituída inteira a cada sync (ver
@@ -1483,6 +1503,24 @@ const creditosCliente = {
 
 // ─── VENDAS ───────────────────────────────────────────────────────
 const vendas = {
+  /**
+   * FASE 0.6C.6A — a venda perdedora de uma corrida entre terminais.
+   *
+   * Nao apaga, nao desfaz estoque, nao tenta de novo. Guarda o caso inteiro e
+   * deixa visivel. Desfazer os efeitos locais e decisao comercial, e a
+   * compensacao automatica nao foi provada segura — entao nao acontece.
+   *
+   * O que muda e o `sync_status`: sai de 'pending', que significa "ainda vou
+   * subir", para 'conflito_orcamento', que significa "nao vou subir, e este e
+   * o motivo". Sem isso ela ficaria indistinguivel de uma venda esperando
+   * internet.
+   */
+  marcarConflitoConversao(vendaId, detalhe) {
+    db.prepare(`UPDATE vendas SET sync_status = 'conflito_orcamento',
+                   conflito_conversao = ? WHERE id = ?`)
+      .run(JSON.stringify({ ...detalhe, ocorrido_em: new Date().toISOString() }), vendaId);
+  },
+
   registrar(venda) {
     const id = uuidv4();
     const now = new Date().toISOString();
@@ -1499,15 +1537,20 @@ const vendas = {
         INSERT INTO vendas
         (id, numero, cliente_id, cliente_nome, empresa_id, deposito_id, operador_id, operador_nome,
          vendedor_id, vendedor_nome, vendedor_codigo,
-         status, subtotal, desconto, total, forma_pagamento, valor_pago, troco, observacao, created_at, sync_status)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+         status, subtotal, desconto, total, forma_pagamento, valor_pago, troco, observacao, created_at, sync_status,
+         orcamento_id)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       `).run(id, numero,
         venda.cliente_id || null, venda.cliente_nome || null, venda.empresa_id || null,
         venda.deposito_id || null, venda.operador_id || null, venda.operador_nome || null,
         venda.vendedor_id || null, venda.vendedor_nome || null, venda.vendedor_codigo || null,
         'concluida', venda.subtotal, venda.desconto || 0, venda.total,
         venda.forma_pagamento, venda.valor_pago || venda.total,
-        venda.troco || 0, venda.observacao || null, now, 'pending'
+        venda.troco || 0, venda.observacao || null, now, 'pending',
+        // O vinculo nasce COM a venda, dentro da mesma transacao. Se o indice
+        // unico recusar, todo o resto — itens, estoque, movimentacao — desfaz
+        // junto. E o que impede o duplo clique de baixar estoque duas vezes.
+        venda.orcamento_id || null
       );
 
       // Inserir itens e baixar estoque
@@ -1555,6 +1598,29 @@ const vendas = {
         INSERT INTO sync_queue (id, entidade, operacao, payload, created_at)
         VALUES (?,?,?,?,?)
       `).run(uuidv4(), 'venda', 'create', JSON.stringify({ venda_id: id }), now);
+
+      // FASE 0.6C.6A — a conversao, quando houver, fecha AQUI DENTRO.
+      //
+      // O orcamento vira convertido e ganha o vinculo na MESMA transacao da
+      // venda. Se qualquer coisa acima falhar, nada disso existiu; e se tudo
+      // passou, um crash logo depois do COMMIT nao perde a conversao, porque
+      // ela esta em disco e a fila tem o item para reenviar.
+      //
+      // Era exatamente o que `window._orcamentoParaConverter` nao dava: memoria
+      // do renderer, que sumia num F5.
+      if (venda.orcamento_id) {
+        db.prepare(`UPDATE orcamentos SET status = 'convertido', venda_id = ?,
+                       sync_status = 'pending' WHERE id = ?`).run(id, venda.orcamento_id);
+        db.prepare(`
+          INSERT INTO sync_queue (id, entidade, operacao, payload, created_at)
+          VALUES (?,?,?,?,?)
+        `).run(uuidv4(), 'orcamento_converter', 'converter',
+               JSON.stringify({
+                 orcamento_id: venda.orcamento_id,
+                 venda_id: id,
+                 revisao_base: venda.orcamento_revisao_base ?? null,
+               }), now);
+      }
     });
 
     registrarVenda();

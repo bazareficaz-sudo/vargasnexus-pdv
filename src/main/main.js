@@ -503,13 +503,22 @@ ipcMain.handle('orcamentos:cancelar', async (_, id) => {
   } catch (e) { console.warn('[ORC] Erro ao cancelar na nuvem:', e.message); }
   return { ok: true };
 });
-ipcMain.handle('orcamentos:marcarConvertido', async (_, id) => {
-  db.orcamentos.marcarConvertido(id);
-  const orc = db.orcamentos.getById(id);
-  if (orc?.remote_id) {
-    try { await api.atualizarStatusOrcamento(orc.remote_id, 'convertido'); } catch {}
-  }
-  return { ok: true };
+// FASE 0.6C.6A — ESTE CAMINHO FOI DESATIVADO, e de proposito nao foi apagado.
+//
+// Ele era o quinto caminho de escrita de orcamento: fora do orcamentoComando,
+// pelo `anon`, sem registrarFallback, e com o erro engolido em DUAS camadas.
+// A venda entrava e o orcamento podia continuar aberto, em silencio.
+//
+// A conversao agora acontece dentro da transacao de `vendas.registrar` e sobe
+// pela rota autenticada `orcamentos.converter`, que arbitra no servidor.
+//
+// Fica aqui recusando em vez de sumir: se algum caminho ainda chamar isto, e
+// melhor que apareca um erro do que voltar a gravar pelo `anon` calado.
+ipcMain.handle('orcamentos:marcarConvertido', async () => {
+  const msg = 'orcamentos:marcarConvertido foi removido na 0.6C.6A — a conversao '
+    + 'acontece na transacao da venda e sobe por orcamentos.converter.';
+  console.warn('[CONV]', msg);
+  return { ok: false, erro: msg, motivo: 'caminho_desativado' };
 });
 ipcMain.handle('orcamentos:atualizar', async (_, id, dados) => {
   db.orcamentos.atualizar(id, dados);

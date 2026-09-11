@@ -371,6 +371,17 @@ async function registrarVenda(venda) {
 
   let clienteIdVenda = _comoUuid(venda.cliente_remote_id);
   const montarInsert = () => ({
+    // FASE 0.6C.6A — a identidade da venda vai junto.
+    //
+    // Ate aqui o `id` local (uuidv4) nunca era enviado: o Postgres gerava o
+    // seu, e o servidor nao tinha como saber que duas insercoes eram a MESMA
+    // venda. Foi assim que nasceram quatro pares de vendas duplicadas em 30
+    // dias — uma delas com 13 HORAS de intervalo, assinatura de retry —, cada
+    // par baixando estoque duas vezes.
+    //
+    // Com o id explicito, um reenvio bate na PK e o servidor reconhece. E o
+    // `.select()` seguinte confirma pelo id, nao por numero+total+janela.
+    id: venda.id,
     empresa_id: empresaId,
     empresa_fiscal_id: usuario.empresa_fiscal_id || empresaId,
     deposito_id: depositoIdVenda,
@@ -397,6 +408,18 @@ async function registrarVenda(venda) {
   });
 
   let { data: novaVenda, error } = await supabase.from('vendas').insert(montarInsert()).select().single();
+
+  // A venda ja esta la? Entao o envio anterior chegou e so a resposta se
+  // perdeu. Conferir POR ID — que agora e nosso — e o que distingue "ja
+  // gravou" de "falhou", sem heuristica de numero, total e janela de tempo.
+  if (error && venda.id) {
+    const { data: existente } = await supabase.from('vendas')
+      .select('*').eq('id', venda.id).maybeSingle();
+    if (existente) {
+      console.log(`[VENDA] ${venda.id} ja estava no servidor — reenvio reconhecido`);
+      return existente;
+    }
+  }
 
   if (error?.message?.includes('vendas_cliente_id_fkey') && clienteIdVenda) {
     console.warn('[VENDA] cliente_id não existe mais no Supabase, resolvendo de novo por nome+telefone:', clienteIdVenda);
@@ -1157,6 +1180,38 @@ async function lerOrcamentoAutenticado(orcamentoId) {
   return { tipo: 'erro', motivo: r.motivo, erro: r.erro };
 }
 
+// FASE 0.6C.6A — a conversao pela rota autenticada.
+//
+// Substitui `atualizarStatusOrcamento(remote_id, 'convertido')`, que era
+// escrita pelo `anon`, fora do orcamentoComando, sem telemetria e com o erro
+// engolido. Aqui todo desfecho tem nome, e o conflito devolve QUEM ganhou.
+async function converterOrcamentoAutenticado({ orcamento_id, venda_id, revisao_base }) {
+  const terminal = require('./terminal');
+  const r = await terminal.chamarProtegida('/api/pdv/orcamentos/converter', {
+    orcamento_id, venda_id, revisao_base,
+    versao_pdv: app_getVersion(),
+  });
+
+  if (r.ok) {
+    const estado = r.dados?.estado;
+    // 'convertido' e 'ja_convertido' sao os dois sucessos. O segundo e o retry
+    // da MESMA venda, e precisa ser sucesso — senao a fila insistiria para
+    // sempre numa operacao que ja aconteceu.
+    return { tipo: 'ok', estado, dados: r.dados };
+  }
+  if (r.motivo === 'sem_identidade' || r.motivo === 'rota_desligada') {
+    return { tipo: 'legado', motivo: r.motivo };
+  }
+  const estado = r.corpo?.estado;
+  if (estado === 'conflito_conversao') {
+    return { tipo: 'conflito_conversao', dados: r.corpo };
+  }
+  if (estado === 'conflito_versao' || estado === 'recusado_cancelado' || estado === 'nao_encontrado') {
+    return { tipo: 'recusado', estado, dados: r.corpo };
+  }
+  return { tipo: 'erro', motivo: r.motivo, erro: r.erro };
+}
+
 async function sincronizarOrcamento(payload) {
   const { data: orc, error } = await supabase.from('orcamentos').insert({
     empresa_id: payload.empresa_id,
@@ -1612,6 +1667,7 @@ module.exports = {
   sincronizarOrcamentos,
   orcamentosCanceladosNoServidor,
   lerOrcamentoAutenticado,
+  converterOrcamentoAutenticado,
   atualizarStatusOrcamento,
   atualizarOrcamento,
   listarOrcamentosCloud,

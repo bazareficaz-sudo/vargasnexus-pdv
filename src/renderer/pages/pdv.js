@@ -8,6 +8,12 @@ const PDV = (() => {
   let vendedorAtual = null; // { id, codigo, nome, comissao }
   let dadosEntrega = null;  // preenchido na etapa "Agendar Entrega"
   let modoEdicao = null;    // { vendaId, numero, remote_id } — null = venda nova
+  // FASE 0.6C.6A — de qual orçamento este carrinho veio, e de que revisão.
+  // Era `window._orcamentoParaConverter`, global do renderer: sumia num F5 e
+  // com ela o vínculo entre a venda e o orçamento. Agora isto é só CONVENIÊNCIA
+  // DE UI — a identidade de negócio vai dentro do objeto `venda`, e de lá para
+  // a transação do SQLite.
+  let _orcamentoOrigem = null;   // { id, numero, revisao_base }
   let pedidoObservacao = ''; // nota livre do pedido (ex: telefone pra ligar) — impressa no comprovante
   let _ultimaVenda = null;  // { numero, remoteId, venda } — usado pelos botões do comprovante
   let vendasEmEspera = [];  // atendimentos pausados — persistidos em config.pdv.vendasEmEspera
@@ -1715,6 +1721,11 @@ ${podeDesconto ? `
     const cfgAll = await window.pdv.config.getAll();
 
     const venda = {
+      // O vínculo entra AQUI, no comando de venda, e não numa variável global
+      // lida depois. `db.vendas.registrar` o grava dentro da mesma transação
+      // que cria a venda, baixa o estoque e enfileira — tudo ou nada.
+      orcamento_id:            _orcamentoOrigem?.id ?? null,
+      orcamento_revisao_base:  _orcamentoOrigem?.revisao_base ?? null,
       cliente_id:   selectedClient?.id   || null,
       cliente_nome: selectedClient?.nome || null,
       // Empresa de estoque (movimentação de saldo)
@@ -1802,9 +1813,18 @@ ${podeDesconto ? `
       clearCart();
       _ultimaVenda = { id: result.id, numero: result.numero, remoteId: result.remote_id || null, venda };
 
-      // Se estava convertendo um orçamento, marcá-lo como convertido
-      if (window._orcamentoParaConverter) {
-        window.pdv.orcamentos.marcarConvertido(window._orcamentoParaConverter).catch(() => {});
+      // 0.6C.6A — a conversão JÁ ACONTECEU, dentro da transação da venda.
+      //
+      // Aqui não há mais nada a gravar: o orçamento saiu convertido e o item da
+      // fila para avisar o servidor foi criado no mesmo COMMIT. O que sobrou é
+      // limpar a tela.
+      //
+      // O que existia neste ponto era `marcarConvertido(...).catch(() => {})` —
+      // uma chamada solta, pelo `anon`, com o erro engolido em duas camadas.
+      // Se ela falhasse, a venda entrava e o orçamento continuava aberto sem
+      // ninguém saber.
+      if (_orcamentoOrigem) {
+        _orcamentoOrigem = null;
         window._orcamentoParaConverter = null;
         const banner = document.getElementById('pdv-edicao-banner');
         if (banner) banner.style.display = 'none';
@@ -2494,7 +2514,14 @@ ${podeDesconto ? `
     updateTotals();
 
     // Quando venda for finalizada, marcar orçamento como convertido
-    window._orcamentoParaConverter = orc.id;
+    _orcamentoOrigem = {
+      id: orc.id,
+      numero: orc.numero,
+      // `revisao` vem do snapshot autenticado (documento alheio); `revisao_base`
+      // é o que o documento próprio guarda. Um dos dois existe.
+      revisao_base: orc.revisao ?? orc.revisao_base ?? null,
+    };
+    window._orcamentoParaConverter = orc.id;   // só para o banner da UI
   }
 
   async function init() {
