@@ -382,6 +382,19 @@ async function registrarVenda(venda) {
     // Com o id explicito, um reenvio bate na PK e o servidor reconhece. E o
     // `.select()` seguinte confirma pelo id, nao por numero+total+janela.
     id: venda.id,
+    // FASE 0.6C.6A.1 — o vinculo vai gravado na venda, do lado do servidor.
+    //
+    // E o id do SERVIDOR (`orcamento_remote_id`), nunca o do SQLite: os dois
+    // coincidem em 56 dos 58 documentos do Escritorio, e um id local mandado
+    // como remoto seria recusado pelo guardrail do banco.
+    //
+    // `orcamentos.venda_id` continua sendo a AUTORIDADE da arbitragem. Esta
+    // coluna e vinculo derivado: rastreabilidade, e a defesa que faz o
+    // Postgres recusar a segunda venda do mesmo orcamento mesmo que o cliente
+    // tente — regressao da ordem da fila, cliente antigo, chamada direta.
+    //
+    // Venda comum vai com NULL e segue o fluxo de sempre.
+    orcamento_id: venda.orcamento_remote_id || null,
     empresa_id: empresaId,
     empresa_fiscal_id: usuario.empresa_fiscal_id || empresaId,
     deposito_id: depositoIdVenda,
@@ -429,7 +442,23 @@ async function registrarVenda(venda) {
     ({ data: novaVenda, error } = await supabase.from('vendas').insert(montarInsert()).select().single());
   }
 
-  if (error) throw new Error(`Supabase registrarVenda: ${error.message}`);
+  if (error) {
+    // FASE 0.6C.6A.1 — o guardrail do banco nao pode chegar aqui como "erro
+    // de rede".
+    //
+    // `b_trg_venda_exige_arbitragem` recusa com 23000 e uma dica
+    // `arbitragem_orcamento:<causa>`. Se isso virasse uma mensagem solta, a
+    // fila trataria como transitorio e repetiria para sempre uma venda que
+    // jamais vai entrar. A causa sobe junto com o erro para quem chamou
+    // poder decidir: desfecho terminal, nao retry.
+    const dica = String(error.hint || '');
+    if (error.code === '23000' && dica.startsWith('arbitragem_orcamento:')) {
+      const e = new Error(`Supabase registrarVenda: ${error.message}`);
+      e.arbitragem = dica.slice('arbitragem_orcamento:'.length);
+      throw e;
+    }
+    throw new Error(`Supabase registrarVenda: ${error.message}`);
+  }
 
   if (itensPayload.length) {
     const { error: errItens } = await supabase.from('venda_itens').insert(

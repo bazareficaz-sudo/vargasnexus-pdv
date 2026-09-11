@@ -546,6 +546,66 @@ function statusOrcamentoRemoto(statusLocal) {
   return statusLocal === 'pendente' ? 'aberto' : statusLocal;
 }
 
+/**
+ * FASE 0.6C.6A.1 — a arbitragem como precondição da venda.
+ *
+ * Devolve a decisão quando a venda pode subir ou quando ela perdeu. LANÇA
+ * quando ainda não se sabe — porque "não consegui confirmar" tem que voltar
+ * para a fila, e não virar uma venda marcada como perdida para sempre.
+ *
+ * A regra de decisão mora em `arbitragemVenda.js`, pura e testada sozinha.
+ * Aqui só acontecem os efeitos: a chamada, o log e a marca no banco.
+ */
+async function _arbitrarAntesDeSubir(venda) {
+  const arb = require('./arbitragemVenda');
+  if (!arb.nasceuDeOrcamento(venda)) return { acao: 'enviar', motivo: 'sem_orcamento' };
+
+  const orcamentoRemoto = arb.identidadeRemotaDoOrcamento(venda);
+  let resultado = null;
+  if (orcamentoRemoto) {
+    resultado = await api.converterOrcamentoAutenticado({
+      // O id que vai é o do SERVIDOR, não o do SQLite. Ver `getById`.
+      orcamento_id: orcamentoRemoto,
+      venda_id: venda.id,
+      revisao_base: venda.orcamento_revisao_base ?? null,
+    });
+  }
+
+  const d = arb.decidirEnvio({ venda, resultado });
+
+  if (d.acao === 'enviar') return d;
+
+  if (d.acao === 'conflito') {
+    db.vendas.marcarConflitoConversao(venda.id, {
+      tipo: d.estado || 'conflito_orcamento',
+      orcamento_id: venda.orcamento_id,
+      orcamento_remote_id: orcamentoRemoto,
+      numero_orcamento: venda.orcamento_numero ?? d.dados?.numero ?? null,
+      venda_local_id: venda.id,
+      venda_vencedora_id: d.vencedora || null,
+      detalhe: d.dados ?? null,
+    });
+    console.warn(`[PORTÃO] Venda ${venda.id} NÃO SUBIU: orçamento `
+      + `nº${venda.orcamento_numero ?? '?'} ${d.vencedora ? `já pertence à venda ${d.vencedora}` : `recusou (${d.estado})`}. `
+      + 'Nenhum efeito remoto foi criado — nem venda, nem itens, nem estoque. '
+      + 'Os efeitos locais seguem preservados e a venda está em conflito_orcamento.');
+    return d;
+  }
+
+  // 'esperar'. Se foi a rota que está fora, registra — é o número que
+  // autoriza (ou barra) o corte do `anon` depois.
+  if (/^rota_indisponivel/.test(d.motivo || '')) {
+    try {
+      await require('./terminal').registrarFallback(
+        'orcamentos.converter',
+        `${orcamentoRemoto || venda.orcamento_id}:conv:${venda.id}`,
+        d.motivo);
+    } catch (e) { console.warn('[PORTÃO] Não consegui registrar o fallback:', e.message); }
+  }
+  throw new Error(`Arbitragem do orçamento ainda não confirmada (${d.motivo}) — `
+    + `a venda ${venda.id} continua pendente, sem nenhum efeito remoto.`);
+}
+
 // Envia ao servidor a criação de uma venda: resolve cliente_remote_id se
 // preciso e chama api.registrarVenda(). Extraído da fila automática pra
 // também ser chamado pelo retry manual (Vendas > 🔄 Retentar) — aquele
@@ -556,6 +616,19 @@ async function _sincronizarVendaCreate(vendaId) {
   if (!venda) throw new Error('Venda não encontrada localmente');
   if (venda.status === 'cancelada') return null;
   if (venda.remote_id) return venda.remote_id;
+
+  // FASE 0.6C.6A.1 — O PORTÃO.
+  //
+  // Primeira coisa, antes do cliente, antes da venda, antes de qualquer byte
+  // que saia desta máquina por causa desta venda. Uma venda originada de
+  // orçamento só sobe depois que o SERVIDOR confirmou que aquele orçamento é
+  // dela. Não passou no portão: não sobe, e nada derivado dela sobe.
+  //
+  // Por que aqui e não só na ordem da fila: aqui é por onde passam a fila
+  // automática, o retry manual e `recuperarVendasSemSync`. A ordem da fila
+  // pode regredir; este ponto é único.
+  const portao = await _arbitrarAntesDeSubir(venda);
+  if (portao.acao !== 'enviar') return null;
 
   // Se há cliente local sem remote_id, tentar sincronizar agora antes da venda
   if (venda.cliente_id && !venda.cliente_remote_id) {
@@ -579,7 +652,34 @@ async function _sincronizarVendaCreate(vendaId) {
     }
   }
 
-  const res = await api.registrarVenda(venda);
+  let res;
+  try {
+    res = await api.registrarVenda(venda);
+  } catch (e) {
+    // FASE 0.6C.6A.1 — invariante do banco não é erro transitório.
+    //
+    // Se o guardrail `b_trg_venda_exige_arbitragem` recusou, repetir não muda
+    // nada: ou outra venda levou o orçamento, ou o portão foi contornado por
+    // algum caminho que ainda não conhecemos. Nos dois casos o desfecho é
+    // terminal e precisa ficar visível — não uma venda "pendente" eterna nem,
+    // pior, uma que alguém resolva forçar.
+    if (e.arbitragem) {
+      db.vendas.marcarConflitoConversao(venda.id, {
+        tipo: e.arbitragem === 'outra_venda_venceu' ? 'conflito_orcamento' : `invariante_banco:${e.arbitragem}`,
+        orcamento_id: venda.orcamento_id,
+        orcamento_remote_id: venda.orcamento_remote_id || null,
+        numero_orcamento: venda.orcamento_numero ?? null,
+        venda_local_id: venda.id,
+        venda_vencedora_id: null,
+        detalhe: { causa: e.arbitragem, erro: e.message },
+      });
+      console.warn(`[PORTÃO] O banco recusou a venda ${venda.id} (${e.arbitragem}). `
+        + 'Nenhum item e nenhum estoque remoto foram criados. '
+        + 'A venda está em conflito_orcamento e NÃO será reenviada.');
+      return null;
+    }
+    throw e;
+  }
   if (res?.id) {
     db.db().prepare('UPDATE vendas SET remote_id = ?, sync_status = ?, synced_at = ? WHERE id = ?')
       .run(res.id, 'synced', new Date().toISOString(), vendaId);
@@ -636,63 +736,37 @@ async function processarFilaSync() {
         }
       }
 
-      // FASE 0.6C.6A — a conversao, pela rota autenticada.
+      // FASE 0.6C.6A.1 — a conversao, pela MESMA porta da venda.
       //
-      // A distincao que a fila NAO fazia e que agora faz:
+      // Este item nao tem mais logica propria. Ele delega para
+      // `_arbitrarAntesDeSubir`, que e o portao por onde a venda passa — e e
+      // justamente por haver UM lugar so que as duas nao podem divergir. A
+      // versao anterior duplicava a interpretacao dos estados aqui, com o id
+      // LOCAL do orcamento no payload; bastava o id local diferir do remoto
+      // (2 dos 58 documentos do Escritorio) para a arbitragem responder
+      // `nao_encontrado` e uma venda boa virar conflito.
       //
-      //   erro transitorio  (rede, 5xx)      -> retry, e continua na fila
-      //   conflito de negocio (outra venda)  -> DESFECHO TERMINAL, zero retry
-      //   sucesso idempotente (mesma venda)  -> processado, sem segundo efeito
+      // Ordem dos desfechos, igual para os dois caminhos:
       //
-      // Antes, qualquer um dos tres virava "erro" e levava cinco tentativas
-      // inuteis antes de `marcarProcessado` esquecer o caso em silencio. Para
-      // conflito isso e o pior desfecho possivel: a venda perdedora ficava
-      // igualzinha a uma venda que so nao subiu por falta de internet.
+      //   confirmado        -> item cumprido; a venda sobe depois, e revalida
+      //   conflito          -> TERMINAL, zero retry, venda marcada
+      //   ainda nao se sabe -> excecao, volta para a fila
       if (item.entidade === 'orcamento_converter') {
-        const r = await api.converterOrcamentoAutenticado(payload);
-
-        if (r.tipo === 'conflito_conversao') {
-          // Outra venda levou este orcamento. Repetir nunca vai mudar isso.
-          const vencedora = r.dados?.venda_vencedora_id || null;
-          db.vendas.marcarConflitoConversao(payload.venda_id, {
-            tipo: 'conflito_orcamento',
-            orcamento_id: payload.orcamento_id,
-            numero_orcamento: r.dados?.numero ?? null,
-            venda_local_id: payload.venda_id,
-            venda_vencedora_id: vencedora,
-          });
-          console.warn(`[CONV] Orçamento nº${r.dados?.numero ?? '?'} já foi convertido pela venda `
-            + `${vencedora} em outro terminal. A venda local ${payload.venda_id} NÃO subirá: `
-            + `ficou em conflito_orcamento, com os efeitos locais preservados.`);
-          // Cai no marcarProcessado abaixo: o item da fila cumpriu o papel dele.
-          // O caso nao se perde — ele mora na venda, nao na fila.
-        } else if (r.tipo === 'recusado') {
-          db.vendas.marcarConflitoConversao(payload.venda_id, {
-            tipo: r.estado, orcamento_id: payload.orcamento_id,
-            venda_local_id: payload.venda_id, detalhe: r.dados ?? null,
-          });
-          console.warn(`[CONV] Conversão recusada (${r.estado}) para o orçamento `
-            + `${payload.orcamento_id} — venda ${payload.venda_id} em conflito.`);
-        } else if (r.tipo === 'legado') {
-          // Terminal sem a flag: NAO existe caminho legado seguro para
-          // conversao. O antigo escrevia pelo `anon` sem arbitragem nenhuma —
-          // era exatamente ele que deixava duas vendas levarem o mesmo
-          // orcamento. Recusar e melhor que arriscar.
-          try {
-            await require('./terminal').registrarFallback(
-              'orcamentos.converter', `${payload.orcamento_id}:conv:${payload.venda_id}`, r.motivo);
-          } catch (e) { console.warn('[CONV] Não consegui registrar o fallback:', e.message); }
-          console.warn(`[CONV] Rota de conversão indisponível (${r.motivo}) — `
-            + `o vínculo local existe, mas o servidor não foi avisado.`);
-        } else if (r.tipo === 'erro') {
-          // Transitorio de verdade: volta para a fila com o mesmo payload.
-          throw new Error(r.erro || 'Falha ao converter orçamento');
-        } else if (r.estado === 'ja_convertido') {
-          console.log(`[CONV] Orçamento nº${r.dados?.numero} já constava convertido por esta `
-            + `mesma venda — replay reconhecido, sem segundo efeito.`);
+        const venda = db.vendas.getById(payload.venda_id);
+        if (!venda) {
+          console.warn(`[CONV] Venda ${payload.venda_id} nao existe mais localmente — nada a arbitrar.`);
+        } else if (venda.remote_id) {
+          // Ela ja subiu, e subir exige ter passado pelo portao. Repetir a
+          // arbitragem daria `ja_convertido`; nao ha o que fazer.
+          console.log(`[CONV] Venda ${payload.venda_id} ja sincronizada — arbitragem ja confirmada.`);
         } else {
-          console.log(`[CONV] Orçamento nº${r.dados?.numero} convertido na venda `
-            + `${payload.venda_id} — revisão ${r.dados?.revisao}`);
+          const d = await _arbitrarAntesDeSubir(venda);
+          if (d.acao === 'enviar') {
+            console.log(`[CONV] Orcamento no${venda.orcamento_numero ?? '?'} arbitrado para a venda `
+              + `${venda.id} (${d.motivo}) — agora ela pode subir.`);
+          }
+          // 'conflito' ja foi marcado e logado dentro do portao. Cai no
+          // marcarProcessado: o item cumpriu o papel, e o caso mora na venda.
         }
       }
 
@@ -875,9 +949,23 @@ async function processarReparoEstoque() {
 // ─── Recuperar vendas pendentes sem entrada na fila ───────────────
 async function recuperarVendasPendentes() {
   // Busca vendas locais sem remote_id (nunca sincronizadas) que não estão na fila ativa
+  //
+  // FASE 0.6C.6A.1 — `conflito_orcamento` fica FORA.
+  //
+  // A perdedora de uma arbitragem tem `remote_id` nulo para sempre, e isso é
+  // de propósito: ela não existe no servidor e não deve passar a existir. O
+  // filtro antigo olhava só o status COMERCIAL (`!= 'cancelada'`), então
+  // reenfileirava a perdedora em todo ciclo — e em algum deles ela subiria,
+  // anulando o portão.
+  //
+  // O filtro não é a proteção, é a higiene: mesmo que alguém a reenfileire
+  // amanhã, o portão em `_sincronizarVendaCreate` continua barrando o envio.
+  // Duas camadas, de propósito.
   const vendasPendentes = db.db().prepare(`
     SELECT v.id FROM vendas v
-    WHERE v.remote_id IS NULL AND v.status != 'cancelada'
+    WHERE v.remote_id IS NULL
+      AND v.status != 'cancelada'
+      AND IFNULL(v.sync_status, '') != 'conflito_orcamento'
     AND NOT EXISTS (
       SELECT 1 FROM sync_queue sq
       WHERE sq.payload LIKE '%' || v.id || '%'
@@ -1032,4 +1120,10 @@ async function syncForcarCarteira() {
   return { clientes: clientes.length, creditos: creditos.length, contas: contas.length };
 }
 
-module.exports = { startAutoSync, stopAutoSync, syncNow, syncFila, getStatus, checkOnline, syncUpProdutos, syncForcarClientes, syncForcarCarteira, syncForcarProdutos, montarPayloadOrcamentoRemoto, retentarVendaManual };
+module.exports = { startAutoSync, stopAutoSync, syncNow, syncFila, getStatus, checkOnline, syncUpProdutos, syncForcarClientes, syncForcarCarteira, syncForcarProdutos, montarPayloadOrcamentoRemoto, retentarVendaManual,
+  // FASE 0.6C.6A.1 — expostos para a prova da fase, nao para a aplicacao.
+  // O que precisa ser provado e o COMPORTAMENTO destes dois caminhos: a fila
+  // entregue de proposito na ordem errada, e o reenfileiramento depois de um
+  // restart. Testar isso por fora, reimplementando a fila no teste, provaria
+  // o teste e nao o produto.
+  _processarFilaSync: processarFilaSync, _recuperarVendasPendentes: recuperarVendasPendentes };

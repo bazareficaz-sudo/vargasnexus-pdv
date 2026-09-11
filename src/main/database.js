@@ -1690,10 +1690,25 @@ const vendas = {
   },
 
   getById(id) {
+    // `orcamento_remote_id` segue a mesma regra de cliente e produto: o id em
+    // `vendas.orcamento_id` é LOCAL, e o servidor conhece o documento por
+    // `remote_id`. Os dois coincidem na maioria dos casos e NÃO em todos — no
+    // Escritório, 56 de 58 coincidem. Mandar o local nos outros dois faria a
+    // arbitragem responder `nao_encontrado` e a venda legítima ser marcada
+    // como perdida.
+    //
+    // É `o.remote_id` puro, sem COALESCE para o id local: nulo aqui significa
+    // "o servidor não conhece este orçamento", e esse caso tem tratamento
+    // próprio (espera, não conflito). Um COALESCE mandaria o id local como se
+    // fosse remoto e o servidor responderia `nao_encontrado` — uma venda boa
+    // marcada como perdida por causa de um id que nunca existiu lá.
     const venda = db.prepare(`
-      SELECT v.*, c.remote_id as cliente_remote_id, c.nome as cliente_nome, c.telefone as cliente_telefone
+      SELECT v.*, c.remote_id as cliente_remote_id, c.nome as cliente_nome, c.telefone as cliente_telefone,
+             o.remote_id as orcamento_remote_id,
+             o.numero    as orcamento_numero
       FROM vendas v
       LEFT JOIN clientes c ON c.id = v.cliente_id
+      LEFT JOIN orcamentos o ON o.id = v.orcamento_id
       WHERE v.id = ?
     `).get(id);
     if (!venda) return null;
@@ -2029,10 +2044,31 @@ const syncQueue = {
   },
 
   getPendentes() {
+    // A ORDEM: dependência antes de dependente.
+    //
+    // Cliente primeiro porque a venda referencia o cliente. Orçamento antes
+    // da venda porque, numa venda originada de orçamento, a arbitragem do
+    // orçamento é PRECONDIÇÃO da venda — e arbitrar exige que o documento já
+    // exista no servidor.
+    //
+    // Antes, `venda` vinha antes de tudo que não fosse cliente, inclusive de
+    // `orcamento_converter`. O terminal perdedor subia a venda e só depois
+    // descobria que havia perdido o orçamento: duas vendas remotas para um
+    // orçamento, cada uma baixando estoque.
+    //
+    // ESTA ORDEM NÃO É A PROTEÇÃO. Ela é o que faz o caminho normal passar de
+    // primeira. A proteção é o portão em `_sincronizarVendaCreate`, que
+    // confere a arbitragem mesmo se esta cláusula regredir amanhã — e há
+    // teste que entrega a fila de propósito na ordem errada para provar isso.
     return db.prepare(`
       SELECT * FROM sync_queue WHERE processado = 0
       ORDER BY
-        CASE entidade WHEN 'cliente' THEN 0 WHEN 'venda' THEN 1 ELSE 2 END ASC,
+        CASE
+          WHEN entidade = 'cliente'       THEN 0
+          WHEN entidade LIKE 'orcamento%' THEN 1
+          WHEN entidade = 'venda'         THEN 2
+          ELSE 3
+        END ASC,
         created_at ASC
       LIMIT 50
     `).all();
