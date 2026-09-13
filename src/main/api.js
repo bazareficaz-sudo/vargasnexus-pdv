@@ -39,10 +39,13 @@ function _comoUuid(valor) {
 
 // ─── Ping ─────────────────────────────────────────────────────────────
 
+// Pergunta "tem conexao?" — e quem responde e o NOSSO servidor, nao a tabela
+// de produtos. Ver `servidorAlcancavel` em terminal.js para o porque: ler
+// `produtos` aqui era a razao mais barata de a chave `anon` precisar continuar
+// enxergando 28.676 produtos com preco de custo.
 async function ping() {
   try {
-    const { error } = await supabase.from('produtos').select('id', { count: 'exact', head: true }).limit(1);
-    return !error;
+    return await require('./terminal').servidorAlcancavel();
   } catch { return false; }
 }
 

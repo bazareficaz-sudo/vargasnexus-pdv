@@ -452,7 +452,69 @@ function iniciarHeartbeat() {
   setInterval(bater, INTERVALO_HEARTBEAT_MS);
 }
 
+/**
+ * O SERVIDOR RESPONDE? — a pergunta do `ping`, sem ler tabela nenhuma.
+ *
+ * ── POR QUE SAIU DE `produtos` ──────────────────────────────────────────
+ *
+ * O `ping` antigo era `supabase.from('produtos').select('id', head)`. Ele
+ * funcionava, e por isso ninguém olhava: o custo não estava na consulta, e
+ * sim em ela ser mais uma razão para a chave `anon` precisar continuar
+ * enxergando `produtos`. Medido em 13/09/2026, o `anon` lê sem login 28.676
+ * produtos COM `preco_custo`, e `produtos` é a tabela com mais caminhos
+ * ainda presos a ele.
+ *
+ * Este era o mais barato de todos: o ping não quer dado, quer saber se há
+ * caminho até o servidor. Trocar não migra regra nenhuma — só remove uma
+ * dependência.
+ *
+ * ── O QUE CONTA COMO "ONLINE" ───────────────────────────────────────────
+ *
+ * Uma RECUSA do servidor é resposta do servidor. Token vencido, rota
+ * desligada, terminal revogado: em todos houve ida e volta pela rede, e a
+ * resposta a "tem conexão?" é sim. Só falha de transporte é offline.
+ *
+ * ── COM E SEM IDENTIDADE ────────────────────────────────────────────────
+ *
+ * Com identidade usa o heartbeat, que além da rede prova que o BANCO
+ * respondeu (a rota escreve em `pdv_terminais`) — garantia maior que a do
+ * ping antigo — e de quebra mantém o painel sabendo que o terminal está vivo.
+ *
+ * Sem identidade (terminal recém-instalado, antes de ativar) não há token e a
+ * chamada nem sairia. Aí vale qualquer resposta HTTP da mesma rota: o 401 que
+ * ela devolve já prova que o servidor está de pé, que é o que o instalador
+ * precisa saber antes de pedir a ativação.
+ */
+async function servidorAlcancavel() {
+  const temIdentidade = !!lerMetadados()?.terminal_id && !!lerSegredo();
+
+  if (temIdentidade) {
+    const r = await chamarProtegida('/api/pdv/heartbeat', { versao_pdv: app.getVersion() });
+    if (r.ok) {
+      ultimoHeartbeat = new Date().toISOString();
+      ultimoHeartbeatErro = null;
+      return true;
+    }
+    // `sem_identidade` aqui seria contradição — acabamos de conferir — mas se
+    // acontecer não houve rede nenhuma e não dá para afirmar que está online.
+    return r.motivo !== 'rede' && r.motivo !== 'sem_identidade';
+  }
+
+  try {
+    const res = await fetch(`${baseUrl()}/api/pdv/heartbeat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+      redirect: 'manual',
+    });
+    // Qualquer status serve: o 401 é o servidor falando.
+    return !!res && typeof res.status === 'number';
+  } catch {
+    return false;
+  }
+}
+
 module.exports = {
   ativar, obterToken, estado, esquecer, iniciarRenovacao, iniciarHeartbeat,
-  chamarProtegida, chaveDe, registrarFallback,
+  chamarProtegida, chaveDe, registrarFallback, servidorAlcancavel,
 };
