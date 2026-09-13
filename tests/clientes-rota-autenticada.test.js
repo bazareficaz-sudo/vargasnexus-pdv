@@ -78,7 +78,15 @@ describe('cair no legado só pelos dois motivos de rollout', () => {
       // Sem isto, "fallback" é uma palavra num comentário. Com isto é uma
       // linha em `pdv_operacoes`, e é esse número que autoriza ou barra o
       // corte do `anon`.
-      assert.match(corpoDe(nome), /registrarFallback\('clientes\./);
+      //
+      // As duas formas valem: as escritas contam por entidade
+      // (`registrarFallback` direto, uma linha por cliente), e as leituras
+      // contam uma vez por dia — elas rodam a cada ciclo de sync, e reportar
+      // por ciclo seria requisição sem informação nova.
+      assert.match(
+        corpoDe(nome),
+        /registrarFallback\('clientes\.|_reportarFallbackDiario\('clientes\./,
+      );
     });
   }
 });

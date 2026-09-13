@@ -24,6 +24,41 @@ function _naoDisponivel(nome) {
   };
 }
 
+// AAAA-MM-DD em UTC — o grao das chaves de fallback das LEITURAS.
+//
+// UTC e nao horario local de proposito: o unico papel desta chave e agrupar,
+// e um limite de dia que nao depende do relogio do terminal e mais confiavel
+// justamente aqui (a maquina do Escritorio estava com o servico de horario
+// parado em 09/2026). Vira dia as 21h no Brasil, o que nao muda nada para um
+// contador de "ainda usou o legado hoje".
+const _hoje = () => new Date().toISOString().slice(0, 10);
+
+// Reporta o fallback UMA VEZ por processo, por dia, por operacao.
+//
+// As leituras de catalogo e de clientes rodam a cada ciclo de sync. Enquanto
+// a flag do terminal estiver desligada — que e o estado normal durante todo o
+// rollout — cada ciclo reportaria o mesmo fallback de novo. O servidor ja
+// colapsa isso (o registro e um `upsert` sobre a mesma chave), mas a
+// REQUISICAO saia igual: varias por ciclo, por terminal, o dia inteiro, para
+// nao acrescentar informacao nenhuma.
+//
+// As ESCRITAS nao passam por aqui: la a chave e da entidade (este cliente,
+// este produto), e cada uma precisa ser contada de verdade.
+const _fallbackJaReportado = new Set();
+function _reportarFallbackDiario(operacao, prefixoChave, motivo) {
+  const terminal = require('./terminal');
+  const dia = _hoje();
+  const memo = `${operacao}|${dia}`;
+  if (_fallbackJaReportado.has(memo)) return;
+  _fallbackJaReportado.add(memo);
+  terminal.registrarFallback(operacao, terminal.chaveDe(prefixoChave, dia), motivo).catch(() => {
+    // Falhou o registro: tira do memo para a proxima rodada tentar de novo.
+    // Perder a contagem em silencio seria pior do que uma requisicao extra —
+    // e esse numero que autoriza ou barra o corte do `anon`.
+    _fallbackJaReportado.delete(memo);
+  });
+}
+
 // Terminais que já rodaram o antigo PDV Base44 podem ter remote_id de
 // cliente/produto herdado daquele sistema em cache local — um ObjectId de
 // 24 caracteres hex, não um UUID. Mandar isso pro Supabase como chave
@@ -232,6 +267,18 @@ async function _ajustarEstoqueCAS(produtoId, delta, contexto = {}) {
 
 // ─── Produtos ─────────────────────────────────────────────────────────
 
+// O CATALOGO SAI DE BAIXO DA CHAVE ANONIMA.
+//
+// MEDIDO EM 13/09/2026: 28.676 produtos legiveis com a chave `anon`, sem
+// login nenhum, COM `preco_custo`. E a maior exposicao das tres tabelas
+// auditadas — nao e um id que vaza, e a margem da loja inteira.
+//
+// O `select('*')` vira a lista exata que o `mapProduto` do sync.js consome:
+// o que o terminal descarta na linha seguinte para de sair do servidor.
+//
+// SEM filtro de `ativo`, aqui e la: um produto inativado no ERP precisa
+// continuar chegando (o `updated_at` dele mudou) para o terminal receber a
+// baixa e PARAR de vender. Quem decide o que e vendavel e o filtro local.
 async function sincronizarProdutos(ultimaSync = null, onBatch = null) {
   const usuario = store.get('auth.usuario') || {};
   const empresaId = usuario.empresa_estoque_id || usuario.empresa_id;
@@ -239,6 +286,47 @@ async function sincronizarProdutos(ultimaSync = null, onBatch = null) {
   let from = 0;
   let totalBaixados = 0;
   const todos = [];
+
+  {
+    const terminal = require('./terminal');
+    const acumulado = [];
+    let pagina = 0;
+    let total = 0;
+    let usouRota = true;
+
+    while (true) {
+      const qs = new URLSearchParams({ pagina: String(pagina) });
+      if (ultimaSync) qs.set('desde', ultimaSync);
+      const r = await terminal.chamarProtegida(`/api/pdv/produtos?${qs}`, null, { metodo: 'GET' });
+
+      if (!r.ok) {
+        const rolloutNormal = ['sem_identidade', 'rota_desligada'];
+        if (!rolloutNormal.includes(r.motivo)) {
+          throw new Error(`Rota autenticada de produtos recusou (${r.motivo}): ${r.erro}`);
+        }
+        // Chave por dia: esta leitura roda a cada ciclo de sync, e o `upsert`
+        // do registro de fallback colapsa a mesma chave numa linha so. O que
+        // se mede e "este terminal ainda usa o legado hoje", nao quantas vezes.
+        _reportarFallbackDiario('produtos.snapshot', 'prod_snap', r.motivo);
+        usouRota = false;
+        break;
+      }
+
+      const itens = r.dados.produtos || [];
+      if (itens.length > 0) {
+        total += itens.length;
+        // O `onBatch` e o que mantem a memoria sob controle numa carga
+        // completa: 28.676 produtos entram no SQLite lote a lote em vez de
+        // virarem um array unico. Preservado igual.
+        if (onBatch) onBatch(itens, total);
+        else acumulado.push(...itens);
+      }
+      if (!r.dados.tem_mais) break;
+      pagina += 1;
+    }
+
+    if (usouRota) return onBatch ? total : acumulado;
+  }
 
   while (true) {
     // Sem filtro de ativo aqui: um produto que virou inativo no web
@@ -268,6 +356,17 @@ async function sincronizarProdutos(ultimaSync = null, onBatch = null) {
 async function contarProdutosRemoto() {
   const usuario = store.get('auth.usuario') || {};
   const empresaId = usuario.empresa_estoque_id || usuario.empresa_id;
+
+  const terminal = require('./terminal');
+  const r = await terminal.chamarProtegida('/api/pdv/produtos/contagem', null, { metodo: 'GET' });
+  if (r.ok) return r.dados.total || 0;
+
+  const rolloutNormal = ['sem_identidade', 'rota_desligada'];
+  if (!rolloutNormal.includes(r.motivo)) {
+    throw new Error(`Rota autenticada de produtos recusou (${r.motivo}): ${r.erro}`);
+  }
+  _reportarFallbackDiario('produtos.contagem', 'prod_cont', r.motivo);
+
   let query = supabase.from('produtos').select('id', { count: 'exact', head: true }).eq('ativo', true);
   if (empresaId) query = query.eq('empresa_id', empresaId);
   const { count, error } = await query;
@@ -275,11 +374,12 @@ async function contarProdutosRemoto() {
   return count || 0;
 }
 
-async function getProduto(id) {
-  const { data, error } = await supabase.from('produtos').select('*').eq('id', id).single();
-  if (error) throw new Error(error.message);
-  return data;
-}
+// REMOVIDO: `getProduto(id)`.
+//
+// Era `supabase.from('produtos').select('*')` por id — a linha inteira,
+// `preco_custo` incluso. Nao tinha um unico chamador. Mesmo destino do
+// `atualizarCliente`: codigo morto que le dado sensivel se apaga, nao ganha
+// rota.
 
 // Produto cadastrado no balcão (tela "Novo Produto") — ainda não existe no
 // Supabase. Sem isso, o produto nunca ganha remote_id e qualquer venda dele
@@ -324,6 +424,28 @@ async function atualizarProduto(remoteId, dados) {
   if (dados.categoria !== undefined) payload.categoria = dados.categoria;
   if (dados.marca !== undefined) payload.marca = dados.marca;
   if (dados.unidade !== undefined) payload.unidade = dados.unidade;
+
+  // `estoque` NAO esta nessa lista, e nao pode entrar. O saldo tem um
+  // escritor so — o CAS de `_ajustarEstoqueCAS`, que move `produtos.estoque`,
+  // `produto_estoque.quantidade` e `estoque_movimentacoes` juntos. Um segundo
+  // caminho gravando a mesma coluna sem CAS, sem movimentacao e sem espelho
+  // no deposito e como nasceu a divergencia de 13/09, a dos 472 produtos.
+  const terminal = require('./terminal');
+  const chave = terminal.chaveDe('produto', `${remoteId}|${JSON.stringify(payload)}`);
+  const r = await terminal.chamarProtegida('/api/pdv/produtos', {
+    idempotency_key: chave,
+    produto_id: remoteId,
+    ...payload,
+  }, { metodo: 'PATCH' });
+
+  if (r.ok) return { id: r.dados.produto_id };
+
+  const rolloutNormal = ['sem_identidade', 'rota_desligada'];
+  if (!rolloutNormal.includes(r.motivo)) {
+    throw new Error(`Rota autenticada de produtos recusou (${r.motivo}): ${r.erro}`);
+  }
+  terminal.registrarFallback('produtos.atualizar', chave, r.motivo).catch(() => {});
+
   const { data, error } = await supabase.from('produtos').update(payload).eq('id', remoteId).select().single();
   if (error) throw new Error(error.message);
   return data;
@@ -664,13 +786,6 @@ function _chaveNome(nome) {
 }
 const _soDigitos = v => (v || '').replace(/\D/g, '');
 
-// AAAA-MM-DD em UTC — o grao das chaves de fallback das leituras, que rodam a
-// cada ciclo de sync. UTC e nao horario local de proposito: o unico papel
-// desta chave e agrupar, e um limite de dia que nao depende do relogio do
-// terminal e mais confiavel justamente aqui (a maquina do Escritorio estava
-// com o servico de horario parado em 09/2026). Vira dia as 21h no Brasil, o
-// que nao muda nada para um contador de "ainda usou o legado hoje".
-const _hoje = () => new Date().toISOString().slice(0, 10);
 
 // Dois cadastros são a mesma pessoa quando o nome bate e nada os
 // desmente: telefone e CPF/CNPJ ou são iguais, ou um dos lados está
@@ -911,7 +1026,7 @@ async function sincronizarClientes(ultimaSync = null) {
         // `ultimaSync`, mudaria a cada rodada e o livro-razao ganharia uma
         // linha por ciclo, por terminal, para sempre. O que se mede aqui e
         // "este terminal ainda usa o legado hoje", nao quantas vezes.
-        terminal.registrarFallback('clientes.snapshot', terminal.chaveDe('cli_snap', _hoje()), r.motivo).catch(() => {});
+        _reportarFallbackDiario('clientes.snapshot', 'cli_snap', r.motivo);
         usouRota = false;
         break;
       }
@@ -969,7 +1084,7 @@ async function sincronizarClientesMesclados() {
       throw new Error(`Rota autenticada de clientes recusou (${r.motivo}): ${r.erro}`);
     }
     // Por dia, pelo mesmo motivo do snapshot: esta leitura roda a cada ciclo.
-    terminal.registrarFallback('clientes.mesclados', terminal.chaveDe('cli_mesc', _hoje()), r.motivo).catch(() => {});
+    _reportarFallbackDiario('clientes.mesclados', 'cli_mesc', r.motivo);
   }
 
   let query = supabase.from('clientes').select('id, mesclado_em').not('mesclado_em', 'is', null);
@@ -1804,7 +1919,6 @@ module.exports = {
   ping,
   sincronizarProdutos,
   contarProdutosRemoto,
-  getProduto,
   atualizarProduto,
   criarProdutoRemoto,
   sincronizarEstoque,
