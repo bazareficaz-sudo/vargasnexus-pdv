@@ -664,6 +664,14 @@ function _chaveNome(nome) {
 }
 const _soDigitos = v => (v || '').replace(/\D/g, '');
 
+// AAAA-MM-DD em UTC — o grao das chaves de fallback das leituras, que rodam a
+// cada ciclo de sync. UTC e nao horario local de proposito: o unico papel
+// desta chave e agrupar, e um limite de dia que nao depende do relogio do
+// terminal e mais confiavel justamente aqui (a maquina do Escritorio estava
+// com o servico de horario parado em 09/2026). Vira dia as 21h no Brasil, o
+// que nao muda nada para um contador de "ainda usou o legado hoje".
+const _hoje = () => new Date().toISOString().slice(0, 10);
+
 // Dois cadastros são a mesma pessoa quando o nome bate e nada os
 // desmente: telefone e CPF/CNPJ ou são iguais, ou um dos lados está
 // vazio. É a parte que faltava — telefone diferente NÃO é o critério de
@@ -737,6 +745,58 @@ async function registrarCliente(cliente, empresaIdHint = null) {
   const usuario = store.get('auth.usuario') || {};
   const empresaId = empresaIdHint || usuario.empresa_estoque_id || usuario.empresa_id;
 
+  // ROTA AUTENTICADA — a decisao de "ja existe?" passa a rodar no servidor.
+  //
+  // A chave e o `id` LOCAL, que `db.clientes.criar()` gera e grava no SQLite
+  // ANTES de qualquer envio: sobrevive a queda, timeout, fechamento, reinicio
+  // e replay, porque nasce em disco e nao em memoria.
+  //
+  // Diferente de `faltas`, a chave NAO vira o id da linha remota — o
+  // resultado normal aqui e reaproveitar um cliente que ja existe, e forcar o
+  // id local nele criaria justamente a copia que se quer evitar. O servidor
+  // guarda a chave e devolve sempre o MESMO id remoto.
+  //
+  // O fallback segue a regra das faltas, e pelo mesmo motivo:
+  //
+  //   sem_identidade / rota_desligada  -> legado, sem alarde (rollout normal)
+  //   qualquer outra recusa            -> NAO cai no legado. Lanca.
+  //
+  // Timeout e ambiguo: se o servidor gravou e a resposta se perdeu, tentar o
+  // legado abriria a segunda linha. O certo e reenviar pela MESMA rota com a
+  // MESMA chave, que e o retry da fila e ja acontece sozinho.
+  if (cliente.id) {
+    const terminal = require('./terminal');
+    const r = await terminal.chamarProtegida('/api/pdv/clientes', {
+      idempotency_key: cliente.id,
+      // Conferida pelo servidor, nunca obedecida. Vai junto de proposito: se
+      // este terminal operar numa empresa diferente da do token (o caso do
+      // `empresa_estoque_id`), a divergencia vira recusa explicita em vez de
+      // cadastro gravado na empresa errada.
+      empresa_id: empresaId,
+      nome: cliente.nome,
+      cpf_cnpj: cliente.cpf_cnpj || null,
+      telefone: cliente.telefone || null,
+      email: cliente.email || null,
+      limite_credito: cliente.limite_credito || 0,
+      saldo_credito: cliente.saldo_credito || 0,
+    });
+
+    if (r.ok) {
+      const d = r.dados;
+      const nota = d.ja_existia
+        ? ` (reaproveitado${d.mesclado ? ', seguindo unificacao' : ''})`
+        : '';
+      console.log(`[API] Cliente "${cliente.nome}" pela rota autenticada${nota}: ${d.cliente_id}`);
+      return { id: d.cliente_id };
+    }
+
+    const rolloutNormal = ['sem_identidade', 'rota_desligada'];
+    if (!rolloutNormal.includes(r.motivo)) {
+      throw new Error(`Rota autenticada de clientes recusou (${r.motivo}): ${r.erro}`);
+    }
+    terminal.registrarFallback('clientes.registrar', cliente.id, r.motivo).catch(() => {});
+  }
+
   const existente = await _acharClienteRemoto(cliente, empresaId);
   if (existente) {
     const completar = {};
@@ -765,28 +825,107 @@ async function registrarCliente(cliente, empresaIdHint = null) {
   return data;
 }
 
-async function atualizarCliente(remoteId, dados) {
-  const { data, error } = await supabase.from('clientes').update(dados).eq('id', remoteId).select().single();
-  if (error) throw new Error(error.message);
-  return data;
-}
+// REMOVIDO: `atualizarCliente(remoteId, dados)`.
+//
+// Era `supabase.from('clientes').update(dados)` com o objeto INTEIRO que o
+// chamador passasse — inclusive `empresa_id`, `mesclado_em`, `saldo_devedor`
+// e `limite_credito` — numa tabela que guarda CPF, com a chave `anon`.
+//
+// Nao tinha um unico chamador. Nao ganhou rota: codigo morto que aceita
+// escrita arbitraria em dado pessoal se apaga, nao se migra. O que o PDV
+// realmente edita e endereco e contato, e isso e a funcao abaixo.
 
 async function atualizarClienteEndereco(remoteId, dados) {
-  const payload = {};
   const campos = ['telefone', 'whatsapp', 'cep', 'logradouro', 'numero', 'complemento', 'bairro', 'cidade', 'estado', 'referencia', 'obs_entrega'];
+  const payload = {};
   campos.forEach(c => { if (dados[c]) payload[c] = dados[c]; });
   if (!Object.keys(payload).length) return null;
+
+  // A chave e o par (cliente, conteudo): mandar o MESMO endereco de novo nao
+  // e operacao nova — e o retry da fila, e o servidor devolve a resposta que
+  // ja deu. Endereco editado gera conteudo diferente, chave diferente, e a
+  // atualizacao acontece. Sem isto, uma UPDATE nao teria chave nenhuma.
+  const terminal = require('./terminal');
+  const chave = terminal.chaveDe('cliente_end', `${remoteId}|${JSON.stringify(payload)}`);
+  const r = await terminal.chamarProtegida('/api/pdv/clientes', {
+    idempotency_key: chave,
+    cliente_id: remoteId,
+    ...payload,
+  }, { metodo: 'PATCH' });
+
+  if (r.ok) return { id: r.dados.cliente_id };
+
+  const rolloutNormal = ['sem_identidade', 'rota_desligada'];
+  if (!rolloutNormal.includes(r.motivo)) {
+    throw new Error(`Rota autenticada de clientes recusou (${r.motivo}): ${r.erro}`);
+  }
+  // A MESMA chave da tentativa: o `upsert` do registro de fallback conta um
+  // por evento, nao um por retry.
+  terminal.registrarFallback('clientes.atualizar', chave, r.motivo).catch(() => {});
+
   const { data, error } = await supabase.from('clientes').update(payload).eq('id', remoteId).select().single();
   if (error) throw new Error(error.message);
   return data;
 }
 
+// O SNAPSHOT QUE O TERMINAL BAIXA PARA TER CLIENTE OFFLINE.
+//
+// Mesma paginacao, mesmo recorte incremental e mesma ordenacao estavel por
+// (nome, id) — sem ela, paginar sobre uma tabela que recebe cadastro no meio
+// pula linha. A diferenca e que o `select('*')` vira a lista exata que o
+// `mapCliente` do sync.js consome: o que o PDV nao usa nao sai do servidor.
+//
+// UNIFICACAO DE ESTOQUE FICA NO LEGADO, DE PROPOSITO.
+//
+// Com `unificar_estoque`, o caminho antigo NAO filtra por empresa: o terminal
+// enxerga os clientes de todas. A rota nova escopa pela empresa do token, que
+// e o certo para escrita e o diferente para esta leitura. Usar a rota aqui
+// entregaria menos gente do que hoje, sem erro nenhum — so cadastros parando
+// de receber atualizacao. Enquanto isso nao for decidido de proposito, este
+// caso continua no legado e fica CONTADO como fallback.
 async function sincronizarClientes(ultimaSync = null) {
   const usuario = store.get('auth.usuario') || {};
   const empresaId = usuario.empresa_estoque_id || usuario.empresa_id;
   const pageSize = 500;
   let from = 0;
   const clientes = [];
+
+  if (!usuario.unificar_estoque) {
+    const terminal = require('./terminal');
+    const acumulado = [];
+    let pagina = 0;
+    let usouRota = true;
+
+    while (true) {
+      const qs = new URLSearchParams({ pagina: String(pagina) });
+      if (ultimaSync) qs.set('desde', ultimaSync);
+      const r = await terminal.chamarProtegida(`/api/pdv/clientes?${qs}`, null, { metodo: 'GET' });
+
+      if (!r.ok) {
+        const rolloutNormal = ['sem_identidade', 'rota_desligada'];
+        if (!rolloutNormal.includes(r.motivo)) {
+          throw new Error(`Rota autenticada de clientes recusou (${r.motivo}): ${r.erro}`);
+        }
+        // Chave POR DIA, nao por ciclo. O `upsert` do registro de fallback
+        // colapsa a mesma chave numa linha so; se ela carregasse o
+        // `ultimaSync`, mudaria a cada rodada e o livro-razao ganharia uma
+        // linha por ciclo, por terminal, para sempre. O que se mede aqui e
+        // "este terminal ainda usa o legado hoje", nao quantas vezes.
+        terminal.registrarFallback('clientes.snapshot', terminal.chaveDe('cli_snap', _hoje()), r.motivo).catch(() => {});
+        usouRota = false;
+        break;
+      }
+
+      acumulado.push(...(r.dados.clientes || []));
+      if (!r.dados.tem_mais) break;
+      pagina += 1;
+    }
+
+    // A parada vem do servidor (`tem_mais`) em vez de ser recontada aqui: uma
+    // pagina cheia e o unico sinal de que ha mais, e duplicar essa conta nos
+    // dois lados e como um dos dois fica errado depois.
+    if (usouRota) return acumulado;
+  }
 
   while (true) {
     let query = supabase.from('clientes').select('*').eq('ativo', true).range(from, from + pageSize - 1).order('nome').order('id');
@@ -816,6 +955,23 @@ const STATUS_CREDITO_LOCAL_PARA_REMOTO = { aberto: 'disponivel', usado_parcialme
 async function sincronizarClientesMesclados() {
   const usuario = store.get('auth.usuario') || {};
   const empresaId = usuario.empresa_estoque_id || usuario.empresa_id;
+
+  // Mesmo criterio de `sincronizarClientes`: com unificacao de estoque o
+  // legado nao filtra por empresa, e a rota filtra. Fica no legado ate isso
+  // ser decidido, e contado.
+  if (!usuario.unificar_estoque) {
+    const terminal = require('./terminal');
+    const r = await terminal.chamarProtegida('/api/pdv/clientes/mesclados', null, { metodo: 'GET' });
+    if (r.ok) return r.dados.pares || [];
+
+    const rolloutNormal = ['sem_identidade', 'rota_desligada'];
+    if (!rolloutNormal.includes(r.motivo)) {
+      throw new Error(`Rota autenticada de clientes recusou (${r.motivo}): ${r.erro}`);
+    }
+    // Por dia, pelo mesmo motivo do snapshot: esta leitura roda a cada ciclo.
+    terminal.registrarFallback('clientes.mesclados', terminal.chaveDe('cli_mesc', _hoje()), r.motivo).catch(() => {});
+  }
+
   let query = supabase.from('clientes').select('id, mesclado_em').not('mesclado_em', 'is', null);
   if (empresaId && !usuario.unificar_estoque) query = query.eq('empresa_id', empresaId);
   const { data, error } = await query;
@@ -1660,7 +1816,6 @@ module.exports = {
   listarVendasCloud,
   sincronizarVendedores,
   registrarCliente,
-  atualizarCliente,
   atualizarClienteEndereco,
   sincronizarClientes,
   sincronizarClientesMesclados,
