@@ -1699,7 +1699,36 @@ ${podeDesconto ? `
   }
 
   // Etapa 4: finalizar de verdade
+  // FASE 0.6D.1 — TRAVA DE FINALIZAÇÃO.
+  //
+  // Três entradas chamam esta função: o `onkeydown` do input do código
+  // (~:1667), o botão "✓ Finalizar" (~:1674) e o atalho global de teclado
+  // (~:2361). O listener global é de BOLHA e o handler do input não chama
+  // `stopPropagation` — então UM único Enter, com o vendedor já validado,
+  // percorre os dois e invoca esta função DUAS vezes, no mesmo despacho.
+  //
+  // Como ela tem `await` na primeira linha, antes do `Modal.close()`, a
+  // segunda entrava com o carrinho ainda intacto: duas vendas locais, dois
+  // UUIDs, dois números, estoque baixado duas vezes.
+  //
+  // Desabilitar o botão não resolve — o Enter não passa pelo botão. A trava
+  // fica na função, que é o funil por onde as três entradas passam.
+  //
+  // O que ela NÃO é: idempotência. Reenvio depois de restart é protegido por
+  // outra coisa — o `id` explícito em `montarInsert` (0.6C.6A) e o portão de
+  // arbitragem (0.6C.6A.1).
+  const _travaFinalizacao = ExecucaoUnica.criarExecucaoUnica();
+
   async function _finalizarComVendedor() {
+    const { entrou, promise } = _travaFinalizacao(() => _finalizarComVendedorReal());
+    if (!entrou) {
+      console.warn('[PDV] Finalização ignorada — já existe uma em andamento');
+      return;
+    }
+    return promise;
+  }
+
+  async function _finalizarComVendedorReal() {
     const codigo = document.getElementById('modal-vendedor-codigo')?.value?.trim();
     const exigirVendedor = await window.pdv.config.get('config.exigir_vendedor') !== false;
 

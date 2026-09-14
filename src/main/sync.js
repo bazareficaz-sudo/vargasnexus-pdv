@@ -13,8 +13,27 @@ const Store = require('electron-store');
 const store = new Store();
 const db = require('./database');
 const api = require('./api');
+const { criarExecucaoUnica } = require('../renderer/lib/execucaoUnica');
 
+// FASE 0.6D.1 — duas travas, porque são duas seções críticas diferentes.
+//
+//   travaFila     — a rodada leve disparada a cada venda (main.js:390 e :416).
+//   travaDrenagem — `processarFilaSync`, que é chamada TAMBÉM pelo `syncNow`
+//                   periódico.
+//
+// O defeito: `syncFila` LIA `isSyncing` (linha ~1064) e nunca a marcava —
+// só `syncNow` escreve nessa flag. Duas rodadas de `syncFila`, ou uma
+// rodada junto com um `syncNow`, liam a MESMA lista de `getPendentes()` e
+// chamavam `_sincronizarVendaCreate` para a mesma venda. O guarda de lá
+// (`if (venda.remote_id) return`) não protege nesse caso: nenhuma das duas
+// gravou o `remote_id` ainda.
+//
+// Isto é concorrência local, não idempotência. O reenvio depois de restart
+// continua protegido por outra coisa: o `id` explícito em `montarInsert`
+// (0.6C.6A) e o portão de arbitragem (0.6C.6A.1).
 let syncInterval = null;
+const travaFila = criarExecucaoUnica();
+const travaDrenagem = criarExecucaoUnica();
 let isSyncing = false;
 let isOnline = false;
 let mainWindowRef = null;
@@ -693,7 +712,16 @@ async function retentarVendaManual(vendaId) {
 }
 
 // ─── Upload: Local → Servidor (fila pendente) ─────────────────────
+//
+// Porta de entrada única da drenagem. Quem chega durante uma drenagem em
+// andamento se junta a ela em vez de abrir uma segunda — `syncNow` e
+// `syncFila` disputam exatamente esta função.
 async function processarFilaSync() {
+  const { promise } = travaDrenagem(() => _drenarFila());
+  return promise;
+}
+
+async function _drenarFila() {
   const pendentes = db.sync.getPendentes();
   if (pendentes.length === 0) return;
 
@@ -1039,7 +1067,17 @@ async function syncUpProdutos() {
 }
 
 // ─── Sync leve: só envia a fila pendente (usado após cada venda) ──
+//
+// Semântica da segunda chamada: recebe a MESMA promise da rodada em
+// andamento. `main.js` dispara em fire-and-forget e ignora o retorno, mas
+// quem aguardar continua recebendo o resultado real — um "já_em_execucao"
+// não diria quando a fila terminou.
 async function syncFila(win) {
+  const { promise } = travaFila(() => _syncFila(win));
+  return promise;
+}
+
+async function _syncFila(win) {
   if (isSyncing) return; // sync completo já em andamento, não duplicar
   mainWindowRef = win || mainWindowRef;
 
