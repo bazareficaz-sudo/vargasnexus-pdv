@@ -14,6 +14,7 @@ const store = new Store();
 const db = require('./database');
 const api = require('./api');
 const { criarExecucaoUnica } = require('../renderer/lib/execucaoUnica');
+const protocoloVenda = require('./protocoloVenda');
 
 // FASE 0.6D.1 — duas travas, porque são duas seções críticas diferentes.
 //
@@ -609,6 +610,76 @@ async function _arbitrarAntesDeSubir(venda) {
 // também ser chamado pelo retry manual (Vendas > 🔄 Retentar) — aquele
 // caminho precisa do erro de verdade, não pode ficar escondido atrás de
 // "tentativas esgotadas, desisto silenciosamente" como a fila faz.
+// FASE 0.6D.3 — a flag que libera o protocolo transacional, por terminal.
+//
+// Flag PRÓPRIA, não reaproveitada de `orcamentos`: ligar a conversão de
+// orçamento não pode, por tabela, ligar o caminho da venda inteira.
+function _flagVendaV1() {
+  const rotas = store.get('terminal.rotas_habilitadas') || {};
+  return rotas.vendas_transacional_v1 === true;
+}
+
+// FASE 0.6D.3 — o caminho v1: UMA chamada, e só ela.
+//
+// Nenhum insert de `venda_itens`, nenhum laço de estoque, nenhuma
+// `api.registrarVenda`. O servidor faz tudo numa transação. Se este ponto
+// um dia voltar a chamar qualquer coisa do legado, o teste
+// `sem-dual-write.test.js` quebra.
+async function _sincronizarVendaV1(venda) {
+  const { montarPayloadVendaV1 } = require('./payloadVendaV1');
+  const usuario = store.get('auth.usuario') || {};
+
+  const montado = montarPayloadVendaV1(venda, {
+    empresaId: usuario.empresa_estoque_id || usuario.empresa_id || venda.empresa_id,
+    empresaFiscalId: usuario.empresa_fiscal_id,
+    depositoId: usuario.deposito_id || venda.deposito_id,
+    terminalId: store.get('config.terminal_id'),
+    operadorNome: usuario.nome,
+  });
+
+  if (!montado.ok) {
+    // Payload que nem sai daqui: é defeito de dado local, não de rede.
+    // Marcar como conflito evita a venda ficar tentando para sempre.
+    db.vendas.marcarConflitoConversao(venda.id, {
+      tipo: 'payload_invalido_v1', venda_local_id: venda.id,
+      detalhe: { erro: montado.erro },
+    });
+    console.warn(`[V1] Venda ${venda.id} não montou payload: ${montado.erro}`);
+    return null;
+  }
+
+  const terminal = require('./terminal');
+  // `chamarProtegida` NÃO lança: devolve {ok:true, dados} ou {ok:false,
+  // motivo, erro}. O estado da RPC vem dentro de `dados`.
+  const bruta = await terminal.chamarProtegida('/api/pdv/vendas/sincronizar-v1', {
+    idempotency_key: venda.id,
+    payload: montado.payload,
+  });
+
+  const d = protocoloVenda.interpretarResposta(bruta.ok ? bruta.dados : bruta);
+
+  if (d.desfecho === 'synced') {
+    db.db().prepare('UPDATE vendas SET remote_id = ?, sync_status = ?, synced_at = ? WHERE id = ?')
+      .run(venda.id, 'synced', new Date().toISOString(), venda.id);
+    console.log(`[V1] Venda ${venda.id}: ${d.estado}`);
+    return venda.id;
+  }
+
+  if (d.desfecho === 'conflito') {
+    db.vendas.marcarConflitoConversao(venda.id, {
+      tipo: d.estado, venda_local_id: venda.id,
+      orcamento_id: venda.orcamento_id ?? null,
+      detalhe: { estado: d.estado, motivo: d.motivo },
+    });
+    console.warn(`[V1] Venda ${venda.id} em conflito terminal (${d.estado}): ${d.motivo}. `
+      + 'Nenhum efeito remoto foi criado e a venda NÃO será reenviada.');
+    return null;
+  }
+
+  // pendente
+  throw new Error(`Venda ${venda.id} sem confirmação do v1 (${d.motivo}) — continua pendente`);
+}
+
 async function _sincronizarVendaCreate(vendaId) {
   const venda = db.vendas.getById(vendaId);
   if (!venda) throw new Error('Venda não encontrada localmente');
@@ -648,6 +719,27 @@ async function _sincronizarVendaCreate(vendaId) {
     } else if (cli?.remote_id) {
       venda.cliente_remote_id = cli.remote_id;
     }
+  }
+
+  // ── FASE 0.6D.3 — BIFURCAÇÃO DE PROTOCOLO ─────────────────────────
+  //
+  // A escolha acontece AQUI, depois do portão de arbitragem e do cliente,
+  // e antes de qualquer efeito remoto da venda propriamente dita.
+  //
+  // NÃO EXISTE FALLBACK v1 -> legado. Se o v1 falhar de forma ambígua, o
+  // estado remoto é desconhecido: a venda pode estar gravada. Cair no
+  // legado ali mandaria venda, itens e estoque de novo, por um caminho que
+  // não conhece `pdv_venda_sync` — exatamente a duplicata que esta fase
+  // existe para impedir. Erro transitório volta para a fila e tenta v1 de
+  // novo, com o MESMO uuid e os MESMOS ids de item.
+  const protocolo = protocoloVenda.escolherProtocolo(venda, _flagVendaV1(venda));
+  if (venda.sync_protocolo !== protocolo) {
+    db.db().prepare('UPDATE vendas SET sync_protocolo = ? WHERE id = ?').run(protocolo, venda.id);
+    venda.sync_protocolo = protocolo;
+  }
+
+  if (protocolo === 'v1') {
+    return await _sincronizarVendaV1(venda);
   }
 
   let res;

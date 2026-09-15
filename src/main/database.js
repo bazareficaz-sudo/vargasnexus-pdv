@@ -538,6 +538,20 @@ function runMigrations() {
       produto_id TEXT PRIMARY KEY,
       codigo_legivel TEXT NOT NULL
     )`,
+    // FASE 0.6D.3 — QUAL PROTOCOLO ESTA VENDA USA.
+    //
+    // Nulo = ainda não decidido. 'v1' = sincronização transacional.
+    // 'legado' = o caminho de sempre.
+    //
+    // Por que PERSISTIR em vez de reler a flag a cada tentativa: a flag
+    // controla QUAIS VENDAS NOVAS entram no protocolo novo. Se um retry
+    // relesse a flag, uma venda que já tentou o v1 — e que pode ter
+    // commitado no servidor sem a resposta chegar — voltaria pelo legado
+    // depois de o administrador desligar a flag. Aí sim nasceria a
+    // duplicata: o legado não conhece `pdv_venda_sync` e mandaria tudo de
+    // novo. A decisão é tomada UMA vez, antes do primeiro byte remoto, e
+    // vale para sempre naquela venda.
+    'ALTER TABLE vendas ADD COLUMN sync_protocolo TEXT',
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* coluna já existe */ }
