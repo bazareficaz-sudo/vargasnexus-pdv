@@ -1644,6 +1644,34 @@ const vendas = {
   editar(id, novosItens, novosDados) {
     const venda = this.getById(id);
     if (!venda || venda.status === 'cancelada') throw new Error('Venda não encontrada ou cancelada');
+
+    // FASE 0.6D.3A — GATE: venda v1 em voo não pode ser editada.
+    //
+    // `sync_protocolo='v1'` com `remote_id` nulo significa: a venda foi (ou
+    // está sendo) enviada pela operação transacional e AINDA NÃO SABEMOS o
+    // que aconteceu no servidor. Ela pode estar commitada lá, com a resposta
+    // perdida — é exatamente o cenário que o retry por UUID resolve.
+    //
+    // Editar aqui regeneraria todos os `venda_itens.id` (o DELETE+INSERT
+    // abaixo), e o próximo retry mandaria o MESMO `venda_id` com um payload
+    // diferente. O servidor, que guardou o fingerprint da criação, responderia
+    // `conflito_payload` — e a venda ficaria travada, sem caminho de volta.
+    //
+    // Pior: se a criação NÃO tivesse commitado, o retry aplicaria o payload
+    // editado como se fosse a venda original, misturando criação com edição
+    // numa operação que se chama "sincronizar criação".
+    //
+    // Por isso o bloqueio é até a RECONCILIAÇÃO, não para sempre: assim que o
+    // retry confirmar (`remote_id` preenchido), editar volta a ser possível
+    // pelo caminho de edição — que é operação própria, com RPC própria.
+    if (venda.sync_protocolo === 'v1' && !venda.remote_id) {
+      const e = new Error(
+        'Esta venda está sendo enviada ao servidor e ainda não foi confirmada. '
+        + 'Aguarde a sincronização terminar para editá-la.');
+      e.codigo = 'v1_em_voo';
+      throw e;
+    }
+
     const now = new Date().toISOString();
 
     const editarTx = db.transaction(() => {
