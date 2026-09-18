@@ -586,6 +586,13 @@ async function registrarVenda(venda) {
   }
 
   if (itensPayload.length) {
+    // Troca (devolve um item, leva outro, tudo na mesma venda) chega aqui com
+    // um item de quantidade negativa — o estoque abaixo já trata isso certo
+    // (-Number(i.quantidade) inverte o sinal e credita de volta), mas o
+    // `tipo` gravado era sempre 'venda', mesmo pra esse item. Resultado
+    // medido no painel: a devolução some da aba "Devoluções" e some de
+    // vendas.tem_devolucao, disfarçada de venda normal — não afeta o saldo
+    // de estoque, só a classificação/relatório.
     const { error: errItens } = await supabase.from('venda_itens').insert(
       itensPayload.map(i => ({
         venda_id: novaVenda.id,
@@ -596,7 +603,7 @@ async function registrarVenda(venda) {
         preco_unitario: i.preco_unitario,
         desconto: i.desconto,
         total: i.subtotal,
-        tipo: 'venda',
+        tipo: Number(i.quantidade) < 0 ? 'devolucao' : 'venda',
       }))
     );
     if (errItens) console.warn('[VENDA] Erro ao inserir venda_itens:', errItens.message);
