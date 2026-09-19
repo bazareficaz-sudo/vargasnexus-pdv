@@ -511,33 +511,12 @@ async function syncDownConfigDesconto() {
   }
 }
 
-// ─── Orçamentos: monta o payload aceito por api.sincronizarOrcamento a
-// partir do retorno de db.orcamentos.payloadSync() (itens já com
-// produto_remote_id resolvido). Usado tanto pelo envio imediato (main.js)
-// quanto pelo reenvio via fila (abaixo), para não duplicar o mapeamento.
-function montarPayloadOrcamentoRemoto(orcPayload) {
-  const usuario = store.get('auth.usuario') || {};
-  return {
-    empresa_id: usuario.empresa_estoque_id || usuario.empresa_id || store.get('auth.empresa_id'),
-    numero: orcPayload.numero,
-    cliente_nome: orcPayload.cliente_nome || null,
-    vendedor_nome: orcPayload.vendedor_nome || usuario.nome || null,
-    subtotal: orcPayload.subtotal,
-    desconto_total: orcPayload.desconto || 0,
-    total: orcPayload.total,
-    observacao: orcPayload.observacao || null,
-    validade_dias: orcPayload.validade_dias || 7,
-    itens: orcPayload.itens.map(i => ({
-      produto_id: i.produto_remote_id || null,
-      produto_nome: i.produto_nome,
-      produto_sku: i.produto_sku || null,
-      quantidade: i.quantidade,
-      preco_unitario: i.preco_unitario,
-      desconto: i.desconto || 0,
-      subtotal: i.total,
-    })),
-  };
-}
+// Mora de fato em api.js (é lá que o legado de orcamentoComando.js a chama,
+// via `api.montarPayloadOrcamentoRemoto`) — reexportada aqui só porque este
+// módulo já tinha essa definição e algo pode depender do nome `sync.montarPayloadOrcamentoRemoto`.
+// Ter duas implementações foi exatamente o que deixou a de api.js sumir sem
+// ninguém notar; agora há uma só.
+const { montarPayloadOrcamentoRemoto } = api;
 
 // Local usa 'pendente' como status inicial; no Supabase o valor equivalente
 // é 'aberto' (definido no insert de sincronizarOrcamento). Demais status

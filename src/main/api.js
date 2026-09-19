@@ -1522,6 +1522,38 @@ async function converterOrcamentoAutenticado({ orcamento_id, venda_id, revisao_b
   return { tipo: 'erro', motivo: r.motivo, erro: r.erro };
 }
 
+// Monta o payload aceito por `sincronizarOrcamento` a partir do retorno de
+// `db.orcamentos.payloadSync()` (itens já com produto_remote_id resolvido).
+// Só existia em sync.js até aqui — `orcamentoComando.js` (caminho legado de
+// criação, quando o terminal ainda não foi migrado pra rota autenticada)
+// sempre chamou `api.montarPayloadOrcamentoRemoto`, então sem essa função
+// aqui o legado lançava TypeError (engolido pelo try/catch de
+// `pelaRotaAntiga`) e o orçamento nunca saía do SQLite local — nunca
+// aparecia na tela web, sem nenhum aviso ao operador.
+function montarPayloadOrcamentoRemoto(orcPayload) {
+  const usuario = store.get('auth.usuario') || {};
+  return {
+    empresa_id: usuario.empresa_estoque_id || usuario.empresa_id || store.get('auth.empresa_id'),
+    numero: orcPayload.numero,
+    cliente_nome: orcPayload.cliente_nome || null,
+    vendedor_nome: orcPayload.vendedor_nome || usuario.nome || null,
+    subtotal: orcPayload.subtotal,
+    desconto_total: orcPayload.desconto || 0,
+    total: orcPayload.total,
+    observacao: orcPayload.observacao || null,
+    validade_dias: orcPayload.validade_dias || 7,
+    itens: orcPayload.itens.map(i => ({
+      produto_id: i.produto_remote_id || null,
+      produto_nome: i.produto_nome,
+      produto_sku: i.produto_sku || null,
+      quantidade: i.quantidade,
+      preco_unitario: i.preco_unitario,
+      desconto: i.desconto || 0,
+      subtotal: i.total,
+    })),
+  };
+}
+
 async function sincronizarOrcamento(payload) {
   const { data: orc, error } = await supabase.from('orcamentos').insert({
     empresa_id: payload.empresa_id,
@@ -1971,6 +2003,7 @@ module.exports = {
   mapearAnuncioBase44: _naoDisponivel('Marketplace'),
   getIdProdutoGenerico: _naoDisponivel('Marketplace'),
   sincronizarOrcamento,
+  montarPayloadOrcamentoRemoto,
   salvarOrcamentoAutenticado,
   sincronizarOrcamentos,
   orcamentosCanceladosNoServidor,
