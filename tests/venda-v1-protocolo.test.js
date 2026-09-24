@@ -108,13 +108,13 @@ describe('payload v1 — determinístico', () => {
   });
 });
 
-describe('escolha de protocolo — a flag só decide venda nova', () => {
-  test('flag ligada, venda nova: v1', () => {
-    assert.equal(escolherProtocolo({ sync_protocolo: null }, true), 'v1');
+describe('escolha de protocolo — servidor decide venda nova', () => {
+  test('flag local ligada não decide venda nova', () => {
+    assert.equal(escolherProtocolo({ sync_protocolo: null }, true), 'negociando_v1');
   });
 
-  test('flag desligada, venda nova: legado', () => {
-    assert.equal(escolherProtocolo({ sync_protocolo: null }, false), 'legado');
+  test('flag local desligada não desvia venda nova para legado', () => {
+    assert.equal(escolherProtocolo({ sync_protocolo: null }, false), 'negociando_v1');
   });
 
   test('FLAG DESLIGADA NÃO CONVERTE RETRY V1 EM LEGADO', () => {
@@ -203,16 +203,14 @@ describe('SEM DUAL-WRITE — o caminho v1 não encosta no legado', () => {
     assert.match(corpo, /\/api\/pdv\/vendas\/sincronizar-v1/);
   });
 
-  test('NÃO EXISTE FALLBACK v1 → legado', () => {
-    // Se o v1 falhar de forma ambígua, cair no legado mandaria tudo de novo
-    // por um caminho que não conhece pdv_venda_sync.
+  test('recusa pre-write só é avaliada na primeira tentativa da execução', () => {
     const corpo = corpoDaFuncao('_sincronizarVendaV1');
-    assert.equal(/legado/i.test(corpo.replace(/\/\/[^\n]*/g, '')), false,
-      'nenhuma referência a legado no fluxo executável do v1');
+    assert.match(corpo, /podeNegociar && protocoloVenda.recusaPreWrite/);
+    assert.match(corpo, /alterada.changes !== 1/);
   });
 
   test('a bifurcação acontece ANTES de qualquer efeito remoto da venda', () => {
-    const corpo = corpoDaFuncao('_sincronizarVendaCreate');
+    const corpo = corpoDaFuncao('_sincronizarVendaCreateExclusiva');
     const posBifurcacao = corpo.indexOf('_sincronizarVendaV1(venda)');
     const posLegado = corpo.indexOf('api.registrarVenda');
     assert.ok(posBifurcacao !== -1 && posLegado !== -1);
@@ -220,18 +218,18 @@ describe('SEM DUAL-WRITE — o caminho v1 não encosta no legado', () => {
   });
 
   test('o portão de arbitragem continua ANTES da bifurcação', () => {
-    const corpo = corpoDaFuncao('_sincronizarVendaCreate');
+    const corpo = corpoDaFuncao('_sincronizarVendaCreateExclusiva');
     assert.ok(corpo.indexOf('_arbitrarAntesDeSubir') < corpo.indexOf('escolherProtocolo'),
       'nenhum efeito remoto — incluindo a escolha de protocolo — antes da arbitragem');
   });
 
   test('o protocolo é persistido antes de sair da máquina', () => {
-    const corpo = corpoDaFuncao('_sincronizarVendaCreate');
+    const corpo = corpoDaFuncao('_sincronizarVendaCreateExclusiva');
     assert.match(corpo, /UPDATE vendas SET sync_protocolo/);
-    assert.ok(corpo.indexOf('sync_protocolo = ?') < corpo.indexOf('_sincronizarVendaV1(venda)'));
+    assert.ok(corpo.indexOf("sync_protocolo = 'negociando_v1'") < corpo.indexOf('_sincronizarVendaV1(venda, true)'));
   });
 
-  test('a flag do v1 é própria, não a de orçamentos', () => {
-    assert.match(SYNC, /rotas\.vendas_transacional_v1 === true/);
+  test('a flag é consultada pelo servidor, nunca pelo store local', () => {
+    assert.doesNotMatch(SYNC, /rotas_habilitadas|_flagVendaV1/);
   });
 });

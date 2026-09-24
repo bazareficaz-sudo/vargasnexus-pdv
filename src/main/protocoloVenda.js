@@ -1,43 +1,64 @@
 /**
- * protocoloVenda.js — qual caminho a venda usa, e o que fazer com a resposta.
- *
- * FASE 0.6D.3. Regra pura, sem rede e sem banco, para poder ser testada
- * sozinha — mesmo padrão de `arbitragemVenda.js`.
- *
- * DUAS DECISÕES MORAM AQUI, e as duas são de segurança:
- *
- * 1. ESCOLHER O PROTOCOLO — uma vez só, antes do primeiro byte remoto.
- *
- *    A flag decide apenas VENDAS AINDA NÃO VINCULADAS. Uma venda que já
- *    escolheu `v1` continua `v1` para sempre, mesmo que a flag seja
- *    desligada depois. O motivo é concreto: se um retry relesse a flag, uma
- *    venda que já tentou o v1 — e pode ter commitado no servidor sem a
- *    resposta chegar — voltaria pelo legado. O legado não conhece
- *    `pdv_venda_sync`, mandaria tudo de novo, e aí sim nasceria a duplicata
- *    que esta fase inteira existe para impedir.
- *
- * 2. TRADUZIR A RESPOSTA — e nunca marcar `synced` no escuro.
- *
- *    Resposta ambígua (timeout, 5xx, rede) é `pendente`, não sucesso e não
- *    conflito: o estado remoto é desconhecido, e só o retry com o mesmo
- *    UUID pode desempatar. Chamar isso de erro terminal abandonaria uma
- *    venda que talvez esteja gravada; chamar de sucesso marcaria como
- *    completa uma que talvez não exista.
+ * FASE 0.6D.3B — negociação com autoridade no servidor.
+ * NULL -> negociando_v1 é persistido antes de enviar. Somente a invocação
+ * original pode concluir em legado após recusa comprovada pré-efeitos da
+ * venda. Crash, retry e resposta ambígua tornam o binding permanentemente V1.
+ * Não há cópia local de flag nem migração de vendas já vinculadas.
  */
 
 'use strict';
 
-/**
- * @param {object} venda  linha local (precisa de `sync_protocolo`)
- * @param {boolean} flagLigada  `rotas_habilitadas.vendas_transacional_v1`
- * @returns {'v1'|'legado'}
- */
-function escolherProtocolo(venda, flagLigada) {
-  // Já vinculada: a decisão anterior manda. Inclusive — e principalmente —
-  // quando a flag mudou desde então.
-  if (venda && venda.sync_protocolo === 'v1') return 'v1';
-  if (venda && venda.sync_protocolo === 'legado') return 'legado';
-  return flagLigada ? 'v1' : 'legado';
+function escolherProtocolo(venda) {
+  const protocolo = venda?.sync_protocolo;
+  if (protocolo == null) return 'negociando_v1';
+  if (protocolo === 'v1' || protocolo === 'negociando_v1') return 'v1';
+  if (protocolo === 'legado') return 'legado';
+  // Estado desconhecido não é uma venda nova. Não renegociar no escuro.
+  throw new Error(`Protocolo de venda desconhecido: ${protocolo}`);
+}
+
+// Somente a invocação que persistiu NULL -> negociando_v1 pode usar esta
+// decisão. Depois de crash/restart, negociando_v1 é V1, sem fallback.
+// O contrato local do Web em fa1ae83 recusa com HTTP 409 antes de reservar
+// pdv_operacoes e antes da RPC. A autenticação pode atualizar o heartbeat
+// do terminal; isso não é efeito de venda/itens/estoque.
+function recusaPreWrite(resposta) {
+  if (resposta?.ok !== false) return false;
+  if (resposta.motivo === 'sem_identidade') {
+    return resposta.preWriteLocal === true && resposta.status == null;
+  }
+  return resposta.motivo === 'rota_desligada'
+    && resposta.status === 409
+    && resposta.corpo?.ok === false
+    && resposta.corpo.motivo === 'rota_desligada'
+    && resposta.corpo.estado == null;
+}
+
+function exigirCriacaoReconciliada(venda) {
+  // Inclui negociando_v1 e valores desconhecidos: nenhum deles autoriza
+  // alterar os dados necessários para reconciliar uma criação ambígua.
+  if (!venda.remote_id && venda.sync_protocolo != null && venda.sync_protocolo !== 'legado') {
+    const erro = new Error('Esta venda está sendo enviada ao servidor e ainda não foi confirmada. '
+      + 'Aguarde a sincronização terminar para alterá-la.');
+    erro.codigo = 'v1_em_voo';
+    throw erro;
+  }
+}
+
+function lerPayloadPersistido(venda) {
+  const erro = new Error(`Venda ${venda.id}: payload V1 persistido ausente ou inválido; requer reconciliação, sem reenvio automático`);
+  erro.codigo = 'snapshot_v1_invalido';
+  if (!venda.sync_payload_v1) throw erro;
+  let payload;
+  try { payload = JSON.parse(venda.sync_payload_v1); } catch { throw erro; }
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!payload || payload.schema_version !== 1 || payload.venda_id !== venda.id
+      || !uuid.test(payload.empresa_id) || !Array.isArray(payload.itens)
+      || !payload.itens.every(i => i && uuid.test(i.id)
+        && (i.produto_id === null || uuid.test(i.produto_id))
+        && ['quantidade', 'preco_unitario', 'desconto', 'total'].every(k => Number.isFinite(i[k])))
+      || !['total', 'subtotal', 'desconto', 'valor_pago', 'troco'].every(k => Number.isFinite(payload[k]))) throw erro;
+  return payload;
 }
 
 // Estados que a RPC devolve. Lidos do corpo da função em produção via
@@ -85,4 +106,5 @@ function interpretarResposta(resposta) {
   };
 }
 
-module.exports = { escolherProtocolo, interpretarResposta, ESTADOS_SUCESSO, ESTADOS_TERMINAIS };
+module.exports = { escolherProtocolo, recusaPreWrite, exigirCriacaoReconciliada, lerPayloadPersistido,
+  interpretarResposta, ESTADOS_SUCESSO, ESTADOS_TERMINAIS };

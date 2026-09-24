@@ -9,6 +9,7 @@ const path = require('path');
 const { app } = require('electron');
 const { v4: uuidv4 } = require('uuid');
 const orcSql = require('./orcamentoSql');
+const { exigirCriacaoReconciliada } = require('./protocoloVenda');
 
 const DB_PATH = path.join(app.getPath('userData'), 'pdv-vargas.db');
 let db;
@@ -555,6 +556,12 @@ function runMigrations() {
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* coluna já existe */ }
+  }
+
+  // 0.6D.3B: migration local aditiva. Não mascarar falha de disco/schema:
+  // sem a coluna não é seguro iniciar uma nova tentativa V1.
+  if (!db.prepare('PRAGMA table_info(vendas)').all().some(c => c.name === 'sync_payload_v1')) {
+    db.exec('ALTER TABLE vendas ADD COLUMN sync_payload_v1 TEXT');
   }
 
   limparProdutosBase44Legado();
@@ -1647,7 +1654,8 @@ const vendas = {
 
     // FASE 0.6D.3A — GATE: venda v1 em voo não pode ser editada.
     //
-    // `sync_protocolo='v1'` com `remote_id` nulo significa: a venda foi (ou
+    // `sync_protocolo='v1'` ou 'negociando_v1' com `remote_id` nulo:
+    // a venda foi (ou
     // está sendo) enviada pela operação transacional e AINDA NÃO SABEMOS o
     // que aconteceu no servidor. Ela pode estar commitada lá, com a resposta
     // perdida — é exatamente o cenário que o retry por UUID resolve.
@@ -1664,13 +1672,7 @@ const vendas = {
     // Por isso o bloqueio é até a RECONCILIAÇÃO, não para sempre: assim que o
     // retry confirmar (`remote_id` preenchido), editar volta a ser possível
     // pelo caminho de edição — que é operação própria, com RPC própria.
-    if (venda.sync_protocolo === 'v1' && !venda.remote_id) {
-      const e = new Error(
-        'Esta venda está sendo enviada ao servidor e ainda não foi confirmada. '
-        + 'Aguarde a sincronização terminar para editá-la.');
-      e.codigo = 'v1_em_voo';
-      throw e;
-    }
+    exigirCriacaoReconciliada(venda);
 
     const now = new Date().toISOString();
 
@@ -1773,6 +1775,7 @@ const vendas = {
   cancelar(id, motivo) {
     const venda = this.getById(id);
     if (!venda || venda.status === 'cancelada') return false;
+    exigirCriacaoReconciliada(venda);
 
     const cancelar = db.transaction(() => {
       db.prepare("UPDATE vendas SET status = 'cancelada', observacao = ?, sync_status = 'pending' WHERE id = ?")
