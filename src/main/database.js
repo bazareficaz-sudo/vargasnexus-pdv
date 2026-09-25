@@ -10,6 +10,7 @@ const { app } = require('electron');
 const { v4: uuidv4 } = require('uuid');
 const orcSql = require('./orcamentoSql');
 const { exigirCriacaoReconciliada } = require('./protocoloVenda');
+const { comporDaVendaLocal, validarComposicao, ehEstritamenteLocal } = require('./pagamentoVenda');
 
 const DB_PATH = path.join(app.getPath('userData'), 'pdv-vargas.db');
 let db;
@@ -126,6 +127,35 @@ function createTables() {
       FOREIGN KEY (venda_id) REFERENCES vendas(id),
       FOREIGN KEY (produto_id) REFERENCES produtos(id)
     );
+
+    -- FASE 4C.2 — os pagamentos da venda, um por linha.
+    --
+    -- Uma venda tem N pagamentos. Hoje a UI so produz um, mas a identidade
+    -- de cada parcela precisa existir ANTES da UI multipla: o id nasce
+    -- local, no momento da criacao, e é ele que torna o pagamento
+    -- idempotente quando a sincronizacao V2 chegar (Checkpoint 3).
+    --
+    -- Duas parcelas de R$ 50 no cartao sao dois pagamentos legitimos; por
+    -- isso a identidade NUNCA pode ser (venda, forma, valor).
+    --
+    -- FK sem cascade, igual a venda_itens: o cancelamento é soft (UPDATE de
+    -- status), entao os pagamentos acompanham a venda cancelada e o
+    -- historico local fica preservado.
+    --
+    -- Monetario em REAL por convencao do banco local; toda comparacao de
+    -- invariante acontece em centavos inteiros, em pagamentoVenda.js.
+    CREATE TABLE IF NOT EXISTS venda_pagamentos (
+      id TEXT PRIMARY KEY,
+      venda_id TEXT NOT NULL,
+      forma TEXT NOT NULL,          -- dinheiro | pix | credito | debito | credito_cliente | carteira
+      valor REAL NOT NULL,          -- valor APLICADO a venda
+      valor_entregue REAL,          -- so em especie, e so quando a UI informou
+      troco REAL,                   -- so em especie: entregue menos aplicado
+      sequencia INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (venda_id) REFERENCES vendas(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_venda_pagamentos_venda ON venda_pagamentos(venda_id);
 
     -- Movimentações de estoque
     CREATE TABLE IF NOT EXISTS movimentacoes_estoque (
@@ -1574,6 +1604,37 @@ const vendas = {
         venda.orcamento_id || null
       );
 
+      // FASE 4C.2 — os pagamentos, dentro da MESMA transacao.
+      //
+      // Fica aqui, logo depois da venda, porque a FK exige a venda existindo
+      // — e porque se qualquer coisa abaixo falhar (item, estoque, fila,
+      // orcamento), estes pagamentos desfazem junto. Nao ha segunda
+      // transacao: ou grava tudo, ou nao grava nada.
+      //
+      // `venda.pagamentos` só vem preenchido por quem ja sabe compor. A UI
+      // multipla é do Checkpoint 3; por enquanto o adaptador deriva UM
+      // pagamento da forma unica, e devolve vazio para `misto` sem
+      // decomposicao — zero pagamentos é o resultado CORRETO ali.
+      const composicao = Array.isArray(venda.pagamentos) && venda.pagamentos.length
+        ? venda.pagamentos
+        : comporDaVendaLocal(venda);
+
+      if (composicao.length) {
+        const conferida = validarComposicao(composicao, venda.total);
+        if (!conferida.ok) {
+          const erro = new Error(conferida.erro);
+          erro.codigo = 'composicao_pagamento_invalida';
+          throw erro;
+        }
+        for (const pag of conferida.valor) {
+          db.prepare(`
+            INSERT INTO venda_pagamentos
+            (id, venda_id, forma, valor, valor_entregue, troco, sequencia, created_at)
+            VALUES (?,?,?,?,?,?,?,?)
+          `).run(uuidv4(), id, pag.forma, pag.valor, pag.valor_entregue, pag.troco, pag.sequencia, now);
+        }
+      }
+
       // Inserir itens e baixar estoque
       for (const item of venda.itens) {
         db.prepare(`
@@ -1674,6 +1735,33 @@ const vendas = {
     // pelo caminho de edição — que é operação própria, com RPC própria.
     exigirCriacaoReconciliada(venda);
 
+    // FASE 4C.2 — editar reescreve total, forma_pagamento, valor_pago e
+    // troco. Os pagamentos normalizados da versao anterior deixariam de ser
+    // verdade: uma venda de 150 que virou 120 nao pode continuar com
+    // pagamentos somando 150.
+    //
+    // Enquanto a venda é ESTRITAMENTE LOCAL eles fazem parte do estado
+    // editavel e sao substituidos na mesma transacao, mais abaixo.
+    //
+    // Depois que a venda chegou ao servidor, reescrever apagaria
+    // rastreabilidade — e nao existe fluxo de estorno ainda. Entao bloqueia,
+    // sem alteracao parcial de nada.
+    //
+    // O portao so dispara quando HA pagamentos normalizados. Venda historica
+    // nao tem nenhum (nao houve backfill), entao o comportamento de edicao
+    // que ja existia continua identico para elas.
+    const temPagamentos = db.prepare(
+      'SELECT count(*) AS n FROM venda_pagamentos WHERE venda_id = ?').get(id).n > 0;
+
+    if (temPagamentos && !ehEstritamenteLocal(venda)) {
+      const erro = new Error(
+        'Esta venda ja saiu do terminal e tem pagamentos registrados. Alterar os itens '
+        + 'reescreveria a composicao do pagamento e apagaria o historico. Cancele a venda '
+        + 'e refaca, ou ajuste pelo fluxo de estorno.');
+      erro.codigo = 'venda_sincronizada_com_pagamentos';
+      throw erro;
+    }
+
     const now = new Date().toISOString();
 
     const editarTx = db.transaction(() => {
@@ -1705,6 +1793,36 @@ const vendas = {
       `).run(subtotal, desconto, total,
         novosDados.forma_pagamento || venda.forma_pagamento,
         novosDados.valor_pago || total, novosDados.troco || 0, now, id);
+
+      // FASE 4C.2 — a composicao acompanha a edicao, na MESMA transacao.
+      //
+      // Substituicao total, nao merge: os pagamentos antigos descrevem um
+      // total que nao existe mais. Se a nova forma for `misto` sem
+      // decomposicao, o resultado correto é ZERO pagamentos normalizados —
+      // nao os antigos sobrevivendo como se ainda fossem verdade, e nao uma
+      // divisao inventada.
+      db.prepare('DELETE FROM venda_pagamentos WHERE venda_id = ?').run(id);
+
+      const formaNova = novosDados.forma_pagamento || venda.forma_pagamento;
+      const composicaoNova = Array.isArray(novosDados.pagamentos) && novosDados.pagamentos.length
+        ? novosDados.pagamentos
+        : comporDaVendaLocal({ forma_pagamento: formaNova, total, valor_pago: novosDados.valor_pago });
+
+      if (composicaoNova.length) {
+        const conferida = validarComposicao(composicaoNova, total);
+        if (!conferida.ok) {
+          const erro = new Error(conferida.erro);
+          erro.codigo = 'composicao_pagamento_invalida';
+          throw erro;
+        }
+        for (const pag of conferida.valor) {
+          db.prepare(`
+            INSERT INTO venda_pagamentos
+            (id, venda_id, forma, valor, valor_entregue, troco, sequencia, created_at)
+            VALUES (?,?,?,?,?,?,?,?)
+          `).run(uuidv4(), id, pag.forma, pag.valor, pag.valor_entregue, pag.troco, pag.sequencia, now);
+        }
+      }
     });
 
     editarTx();
@@ -1765,6 +1883,12 @@ const vendas = {
       LEFT JOIN produtos p ON p.id = vi.produto_id
       WHERE vi.venda_id = ?
     `).all(id);
+    // FASE 4C.2. Nao entra no payload V1: `payloadVendaV1` monta por lista
+    // explicita de campos, entao acrescentar aqui nao muda o que vai para o
+    // servidor. O protocolo continua V1.
+    venda.pagamentos = db.prepare(
+      'SELECT * FROM venda_pagamentos WHERE venda_id = ? ORDER BY sequencia, created_at'
+    ).all(id);
     return venda;
   },
 
