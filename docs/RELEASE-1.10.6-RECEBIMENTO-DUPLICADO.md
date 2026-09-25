@@ -1,6 +1,6 @@
 # Release 1.10.6 — trava contra recebimento duplicado
 
-**Estado: preparado e testado; build NÃO gerado.** 25/09/2026.
+**Estado: build gerado e artefato validado.** 25/09/2026.
 
 ## Por que sozinho
 
@@ -69,12 +69,46 @@ As 5 falhas sob Electron são as suítes de orçamento, por
 esse builtin é do Node 22+. Limitação preexistente do harness, idêntica na
 base `97312d9`, e as cinco passam sob Node 24. Não é regressão.
 
-## Pendente
+## Artefato
 
-1. **Build não gerado** — `electron-builder --win --x64 --publish never` foi
-   recusado pelo classificador do modo automático.
-2. Sem hash de artefato, sem validação de `app.asar`.
-3. Sem tag, sem push.
-4. `empresa_config_pdv.versao_minima_pdv` não pôde ser lido (mesma recusa);
-   convém conferir antes de atualizar terminal.
-5. Rollout: um terminal primeiro, observar, depois os demais.
+| | |
+|---|---|
+| instalador | `dist/VargasNexus PDV Setup 1.10.6.exe` |
+| tamanho | 82.883.026 bytes |
+| SHA-256 | `25ecdf0e63cd1ccf3b1dff2d0f3c2308700b5f68510b492f0b8f8b91fc20de7c` |
+| alvo | NSIS, win32 x64, `perMachine=true`, `oneClick=false` |
+| Electron | 29.4.6 |
+| better-sqlite3 | 12.10.1, prebuilt para o ABI do Electron |
+
+Conferido **dentro** do `app.asar` (11.672.094 bytes), não só no nome do
+arquivo:
+
+| verificação | resultado |
+|---|---|
+| `package.json` embutido | **1.10.6**, name `pdv-vargas` |
+| correção presente (`jaEstavaPago`) | **2 ocorrências** — as duas funções |
+| 0.6D.3B ausente (`sync_payload_v1`) | **0** ✔ |
+| 0.6D.3B ausente (`negociando_v1`) | **0** ✔ |
+
+As duas últimas linhas são a prova de que este build é mesmo 1.10.1 + a
+correção, e não carrega nada da outra linhagem.
+
+## Rollout sugerido
+
+Um terminal primeiro, o de menor volume, e observar antes de seguir:
+
+| ordem | terminal | vendas/7d | versão atual |
+|---|---|---|---|
+| 1º (piloto) | **Balcão 04 / PDV-004** | 38 | 1.10.1 |
+| 2º | Caixa | 2 | 1.10.1 |
+| 3º | Balcão 02 / PDV-001 | 186 | 1.10.1 |
+| 4º | Balcão 03 / PDV-003 | 260 | 1.10.1 |
+| — | **YOGA** | — | **NÃO ATUALIZAR** (1.10.5) |
+| — | Escritório Silvano | — | verificar antes (1.10.2) |
+
+O que observar no piloto depois de instalar: o terminal volta a bater
+heartbeat com `versao_pdv = 1.10.6`; uma venda normal continua entrando e
+sincronizando; e um recebimento de conta já quitada em outro ponto passa a
+não gerar segunda linha em `recebimentos`.
+
+## Pendente
