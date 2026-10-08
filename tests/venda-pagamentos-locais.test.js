@@ -369,28 +369,54 @@ describe('12) edicao de venda', () => {
     assert.equal(db.db().prepare('SELECT count(*) n FROM venda_itens WHERE venda_id=?').get(v.id).n, antes.itens);
   });
 
-  test('E. venda APLICADA no servidor: edicao bloqueada, zero alteracao', t => {
+  test('E1. sincronizada com UM pagamento: edicao PERMITIDA, composicao recriada', t => {
+    // Um pagamento é derivavel de (forma, total). Recria-lo nao perde nada, e
+    // bloquear aqui desligaria a edicao de venda confirmada para toda venda
+    // comum — que a 0.6D.3A homologou como permitida apos a reconciliacao.
     const { db } = ambiente(t);
     const v = db.vendas.registrar(venda({ total: 100, forma_pagamento: 'dinheiro', valor_pago: 100 }));
     db.db().prepare("UPDATE vendas SET remote_id='remoto-1', sync_protocolo='v1' WHERE id=?").run(v.id);
+
+    db.vendas.editar(v.id, [item(80)], { forma_pagamento: 'dinheiro', valor_pago: 80 });
+
+    const ps = pagamentosDe(db, v.id);
+    assert.equal(ps.length, 1);
+    assert.equal(ps[0].valor, 80, 'composicao acompanha o novo total');
+    assert.equal(db.db().prepare('SELECT total FROM vendas WHERE id=?').get(v.id).total, 80);
+  });
+
+  test('E2. sincronizada com DOIS pagamentos: edicao BLOQUEADA, zero alteracao', t => {
+    // Aqui ha informacao que nada reconstroi: como o operador repartiu o
+    // valor entre as formas. É isso que o portao protege.
+    const { db } = ambiente(t);
+    const v = db.vendas.registrar(venda({ total: 150, forma_pagamento: 'misto', pagamentos: [
+      { forma: 'dinheiro', valor: 50 }, { forma: 'credito', valor: 100 },
+    ] }));
+    db.db().prepare("UPDATE vendas SET remote_id='remoto-1', sync_protocolo='v1' WHERE id=?").run(v.id);
     const antes = pagamentosDe(db, v.id);
 
-    assert.throws(() => db.vendas.editar(v.id, [item(80)], { forma_pagamento: 'dinheiro', valor_pago: 80 }),
-      e => e.codigo === 'venda_sincronizada_com_pagamentos');
+    assert.throws(() => db.vendas.editar(v.id, [item(120)], { forma_pagamento: 'misto', pagamentos: [
+      { forma: 'dinheiro', valor: 20 }, { forma: 'credito', valor: 100 },
+    ] }), e => e.codigo === 'venda_sincronizada_com_pagamentos');
 
-    assert.deepEqual(pagamentosDe(db, v.id), antes);
-    assert.equal(db.db().prepare('SELECT total FROM vendas WHERE id=?').get(v.id).total, 100);
+    assert.deepEqual(pagamentosDe(db, v.id), antes, 'nenhuma alteracao parcial');
+    assert.equal(db.db().prepare('SELECT total FROM vendas WHERE id=?').get(v.id).total, 150);
+    assert.equal(db.db().prepare('SELECT count(*) n FROM venda_itens WHERE venda_id=?').get(v.id).n, 1);
   });
 
   test('F. estado AMBIGUO nao é presumido local — preserva e bloqueia', t => {
     const { db } = ambiente(t);
 
-    // F1: vinculada ao legado, sem remote_id. Pode ter sido aplicada la.
-    const a = db.vendas.registrar(venda({ total: 100, forma_pagamento: 'dinheiro', valor_pago: 100 }));
+    // F1: vinculada ao legado, sem remote_id — pode ter sido aplicada la.
+    // Com composicao multipla, nao se presume local: preserva e bloqueia.
+    const a = db.vendas.registrar(venda({ total: 150, forma_pagamento: 'misto', pagamentos: [
+      { forma: 'dinheiro', valor: 50 }, { forma: 'credito', valor: 100 },
+    ] }));
     db.db().prepare("UPDATE vendas SET sync_protocolo='legado' WHERE id=?").run(a.id);
     const psA = pagamentosDe(db, a.id);
-    assert.throws(() => db.vendas.editar(a.id, [item(80)], { forma_pagamento: 'dinheiro', valor_pago: 80 }),
-      e => e.codigo === 'venda_sincronizada_com_pagamentos');
+    assert.throws(() => db.vendas.editar(a.id, [item(120)], { forma_pagamento: 'misto', pagamentos: [
+      { forma: 'dinheiro', valor: 20 }, { forma: 'credito', valor: 100 },
+    ] }), e => e.codigo === 'venda_sincronizada_com_pagamentos');
     assert.deepEqual(pagamentosDe(db, a.id), psA);
 
     // F2: resposta perdida — negociando_v1 sem remote_id. O portao da

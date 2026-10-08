@@ -1747,17 +1747,29 @@ const vendas = {
     // rastreabilidade — e nao existe fluxo de estorno ainda. Entao bloqueia,
     // sem alteracao parcial de nada.
     //
-    // O portao so dispara quando HA pagamentos normalizados. Venda historica
-    // nao tem nenhum (nao houve backfill), entao o comportamento de edicao
-    // que ja existia continua identico para elas.
-    const temPagamentos = db.prepare(
-      'SELECT count(*) AS n FROM venda_pagamentos WHERE venda_id = ?').get(id).n > 0;
+    // O portao protege o que NAO da para reconstruir.
+    //
+    // Composicao MULTIPLA carrega uma decisao do operador — como ele repartiu
+    // os R$ 150 entre dinheiro e cartao. Nada no sistema sabe refazer isso, e
+    // reescrever por cima apagaria o unico registro dessa escolha. Se a venda
+    // ja saiu do terminal, bloqueia.
+    //
+    // Composicao de UM pagamento é inteiramente derivavel de forma_pagamento
+    // e total: recria-la nao perde informacao nenhuma. Bloquear aqui
+    // desligaria a edicao de venda confirmada para TODA venda comum, que é um
+    // recurso que ja funciona e que a 0.6D.3A homologou explicitamente
+    // ("o bloqueio é ate a reconciliacao, nao para sempre").
+    //
+    // Venda historica nao tem pagamento normalizado (nao houve backfill),
+    // entao para ela o comportamento de edicao continua identico.
+    const pagamentosExistentes = db.prepare(
+      'SELECT count(*) AS n FROM venda_pagamentos WHERE venda_id = ?').get(id).n;
 
-    if (temPagamentos && !ehEstritamenteLocal(venda)) {
+    if (pagamentosExistentes > 1 && !ehEstritamenteLocal(venda)) {
       const erro = new Error(
-        'Esta venda ja saiu do terminal e tem pagamentos registrados. Alterar os itens '
-        + 'reescreveria a composicao do pagamento e apagaria o historico. Cancele a venda '
-        + 'e refaca, ou ajuste pelo fluxo de estorno.');
+        'Esta venda ja saiu do terminal e foi paga com mais de uma forma. Alterar os itens '
+        + 'reescreveria como o pagamento foi repartido, e essa divisao nao tem como ser '
+        + 'refeita. Cancele a venda e refaca, ou ajuste pelo fluxo de estorno.');
       erro.codigo = 'venda_sincronizada_com_pagamentos';
       throw erro;
     }
