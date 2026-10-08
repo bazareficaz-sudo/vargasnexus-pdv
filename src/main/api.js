@@ -1128,8 +1128,16 @@ async function sincronizarContasReceber() {
 }
 
 async function pagarContaReceber(contaId, formaPagamento, observacao) {
-  const { data: conta } = await supabase.from('contas_receber').select('valor_original, empresa_id, cliente_id').eq('id', contaId).single();
+  const { data: conta } = await supabase.from('contas_receber').select('valor_original, empresa_id, cliente_id, status').eq('id', contaId).single();
   if (!conta) throw new Error('Conta a receber não encontrada');
+  // A lista local do caixa (Carteira de Clientes) só atualiza no sync — se
+  // esta conta já foi recebida no servidor (por outro terminal, ou pelo
+  // site) entre o último sync e este clique, ela ainda aparecia pendente
+  // aqui. Sem esta trava, o clique gravava um SEGUNDO `recebimentos` para o
+  // mesmo valor, sem nada em `contas_receber` acusar o problema (ela já
+  // estava corretamente 'recebido') — foi o que dobrou o "pago" de pelo
+  // menos 3 clientes no extrato do site.
+  if (conta.status === 'recebido') return { ok: true, jaEstavaPago: true };
   const { error } = await supabase.from('contas_receber').update({ valor_recebido: conta.valor_original, status: 'recebido', forma_prevista: formaPagamento || 'dinheiro', observacao: observacao || null }).eq('id', contaId);
   if (error) throw new Error(error.message);
   await supabase.from('recebimentos').insert({
@@ -1141,8 +1149,10 @@ async function pagarContaReceber(contaId, formaPagamento, observacao) {
 }
 
 async function pagarContaReceberParcial(contaId, valorPago, valorOriginal, formaPagamento, observacao) {
-  const { data: conta } = await supabase.from('contas_receber').select('valor_recebido, empresa_id, cliente_id').eq('id', contaId).single();
+  const { data: conta } = await supabase.from('contas_receber').select('valor_recebido, empresa_id, cliente_id, status').eq('id', contaId).single();
   if (!conta) throw new Error('Conta a receber não encontrada');
+  // Mesma trava de pagarContaReceber — ver comentário lá.
+  if (conta.status === 'recebido') return { ok: true, jaEstavaPago: true };
   const novoRecebido = Number(conta.valor_recebido || 0) + valorPago;
   const quitou = novoRecebido >= valorOriginal;
   const { error } = await supabase.from('contas_receber').update({
