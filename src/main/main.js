@@ -65,6 +65,12 @@ function createWindow() {
     if (store.get('config.print_server_ativo') === true) {
       const porta = store.get('config.print_server_porta') || 3001;
       printServer.start(porta);
+      // E o túnel junto: sem ele os balcões não alcançam este caixa, e a URL
+      // de ontem morreu com o processo de ontem. Só não sobe se alguém o
+      // desligou de propósito em Configurações (config.tunnel_auto = false).
+      if (store.get('config.tunnel_auto') !== false) {
+        ligarTunnel(porta).catch((e) => console.warn('[TUNNEL] Subida automática falhou, vai tentar de novo:', e.message));
+      }
     }
     // Tela do Cliente: se já está ligada neste terminal, abre direto. Senão,
     // se detectar um segundo monitor pela primeira vez, pergunta uma única
@@ -246,6 +252,10 @@ app.whenReady().then(() => {
   terminal.iniciarHeartbeat();
   app.on('activate', () => { if (!mainWindow) createWindow(); });
 });
+
+// O cloudflared é processo à parte: sem isto ele sobrevive ao PDV no Windows,
+// e o próximo boot sobe um segundo túnel ao lado do órfão.
+app.on('will-quit', () => { tunnel.stop(); });
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
@@ -981,10 +991,19 @@ ipcMain.handle('print:servidor', async (_, dados) => {
 });
 ipcMain.handle('print:server:start', (_, porta) => {
   const p = porta || store.get('config.print_server_porta') || 3001;
-  return printServer.start(p);
+  const r = printServer.start(p);
+  // Configurou este terminal como CAIXA agora: o túnel sobe junto, como no
+  // boot, sem precisar de um segundo clique.
+  if (store.get('config.tunnel_auto') !== false) {
+    ligarTunnel(p).catch((e) => console.warn('[TUNNEL] Subida falhou, vai tentar de novo:', e.message));
+  }
+  return r;
 });
 ipcMain.handle('print:server:stop', () => {
   printServer.stop();
+  // Sem servidor não há o que expor. A preferência (config.tunnel_auto) fica
+  // como está: religando o servidor, o túnel volta junto.
+  tunnel.stop();
   return { ok: true };
 });
 ipcMain.handle('print:server:status', () => ({
@@ -1097,17 +1116,36 @@ ipcMain.handle('entregas:atualizar', async (_, id, dados) => {
 ipcMain.handle('entregas:getById', (_, id) => db.entregas.getById(id));
 
 // Cloudflare Tunnel
-ipcMain.handle('tunnel:start', async (_, porta) => {
-  return tunnel.start(porta || store.get('config.print_server_porta') || 3001, (status) => {
-    mainWindow?.webContents.send('tunnel:status', status);
-    // Publica a URL nova pro Supabase — os terminais de venda consultam
-    // isso a cada sincronização e se auto-configuram, sem digitar nada.
-    if (status.estado === 'ativo' && status.url) {
-      api.atualizarUrlImpressao(status.url).catch(() => {});
-    }
+//
+// Uma porta de entrada só, para o boot e para o botão: o túnel fica mantido
+// (reinicia sozinho se cair) e toda URL nova é publicada.
+let timerPublicarUrl = null;
+function publicarUrlTunnel(url, tentativa = 0) {
+  if (timerPublicarUrl) { clearTimeout(timerPublicarUrl); timerPublicarUrl = null; }
+  // Os terminais de venda consultam a URL publicada a cada sincronização e
+  // se auto-configuram. Se a publicação falhar (boot sem rede, token ainda
+  // não renovado), insiste — enquanto esta continuar sendo a URL do túnel.
+  api.atualizarUrlImpressao(url).catch(() => false).then((ok) => {
+    if (ok || tunnel.getStatus().url !== url || !tunnel.getStatus().ativo) return;
+    const espera = Math.min(30000 * 2 ** tentativa, 300000);
+    timerPublicarUrl = setTimeout(() => publicarUrlTunnel(url, tentativa + 1), espera);
   });
+}
+function ligarTunnel(porta) {
+  return tunnel.manterAtivo(porta || store.get('config.print_server_porta') || 3001, (status) => {
+    mainWindow?.webContents.send('tunnel:status', status);
+    if (status.estado === 'ativo' && status.url) publicarUrlTunnel(status.url);
+  });
+}
+ipcMain.handle('tunnel:start', async (_, porta) => {
+  store.set('config.tunnel_auto', true);
+  return ligarTunnel(porta);
 });
-ipcMain.handle('tunnel:stop', () => { tunnel.stop(); return { ok: true }; });
+ipcMain.handle('tunnel:stop', () => {
+  store.set('config.tunnel_auto', false);
+  tunnel.stop();
+  return { ok: true };
+});
 ipcMain.handle('tunnel:status', () => tunnel.getStatus());
 
 // NFC-e / FocusNFe

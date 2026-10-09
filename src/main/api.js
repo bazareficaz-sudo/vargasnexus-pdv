@@ -1839,6 +1839,9 @@ async function chamarPdvProxy(_action, params) {
 // gravar venda sem autenticação sempre que a API tivesse um soluço. A
 // estratégia lá é fila offline com idempotência e replay autenticado, nunca
 // escrita direta como plano B.
+//
+// Devolve `true` só quando a URL ficou publicada — quem sobe o túnel usa isso
+// para tentar de novo, já que os balcões não imprimem sem ela.
 async function atualizarUrlImpressao(url) {
   const terminal = require('./terminal');
 
@@ -1851,7 +1854,7 @@ async function atualizarUrlImpressao(url) {
 
   if (r.ok) {
     console.log('[IMPRESSAO] URL publicada pela rota autenticada' + (r.dados.repetido ? ' (repetida)' : ''));
-    return;
+    return true;
   }
 
   // Recusa esperada durante o rollout não é erro — é "ainda não é a vez deste
@@ -1862,19 +1865,20 @@ async function atualizarUrlImpressao(url) {
     // Rede fora é o único caso em que ainda vale tentar o caminho antigo: o
     // nosso servidor pode estar inacessível e o Supabase não. Nos demais,
     // insistir pelo caminho velho só mascararia o que precisa ser visto.
-    if (r.motivo !== 'rede') return;
+    if (r.motivo !== 'rede') return false;
   }
 
   const usuario = store.get('auth.usuario') || {};
   const empresaId = usuario.empresa_estoque_id || usuario.empresa_id;
-  if (!empresaId) return;
+  if (!empresaId) return false;
   const { error } = await supabase.from('pdv_impressao').upsert({
     empresa_id: empresaId,
     print_server_url: url,
     terminal_id: store.get('config.terminal_id') || null,
     updated_at: new Date().toISOString(),
   }, { onConflict: 'empresa_id' });
-  if (error) console.warn('[IMPRESSAO] Caminho antigo também falhou:', error.message);
+  if (error) { console.warn('[IMPRESSAO] Caminho antigo também falhou:', error.message); return false; }
+  return true;
 }
 
 async function buscarUrlImpressao() {

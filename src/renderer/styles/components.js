@@ -2306,6 +2306,7 @@ const Config = {
       <div style="font-size:13px;font-weight:600;margin-bottom:4px">🌐 Tunnel Cloudflare (acesso remoto)</div>
       <div style="font-size:11px;color:var(--text3);margin-bottom:10px">
         Permite que terminais em <b>outras redes</b> imprimam neste CAIXA via internet. Gratuito, sem conta necessária.
+        Sobe sozinho ao abrir o PDV e volta se cair. <b>Parar</b> desliga até você ativar de novo.
       </div>
       <div id="tunnel-status-box" style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
         <span id="tunnel-led" style="width:10px;height:10px;border-radius:50%;background:var(--text3);flex-shrink:0"></span>
@@ -2866,7 +2867,11 @@ const Config = {
       const res = await window.pdv.tunnel.start(porta);
       this._atualizarUiTunnel({ estado: 'ativo', url: res.url, mensagem: `Tunnel ativo: ${res.url}` });
     } catch (e) {
-      this._atualizarUiTunnel({ estado: 'erro', mensagem: 'Erro: ' + e.message });
+      // A primeira subida falhou, mas o túnel continua mantido: o PDV tenta
+      // de novo sozinho e o LED muda quando subir.
+      const ts = await window.pdv.tunnel.status().catch(() => null);
+      this._atualizarUiTunnel({ estado: ts?.mantido ? 'aguardando' : 'erro',
+        mensagem: 'Erro: ' + e.message + (ts?.mantido ? ' — tentando de novo automaticamente' : '') });
     }
   },
 
