@@ -22,6 +22,16 @@
 'use strict';
 
 const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION_PAGAMENTOS = 2;
+
+// A carteira NAO vai em v2 enquanto o gatilho da parte B nao existir.
+//
+// `criar_conta_carteira` dispara no INSERT da venda lendo NEW.pagamentos; em
+// v2 os pagamentos chegam depois, entao a conta a receber nao nasceria. O
+// servidor recusa esse payload — e recusa certo. Mas travar a venda em
+// conflito seria pior que nao compor: aqui a venda com carteira cai para v1
+// e sincroniza exatamente como sempre sincronizou.
+const FORMAS_SEM_V2 = ['carteira'];
 
 // O servidor confere o formato; mandar lixo só gera ida e volta. `_comoUuid`
 // existe em api.js pelo mesmo motivo — aqui é local para a função ficar pura.
@@ -76,8 +86,29 @@ function montarPayloadVendaV1(venda, ctx = {}) {
     });
   }
 
+  // ── composicao de pagamentos (v2) ─────────────────────────────
+  //
+  // So entra quando o chamador pede E a venda tem composicao local E
+  // nenhuma parcela é de uma forma ainda nao suportada. Sem isso, o payload
+  // sai exatamente como sempre saiu: v1, sem o campo `pagamentos`.
+  const locais = Array.isArray(venda.pagamentos) ? venda.pagamentos : [];
+  const podeV2 = ctx.pagamentosV2 === true
+    && locais.length > 0
+    && locais.every(p => p && comoUuid(p.id) && !FORMAS_SEM_V2.includes(p.forma));
+
+  const pagamentos = podeV2 ? locais.map(p => ({
+    id: p.id,
+    forma: texto(p.forma),
+    valor: numero(p.valor),
+    // Entregue e troco so existem em especie, e so quando a UI informou.
+    // `null` é a ausencia; nao vira zero.
+    valor_entregue: p.valor_entregue == null ? null : numero(p.valor_entregue),
+    troco: p.troco == null ? null : numero(p.troco),
+    sequencia: p.sequencia == null ? 1 : numero(p.sequencia, 1),
+  })) : null;
+
   const payload = {
-    schema_version: SCHEMA_VERSION,
+    schema_version: pagamentos ? SCHEMA_VERSION_PAGAMENTOS : SCHEMA_VERSION,
 
     // ── identidade ────────────────────────────────────────────────
     venda_id: venda.id,
@@ -116,7 +147,11 @@ function montarPayloadVendaV1(venda, ctx = {}) {
     itens,
   };
 
+  // Campo ausente em v1, nunca `[]`: o servidor distingue "sem composicao"
+  // de "composicao vazia", e um array vazio seria recusado.
+  if (pagamentos) payload.pagamentos = pagamentos;
+
   return { ok: true, payload };
 }
 
-module.exports = { montarPayloadVendaV1, SCHEMA_VERSION };
+module.exports = { montarPayloadVendaV1, SCHEMA_VERSION, SCHEMA_VERSION_PAGAMENTOS, FORMAS_SEM_V2 };

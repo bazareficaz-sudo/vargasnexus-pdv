@@ -52,20 +52,37 @@ function lerPayloadPersistido(venda) {
   let payload;
   try { payload = JSON.parse(venda.sync_payload_v1); } catch { throw erro; }
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  if (!payload || payload.schema_version !== 1 || payload.venda_id !== venda.id
+  if (!payload || ![1, 2].includes(payload.schema_version) || payload.venda_id !== venda.id
       || !uuid.test(payload.empresa_id) || !Array.isArray(payload.itens)
       || !payload.itens.every(i => i && uuid.test(i.id)
         && (i.produto_id === null || uuid.test(i.produto_id))
         && ['quantidade', 'preco_unitario', 'desconto', 'total'].every(k => Number.isFinite(i[k])))
       || !['total', 'subtotal', 'desconto', 'valor_pago', 'troco'].every(k => Number.isFinite(payload[k]))) throw erro;
+
+  // Snapshot v2 so é valido com composicao integra: cada pagamento com id
+  // uuid proprio e valor positivo. Um snapshot v2 capenga nao vira v1 por
+  // conveniencia — bloqueia, como qualquer outro snapshot invalido.
+  if (payload.schema_version === 2) {
+    if (!Array.isArray(payload.pagamentos) || payload.pagamentos.length === 0) throw erro;
+    if (!payload.pagamentos.every(p => p && uuid.test(p.id)
+        && Number.isFinite(p.valor) && p.valor > 0 && typeof p.forma === 'string' && p.forma)) throw erro;
+  }
+
   return payload;
 }
 
 // Estados que a RPC devolve. Lidos do corpo da função em produção via
 // `pg_get_functiondef` — não do relatório da 0.6D.2, que chamava um deles
 // de `legado_inconsistente` quando o nome real é `legado_incompativel`.
-const ESTADOS_SUCESSO = ['aplicada', 'ja_aplicada', 'completada_de_legado'];
-const ESTADOS_TERMINAIS = ['conflito_payload', 'conflito_orcamento', 'legado_incompativel', 'payload_invalido'];
+// `completada_v2` é sucesso: a venda-base ja estava aplicada e o servidor
+// so acrescentou a composicao de pagamentos. Nao reaplicou nada.
+const ESTADOS_SUCESSO = ['aplicada', 'ja_aplicada', 'completada_de_legado', 'completada_v2'];
+
+// `conflito_pagamentos` é terminal e SEPARADO de `conflito_payload`: a venda
+// comercial confere, o que diverge é a composicao. Retry nao resolve, e
+// misturar os dois esconderia qual das duas coisas mudou.
+const ESTADOS_TERMINAIS = ['conflito_payload', 'conflito_orcamento', 'legado_incompativel',
+  'payload_invalido', 'conflito_pagamentos'];
 
 /**
  * @param {{ok?: boolean, estado?: string, erro?: string, httpStatus?: number}} resposta
@@ -82,7 +99,9 @@ function interpretarResposta(resposta) {
       // medida de quantas vendas estavam parciais no servidor.
       telemetria: estado === 'completada_de_legado'
         ? 'venda_sync_v1_completada_legado'
-        : (estado === 'ja_aplicada' ? 'venda_sync_v1_ja_aplicada' : 'venda_sync_v1_aplicada'),
+        : estado === 'completada_v2'
+          ? 'venda_sync_v2_completada'
+          : (estado === 'ja_aplicada' ? 'venda_sync_v1_ja_aplicada' : 'venda_sync_v1_aplicada'),
     };
   }
 
