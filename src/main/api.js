@@ -1881,6 +1881,17 @@ async function atualizarUrlImpressao(url) {
   return true;
 }
 
+// ─── Compre junto (rota autenticada, só leitura) ──────────────────────
+
+// Sem caminho antigo de propósito: a função do banco não é do `anon`, e a
+// sugestão local (só deste terminal) é o plano B — quem decide cair nela é
+// compreJunto.js, ao receber `ok: false`.
+async function buscarCompreJunto(produtoIds, limite = 6) {
+  const terminal = require('./terminal');
+  const qs = new URLSearchParams({ ids: produtoIds.join(','), limite: String(limite) });
+  return terminal.chamarProtegida(`/api/pdv/compre-junto?${qs}`, null, { metodo: 'GET' });
+}
+
 async function buscarUrlImpressao() {
   const usuario = store.get('auth.usuario') || {};
   const empresaId = usuario.empresa_estoque_id || usuario.empresa_id;
@@ -2002,6 +2013,7 @@ module.exports = {
   sincronizarEnderecosProdutos,
   atualizarUrlImpressao,
   buscarUrlImpressao,
+  buscarCompreJunto,
   autenticarPDV,
 
   // Fora do escopo desta fase — stubs

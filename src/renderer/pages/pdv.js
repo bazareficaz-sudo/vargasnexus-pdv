@@ -1050,18 +1050,44 @@ ${podeDesconto ? `
   }
 
   // ─── Sugestões ────────────────────────────────────────────────
+  // O painel é redesenhado a cada mudança no carrinho, e a consulta ao
+  // servidor pode demorar: a resposta de um carrinho antigo não pode
+  // sobrescrever a do carrinho de agora.
+  let _seqSugestoes = 0;
+  const _escAttr = (t) => String(t ?? '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+
   async function renderSugestoes() {
     const wrap = document.getElementById('pdv-sugestoes-wrap');
     if (!wrap) return;
+    const seq = ++_seqSugestoes;
     if (cart.length === 0) { wrap.style.display = 'none'; return; }
 
     const ids = cart.filter(i => !i.devolucao).map(i => i.produto_id);
     const clienteId = selectedClient?.id || null;
 
+    // 1º: Compre junto da loja inteira (servidor), com os "fixar"/"ocultar"
+    // do cadastro. `null` = servidor fora ou recusou; lista vazia = a loja
+    // não tem par para estes produtos. Nos dois casos, a sugestão local abaixo.
+    const daLoja = ids.length
+      ? await window.pdv.sugestoes.compreJunto(ids).catch(() => null)
+      : null;
+    if (seq !== _seqSugestoes) return;
+    if (daLoja && daLoja.length > 0) {
+      const nomeNoCarrinho = new Map(cart.map(i => [i.produto_id, i.produto_nome]));
+      _desenharSugestoes(wrap, '🛒 Compre junto', daLoja.slice(0, 6), (s) => {
+        const base = nomeNoCarrinho.get(s.base_id);
+        return s.fixo
+          ? `${s.nome} — recomendado${base ? ` com ${base}` : ''}`
+          : `${s.nome} — saiu junto${base ? ` com ${base}` : ''} em ${s.vezes} venda${s.vezes === 1 ? '' : 's'}`;
+      });
+      return;
+    }
+
     const [porCarrinho, porCliente] = await Promise.all([
       window.pdv.sugestoes.porCarrinho(ids),
       clienteId ? window.pdv.sugestoes.porCliente(clienteId, ids) : Promise.resolve([]),
     ]);
+    if (seq !== _seqSugestoes) return;
 
     // Mescla: prioriza comprados pelo cliente, complementa com associação de carrinho
     const vistos = new Set(ids);
@@ -1076,6 +1102,7 @@ ${podeDesconto ? `
     let fonte = merged;
     if (merged.length === 0) {
       fonte = await window.pdv.sugestoes.maisVendidos(ids);
+      if (seq !== _seqSugestoes) return;
       label = clienteId && porCliente.length === 0
         ? `⭐ Mais vendidos — ${selectedClient.nome.split(' ')[0]} ainda não tem histórico`
         : '⭐ Mais vendidos';
@@ -1083,6 +1110,10 @@ ${podeDesconto ? `
       label = `💡 ${selectedClient.nome.split(' ')[0]} costuma levar`;
     }
 
+    _desenharSugestoes(wrap, label, fonte, (s) => s.nome);
+  }
+
+  function _desenharSugestoes(wrap, label, fonte, titulo) {
     if (fonte.length === 0) { wrap.style.display = 'none'; return; }
 
     wrap.style.display = 'block';
@@ -1090,7 +1121,7 @@ ${podeDesconto ? `
       <div class="sugestoes-label">${label}</div>
       <div class="sugestoes-chips">
         ${fonte.map(s => `
-          <div class="sugestao-chip" onclick="PDV.adicionarSugestao('${s.id}')" title="${s.nome}">
+          <div class="sugestao-chip" onclick="PDV.adicionarSugestao('${s.id}')" title="${_escAttr(titulo(s))}">
             <span class="sugestao-chip-emoji">${s.emoji || '📦'}</span>
             <div class="sugestao-chip-info">
               <span class="sugestao-chip-nome">${s.nome}</span>

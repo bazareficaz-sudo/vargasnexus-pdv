@@ -294,6 +294,13 @@ ipcMain.handle('telaCliente:desativar', () => {
 ipcMain.handle('sugestoes:porCarrinho', (_, ids) => db.sugestoes.porCarrinho(ids));
 ipcMain.handle('sugestoes:porCliente', (_, clienteId, ids) => db.sugestoes.porCliente(clienteId, ids));
 ipcMain.handle('sugestoes:maisVendidos', (_, ids) => db.sugestoes.maisVendidos(ids));
+// Compre junto da loja inteira (servidor). `null` = sem resposta: o painel
+// cai na sugestão local acima.
+const compreJunto = require('./compreJunto').criarCompreJunto({
+  chamar: (ids, limite) => api.buscarCompreJunto(ids, limite),
+  getProduto: (id) => db.produtos.getById(id),
+});
+ipcMain.handle('sugestoes:compreJunto', (_, ids) => compreJunto.sugerir(ids).catch(() => null));
 
 // Produtos
 ipcMain.handle('produtos:buscar', (_, query) => db.produtos.buscar(query));
