@@ -89,6 +89,23 @@ Instale manualmente, um terminal por vez. A Release mais recente hoje é
 
 Tag é inofensiva. Release não.
 
+### A partir da 1.10.8: o servidor libera, terminal por terminal
+
+A 1.10.8 só baixa uma Release até o teto em
+`pdv_terminais.atualizacao_liberada_ate` (rota `GET /api/pdv/atualizacao`,
+`sistema-vargas`). NULL — o padrão — é "não atualiza sozinho"; sem resposta do
+servidor, também não. Liberar o piloto:
+
+```sql
+update pdv_terminais set atualizacao_liberada_ate = '1.10.9'
+ where terminal_id_legado = 'PDV-004';
+```
+
+**A regra acima continua valendo até TODOS os terminais rodarem 1.10.8 ou
+mais.** A trava só existe no código novo: um terminal em 1.10.6 (ou o YOGA em
+1.10.5) ainda baixa qualquer Release maior. A 1.10.8 é a última instalação
+manual; a linha de pagamentos (1.10.7) precisa trazer o mesmo `updater.js`.
+
 ## Rollout, quando for o caso
 
 1. um terminal primeiro, o de menor volume (**PDV-004**, ~40 vendas/semana)
