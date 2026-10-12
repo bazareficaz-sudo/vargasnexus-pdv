@@ -124,6 +124,7 @@ async function syncNow(win) {
     await syncDownConfigTermometro();
     await syncDownEnderecos();
     await syncDownUrlImpressao();
+    await syncDownConfigCupom();
     await syncDownFaltas();
     await syncDownOrcamentos();
     await syncDownCancelamentosOrcamentos();
@@ -475,6 +476,31 @@ async function syncDownUrlImpressao() {
     }
   } catch (err) {
     console.warn('[SYNC] URL de impressão: erro (não crítico):', err.message);
+  }
+}
+
+// A mensagem do rodape do cupom, vinda da empresa.
+//
+// Ao contrario da URL de impressao, o terminal-caixa TAMBEM precisa disto:
+// quem imprime e ele, entao e o store dele que o cupom le. Se o CAIXA ficasse
+// de fora, a configuracao da empresa nao chegaria justamente na maquina que
+// monta o papel.
+//
+// Guarda em chave propria. `config.cupom_mensagem` continua sendo a
+// sobreposicao deste terminal e nao e tocada aqui — sobrescrever o que o
+// operador digitou seria decidir por ele, em silencio.
+async function syncDownConfigCupom() {
+  try {
+    const msg = await api.buscarMensagemCupomDaEmpresa();
+    // `undefined` = nao deu para perguntar (sem identidade, rede fora, rota
+    // antiga). Mantem o que esta guardado. `null` = a empresa nao tem linha.
+    if (msg === undefined) return;
+    if (msg !== store.get('config.cupom_mensagem_empresa')) {
+      store.set('config.cupom_mensagem_empresa', msg);
+      console.log('[SYNC] Mensagem do cupom atualizada pela empresa');
+    }
+  } catch (err) {
+    console.warn('[SYNC] Mensagem do cupom: erro (nao critico):', err.message);
   }
 }
 

@@ -153,6 +153,7 @@ contextBridge.exposeInMainWorld('pdv', {
     serverStop:    ()       => ipcRenderer.invoke('print:server:stop'),
     serverStatus:  ()       => ipcRenderer.invoke('print:server:status'),
     listar:        ()       => ipcRenderer.invoke('print:listar'),
+    mensagemCupom: ()       => ipcRenderer.invoke('print:mensagem-cupom'),
     ping:          (url)   => ipcRenderer.invoke('print:ping', url),
     orcamento:     (orc)   => ipcRenderer.invoke('print:orcamento', orc),
   },

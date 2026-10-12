@@ -991,6 +991,12 @@ ipcMain.handle('print:server:status', () => ({
   rodando: printServer.isRunning(),
   porta: store.get('config.print_server_porta') || 3001,
 }));
+// A TELA NAO REIMPLEMENTA A REGRA.
+//
+// A ordem local > empresa > padrao vive em print-server.js, junto de quem
+// monta o papel. Se a tela calculasse por conta propria, bastaria uma das
+// duas mudar para ela passar a mentir sobre o que vai sair impresso.
+ipcMain.handle('print:mensagem-cupom', () => printServer.mensagemDoCupom());
 ipcMain.handle('print:listar', async () => {
   return printServer.listarImpressoras(mainWindow);
 });

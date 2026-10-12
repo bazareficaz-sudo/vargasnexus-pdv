@@ -1886,6 +1886,44 @@ async function buscarUrlImpressao() {
   return data?.print_server_url || null;
 }
 
+// A MENSAGEM DO RODAPE DO CUPOM VEM DA EMPRESA, NAO DA MAQUINA.
+//
+// O cupom termico e montado por quem IMPRIME, lendo o store dele: um terminal
+// que manda o job para o CAIXA nao usa a propria configuracao. Com seis
+// terminais, a mesma frase teria que ser digitada em cada um — e divergiria
+// na primeira troca de telefone. O comprovante em PDF ja lia de
+// `empresa_config_impressao` desde que a tela de Configuracoes existe.
+//
+// Lida do servidor, a frase e uma so, e deixa de importar quem renderiza.
+//
+// POR QUE PELA ROTA, E NAO DIRETO DO BANCO: `empresa_config_impressao` nao
+// esta aberta ao `anon` — conferido em producao. Ler direto exigiria devolver
+// um privilegio que foi retirado de proposito.
+//
+// O QUE ACONTECE QUANDO FALHA: devolve `undefined`, e quem chama nao mexe no
+// que esta guardado. Terminal sem identidade, servidor fora do ar ou versao
+// antiga da rota continuam imprimindo o rodape de sempre. Aqui, ao contrario
+// de venda, cair no comportamento anterior nao cria inconsistencia nenhuma:
+// nao ha escrita, nao ha dinheiro e nao ha duplicata possivel.
+async function buscarMensagemCupomDaEmpresa() {
+  const terminal = require('./terminal');
+  const r = await terminal.chamarProtegida('/api/pdv/impressao', null, { metodo: 'GET' });
+  if (!r.ok) {
+    if (r.motivo !== 'sem_identidade') {
+      console.warn('[CUPOM] Nao foi possivel ler a mensagem da empresa:', r.motivo, r.erro);
+    }
+    return undefined;
+  }
+  // Rota publicada antes desta mudanca responde sem o campo `cupom`. Isso nao
+  // e "a empresa apagou o rodape" — e "o servidor nao sabe opinar". Sao
+  // coisas diferentes, e so a segunda deixa o valor local como esta.
+  if (!r.dados || typeof r.dados.cupom !== 'object' || r.dados.cupom === null) return undefined;
+  const msg = r.dados.cupom.mensagem_rodape;
+  if (msg === null) return null;            // empresa sem linha: nada a dizer
+  if (typeof msg !== 'string') return undefined;
+  return msg.slice(0, 300);
+}
+
 // ─── Autenticação PDV ─────────────────────────────────────────────────
 
 async function autenticarPDV(login, senha) {
@@ -1998,6 +2036,7 @@ module.exports = {
   sincronizarEnderecosProdutos,
   atualizarUrlImpressao,
   buscarUrlImpressao,
+  buscarMensagemCupomDaEmpresa,
   autenticarPDV,
 
   // Fora do escopo desta fase — stubs
