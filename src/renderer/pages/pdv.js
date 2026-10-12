@@ -503,7 +503,10 @@ const PDV = (() => {
 
   function _abrirModalFaltaPDV(produto) {
     _faltaTipo = 'falta';
-    document.getElementById('pdv-results').style.display = 'none';
+    // A LISTA NAO FECHA. Anotar uma falta nao devia custar uma busca nova:
+    // no balcao o vendedor percorre varios itens parecidos de uma vez, e
+    // cada F12 jogava fora o resultado inteiro. O modal tem z-index 1000
+    // contra 50 da lista, entao ele ja aparecia por cima de qualquer jeito.
     const p = JSON.stringify(produto).replace(/"/g, '&quot;');
     Modal.open(`
       <div style="display:flex;flex-direction:column;gap:12px;min-width:340px">
@@ -566,7 +569,7 @@ const PDV = (() => {
         </div>
 
         <div style="display:flex;gap:8px;margin-top:4px">
-          <button class="btn btn-ghost" style="flex:1" onclick="Modal.close()">Cancelar</button>
+          <button class="btn btn-ghost" style="flex:1" onclick="PDV._fecharFaltaPDV()">Cancelar</button>
           <button class="btn btn-primary" style="flex:2" id="fpdv-salvar"
             onclick="PDV._confirmarFaltaPDV(${p})">
             📋 Registrar Falta
@@ -589,6 +592,25 @@ const PDV = (() => {
     if (salvar) salvar.textContent = _faltaTipo === 'encomenda' ? '📌 Registrar Encomenda' : '📋 Registrar Falta';
   }
 
+  // Devolve o teclado para a lista. Sem isto ela ficaria visivel e morta —
+  // as setas so funcionam com o foco no campo de busca.
+  //
+  // Sem `select()` de proposito: selecionar o texto faria a proxima tecla
+  // apagar a busca inteira, e a lista que se quer preservar sumiria junto.
+  function _voltarParaLista() {
+    setTimeout(() => {
+      document.getElementById('pdv-search')?.focus();
+      const itens = document.querySelectorAll('.search-item:not(.out-of-stock)');
+      itens.forEach((el, i) => el.classList.toggle('highlighted', i === searchHighlight));
+      if (searchHighlight >= 0) itens[searchHighlight]?.scrollIntoView({ block: 'nearest' });
+    }, 60);
+  }
+
+  function _fecharFaltaPDV() {
+    Modal.close();
+    _voltarParaLista();
+  }
+
   async function _confirmarFaltaPDV(produto) {
     const qty = parseFloat(document.getElementById('fpdv-qty')?.value) || 1;
     const wa = document.getElementById('fpdv-wa')?.value.trim() || '';
@@ -598,6 +620,7 @@ const PDV = (() => {
     const preco = parseFloat(document.getElementById('fpdv-preco')?.value);
     const tipo = _faltaTipo;
     Modal.close();
+    _voltarParaLista();
     try {
       await window.pdv.faltas.registrar({
         produto_id: produto.id || null,
@@ -2652,6 +2675,13 @@ ${podeDesconto ? `
         return;
       }
 
+      // ── ESC no modal de falta: fecha e devolve o teclado a lista ──
+      if (e.key === 'Escape' && modalAberto && document.getElementById('fpdv-qty')) {
+        e.preventDefault();
+        _fecharFaltaPDV();
+        return;
+      }
+
       // ── ESC no comprovante: fecha e volta para busca ──────────
       if (e.key === 'Escape' && modalAberto) {
         const temComprovante = document.querySelector('.modal-actions .btn-primary[onclick="Modal.close()"]');
@@ -2881,6 +2911,7 @@ ${podeDesconto ? `
   }
 
   return { render, init, onSearch, onSearchKey, _abrirModalFaltaPDV, _confirmarFaltaPDV, _setTipoFalta,
+    _fecharFaltaPDV,
     selecionarProduto, fecharQtyPanel, qpKeyDown, confirmarQtyPreco,
     addToCart, changeQty, removeItem, clearCart, _confirmarLimparCarrinho, adicionarSugestao,
     escolherDaLista, _confirmarSimilar, _fecharSimilares, _dispensarSugestao, _realcarSimilar,
