@@ -281,6 +281,9 @@ ipcMain.handle('telaCliente:desativar', () => {
 });
 
 // Sugestões
+ipcMain.handle('produtos:similares', (_, grupo) => db.produtos.similares(grupo));
+ipcMain.handle('produtos:porRemoteIds', (_, ids) => db.produtos.porRemoteIds(ids));
+ipcMain.handle('compreJunto:buscar', (_, ids, limite) => api.buscarCompreJunto(ids, limite));
 ipcMain.handle('sugestoes:porCarrinho', (_, ids) => db.sugestoes.porCarrinho(ids));
 ipcMain.handle('sugestoes:porCliente', (_, clienteId, ids) => db.sugestoes.porCliente(clienteId, ids));
 ipcMain.handle('sugestoes:maisVendidos', (_, ids) => db.sugestoes.maisVendidos(ids));

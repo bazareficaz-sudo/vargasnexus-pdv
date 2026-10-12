@@ -165,6 +165,9 @@ function mapProduto(p) {
     unidade:     p.unidade     || 'UN',
     categoria:   p.categoria   || null,
     marca:       p.marca       || null,
+    // Rotulo que junta o mesmo item de marcas diferentes. Desce no caminho
+    // legado (`select(*)`) e, na rota autenticada, so com `?campos=v2`.
+    grupo_similar: p.grupo_similar ?? null,
     foto_url:    p.foto_url    || null,
     ativo:          p.ativo !== false,
     disponivel_pdv: p.disponivel_pdv !== false,
@@ -235,6 +238,13 @@ async function syncDownProdutos() {
   const forcarBackfillPromo = !store.get('sync.produtos_promo_backfill_v1');
   if (forcarBackfillPromo) ultimaSync = null;
 
+  // Mesma coisa para `grupo_similar`, pela mesma razao: produto agrupado
+  // antes de a coluna existir nunca teria o `updated_at` tocado de novo, e
+  // ficaria sem grupo para sempre — o modal de similares simplesmente nao
+  // abriria, sem erro nenhum a investigar.
+  const forcarBackfillGrupo = !store.get('sync.produtos_grupo_similar_backfill_v1');
+  if (forcarBackfillGrupo) ultimaSync = null;
+
   // Rede de segurança: se o catálogo local ficou muito menor que o remoto
   // (limpeza de dados legados, corrupção, etc.), o sync incremental nunca
   // resgataria os produtos que sumiram localmente — o updated_at deles no
@@ -264,6 +274,7 @@ async function syncDownProdutos() {
 
   store.set('sync.ultima_sync_produtos', inicioSync);
   if (forcarBackfillPromo) store.set('sync.produtos_promo_backfill_v1', true);
+  if (forcarBackfillGrupo) store.set('sync.produtos_grupo_similar_backfill_v1', true);
   const modo = ultimaSync ? 'incremental' : 'completo';
   console.log(`[SYNC] Produtos: ${totalSalvos} sincronizados (${modo})`);
 

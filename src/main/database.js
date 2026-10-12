@@ -8,6 +8,7 @@ const Database = require('better-sqlite3');
 const path = require('path');
 const { app } = require('electron');
 const { v4: uuidv4 } = require('uuid');
+const { normalizarGrupoSimilar } = require('./similares');
 const orcSql = require('./orcamentoSql');
 const { exigirCriacaoReconciliada } = require('./protocoloVenda');
 const { comporDaVendaLocal, validarComposicao, ehEstritamenteLocal } = require('./pagamentoVenda');
@@ -594,6 +595,29 @@ function runMigrations() {
     db.exec('ALTER TABLE vendas ADD COLUMN sync_payload_v1 TEXT');
   }
 
+  // COMPRE JUNTO E SIMILARES — colunas aditivas.
+  //
+  // Explicitas, e nao no array acima, pelo mesmo motivo do `sync_payload_v1`:
+  // la o `catch` engole a falha. Uma coluna ausente aqui nao daria erro —
+  // daria uma funcionalidade que simplesmente nunca aparece, sem nada a
+  // investigar.
+  const colunasDe = (t) => new Set(db.prepare(`PRAGMA table_info(${t})`).all().map(c => c.name));
+
+  if (!colunasDe('produtos').has('grupo_similar')) {
+    db.exec('ALTER TABLE produtos ADD COLUMN grupo_similar TEXT');
+  }
+  // Indice PARCIAL: quase nenhum dos 28.676 produtos tem grupo, e a consulta
+  // so acontece com um rotulo em maos. Indexar as dezenas de milhares de
+  // linhas nulas seria peso de escrita em todo sync por nada.
+  db.exec('CREATE INDEX IF NOT EXISTS idx_produtos_grupo_similar ON produtos(grupo_similar) WHERE grupo_similar IS NOT NULL');
+
+  // De onde veio o item: `compre_junto` quando o vendedor clicou na sugestao.
+  // Null em tudo o que ja existe, que e a verdade — nao da para saber de
+  // onde vieram os itens de antes, e inventar 'manual' seria afirmar isso.
+  if (!colunasDe('venda_itens').has('origem_sugestao')) {
+    db.exec('ALTER TABLE venda_itens ADD COLUMN origem_sugestao TEXT');
+  }
+
   limparProdutosBase44Legado();
   corrigirClientesRemoteIdBase44Legado();
   deduplicarClientesLocal();
@@ -858,8 +882,11 @@ const produtos = {
     }
 
     // Busca multi-palavra: monta condição AND para cada palavra no nome
-    const nomeConditions = palavras.map(() => `p.nome_lower LIKE ?`).join(' AND ');
-    const nomeParams = palavras.map(p => `%${p}%`);
+    // Cada palavra no NOME ou na MARCA. Antes so o nome contava, e por isso
+    // "cabo philips" nao achava nada: exigia as duas palavras no nome. Marca
+    // e parte de como o vendedor nomeia o produto no balcao.
+    const nomeConditions = palavras.map(() => `(p.nome_lower LIKE ? OR LOWER(p.marca) LIKE ?)`).join(' AND ');
+    const nomeParams = palavras.flatMap(p => [`%${p}%`, `%${p}%`]);
 
     const sql = `
       SELECT p.*, e.quantidade as estoque, pl.codigo_legivel as localizacao
@@ -877,6 +904,51 @@ const produtos = {
       LIMIT 100
     `;
     return db.prepare(sql).all(...nomeParams, `%${q}%`, `%${q}%`, `${palavras[0]}%`);
+  },
+
+  // OS SIMILARES DE UM PRODUTO — as outras marcas do mesmo item.
+  //
+  // Do maior estoque para o menor: o vendedor atende mais rapido oferecendo
+  // o que esta na prateleira. Sem estoque continua na lista, no fim, porque
+  // pode haver encomenda ou o cadastro estar atrasado.
+  //
+  // DIVERGE DO WEB NUM PONTO, de proposito: la o filtro é so `ativo`. Aqui
+  // entra tambem `disponivel_pdv`, o mesmo de `buscar`. Mostrar no modal uma
+  // marca que a busca desta mesma tela nunca devolveria seria oferecer o que
+  // este balcao nao vende.
+  similares(grupo, limite = 30) {
+    const g = normalizarGrupoSimilar(grupo);
+    if (!g) return [];
+    return db.prepare(`
+      SELECT p.*, e.quantidade as estoque, pl.codigo_legivel as localizacao
+      FROM produtos p
+      LEFT JOIN estoque e ON e.produto_id = p.id
+      LEFT JOIN produto_localizacao pl ON pl.produto_id = p.id
+      WHERE p.ativo = 1 AND p.disponivel_pdv = 1 AND p.grupo_similar = ?
+      ORDER BY COALESCE(e.quantidade, 0) DESC, p.nome
+      LIMIT ?
+    `).all(g, limite);
+  },
+
+  // CATALOGO LOCAL POR LISTA DE IDS.
+  //
+  // A rota do Compre Junto devolve so `produto_id`, de proposito: nome, preco,
+  // promocao e estoque saem daqui, com a mesma regra do resto do carrinho. Se
+  // viessem do servidor, a mesma tela teria duas fontes de preco.
+  //
+  // `remote_id` e nao `id`: o servidor fala em uuid do Supabase; o id local é
+  // outro. Confundir os dois devolveria lista vazia sem erro nenhum.
+  porRemoteIds(remoteIds) {
+    const ids = [...new Set((remoteIds || []).filter(Boolean))];
+    if (ids.length === 0) return [];
+    const marcas = ids.map(() => '?').join(',');
+    return db.prepare(`
+      SELECT p.*, e.quantidade as estoque, pl.codigo_legivel as localizacao
+      FROM produtos p
+      LEFT JOIN estoque e ON e.produto_id = p.id
+      LEFT JOIN produto_localizacao pl ON pl.produto_id = p.id
+      WHERE p.remote_id IN (${marcas}) AND p.ativo = 1 AND p.disponivel_pdv = 1
+    `).all(...ids);
   },
 
   getById(id) {
@@ -975,9 +1047,9 @@ const produtos = {
       (id, remote_id, nome, nome_lower, sku, ean, preco_venda, preco_custo,
        unidade, categoria, marca, foto_url, ativo, disponivel_pdv, permite_fracao,
        ncm, cfop, icms_cst, icms_origem, pis_cst, cofins_cst, tags,
-       preco_promocional, promocao_ativa, promocao_inicio, promocao_fim,
+       preco_promocional, promocao_ativa, promocao_inicio, promocao_fim, grupo_similar,
        updated_at, synced_at, sync_status)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
     `);
     // UPDATE que preserva campos fiscais locais quando pendentes
     const stmtUpdate = db.prepare(`
@@ -994,6 +1066,7 @@ const produtos = {
         cofins_cst = CASE WHEN sync_status = 'pending' THEN cofins_cst ELSE ? END,
         tags       = ?,
         preco_promocional = ?, promocao_ativa = ?, promocao_inicio = ?, promocao_fim = ?,
+        grupo_similar = ?,
         updated_at = ?, synced_at = ?,
         sync_status = CASE WHEN sync_status = 'pending' THEN 'pending' ELSE 'synced' END
       WHERE remote_id = ?
@@ -1023,6 +1096,10 @@ const produtos = {
         const promoAtiva = p.promocao_ativa ? 1 : 0;
         const promoInicio = p.promocao_inicio || null;
         const promoFim = p.promocao_fim || null;
+        // Rotulo canonico, mesma regra de normalizarGrupoSimilar do web: um
+        // espaco a mais digitado no cadastro nao pode separar o produto dos
+        // seus similares sem ninguem perceber.
+        const grupoSimilar = normalizarGrupoSimilar(p.grupo_similar);
 
         stmtInsert.run(
           localId, p.id,
@@ -1035,7 +1112,7 @@ const produtos = {
           p.disponivel_pdv !== false ? 1 : 0,
           p.permite_fracao ? 1 : 0,
           ncm, cfop, icmsCst, icmsOri, pisCst, cofCst, tagsJson,
-          precoPromo, promoAtiva, promoInicio, promoFim,
+          precoPromo, promoAtiva, promoInicio, promoFim, grupoSimilar,
           p.updated_at || now, now, 'synced'
         );
 
@@ -1049,7 +1126,7 @@ const produtos = {
           p.disponivel_pdv !== false ? 1 : 0,
           p.permite_fracao ? 1 : 0,
           ncm, cfop, icmsCst, icmsOri, pisCst, cofCst, tagsJson,
-          precoPromo, promoAtiva, promoInicio, promoFim,
+          precoPromo, promoAtiva, promoInicio, promoFim, grupoSimilar,
           p.updated_at || now, now,
           p.id
         );
@@ -1638,10 +1715,11 @@ const vendas = {
       // Inserir itens e baixar estoque
       for (const item of venda.itens) {
         db.prepare(`
-          INSERT INTO venda_itens (id, venda_id, produto_id, produto_nome, produto_sku, quantidade, preco_unitario, desconto, total)
-          VALUES (?,?,?,?,?,?,?,?,?)
+          INSERT INTO venda_itens (id, venda_id, produto_id, produto_nome, produto_sku, quantidade, preco_unitario, desconto, total, origem_sugestao)
+          VALUES (?,?,?,?,?,?,?,?,?,?)
         `).run(uuidv4(), id, item.produto_id, item.produto_nome, item.produto_sku || null,
-          item.quantidade, item.preco_unitario, item.desconto || 0, item.total);
+          item.quantidade, item.preco_unitario, item.desconto || 0, item.total,
+          item.origem_sugestao || null);
 
         // Baixar estoque local
         const estoqueAtual = db.prepare('SELECT quantidade FROM estoque WHERE produto_id = ?').get(item.produto_id);
@@ -1786,10 +1864,11 @@ const vendas = {
       db.prepare('DELETE FROM venda_itens WHERE venda_id = ?').run(id);
       for (const item of novosItens) {
         db.prepare(`
-          INSERT INTO venda_itens (id, venda_id, produto_id, produto_nome, produto_sku, quantidade, preco_unitario, desconto, total)
-          VALUES (?,?,?,?,?,?,?,?,?)
+          INSERT INTO venda_itens (id, venda_id, produto_id, produto_nome, produto_sku, quantidade, preco_unitario, desconto, total, origem_sugestao)
+          VALUES (?,?,?,?,?,?,?,?,?,?)
         `).run(uuidv4(), id, item.produto_id, item.produto_nome, item.produto_sku || null,
-          item.quantidade, item.preco_unitario, item.desconto || 0, item.total);
+          item.quantidade, item.preco_unitario, item.desconto || 0, item.total,
+          item.origem_sugestao || null);
         // 3. Baixar estoque dos itens NOVOS
         db.prepare('UPDATE estoque SET quantidade = quantidade - ? WHERE produto_id = ?')
           .run(item.quantidade, item.produto_id);

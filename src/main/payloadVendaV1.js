@@ -83,6 +83,15 @@ function montarPayloadVendaV1(venda, ctx = {}) {
       preco_unitario: numero(i.preco_unitario),
       desconto: numero(i.desconto),
       total: numero(i.total),
+      // De onde veio o item. NAO entra no fingerprint: `venda_fingerprint_v1`
+      // le uma lista fixa — id, produto_id, quantidade, preco_unitario e
+      // desconto — conferida no corpo da funcao em producao. Uma venda nao
+      // muda de identidade por ter sido sugerida.
+      //
+      // A RPC ainda ignora o campo (nao valida chaves; le campo a campo).
+      // Mandar assim mesmo e o que permite o servidor passar a gravar sem
+      // precisar de uma versao nova do terminal.
+      origem_sugestao: i.origem_sugestao || null,
     });
   }
 
