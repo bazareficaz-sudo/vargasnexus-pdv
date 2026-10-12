@@ -16,6 +16,14 @@ let server = null;
 const fila = [];
 let imprimindo = false;
 
+// A mensagem do rodape é digitada pelo operador e entra direto no HTML do
+// cupom. Sem escapar, um `<` perdido quebraria o layout impresso.
+function escaparHtml(txt) {
+  return String(txt)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 // ─── Geração do HTML do cupom ────────────────────────────────────────────────
 
 // Configurações por layout
@@ -35,6 +43,16 @@ function gerarHtmlCupom(dados) {
 
   const layoutNome = store.get('config.cupom_layout') || 'padrao';
   const L = LAYOUTS[layoutNome] || LAYOUTS.padrao;
+
+  // Mensagem de rodape configuravel (Configuracoes > Impressao).
+  //
+  // Fica no store do terminal, do lado de `cupom_layout`. Se um dia for
+  // centralizada por empresa, muda so a origem desta linha — o cupom ja le
+  // de um lugar so.
+  //
+  // Sem configuracao, vale o texto de sempre: quem nunca abriu a tela nao
+  // perde o rodape que ja tinha.
+  const mensagem = String(store.get('config.cupom_mensagem') ?? 'Obrigado pela preferencia!').trim();
 
   const fmt = (v) => Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const data = created_at ? new Date(created_at).toLocaleString('pt-BR') : new Date().toLocaleString('pt-BR');
@@ -109,8 +127,8 @@ function gerarHtmlCupom(dados) {
 
   ${observacao ? `<hr class="sep"><div class="sm">📝 ${observacao}</div>` : ''}
 
-  <hr class="sep">
-  <div class="center sm" style="margin-top:4px">Obrigado pela preferencia!</div>
+  ${mensagem ? `<hr class="sep">
+  <div class="center sm" style="margin-top:4px;white-space:pre-line">${escaparHtml(mensagem)}</div>` : ''}
 </body>
 </html>`;
 }

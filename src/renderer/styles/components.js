@@ -2299,6 +2299,16 @@ const Config = {
         </select>
         <div style="font-size:11px;color:var(--text3);margin-top:4px">Define o tamanho da fonte no cupom impresso</div>
       </div>
+      <div class="form-group" style="margin-top:12px">
+        <label class="form-label">Mensagem no fim do cupom</label>
+        <textarea class="input" id="cfg-cupom-mensagem" rows="3" maxlength="300"
+          style="resize:vertical;font-family:inherit"
+          placeholder="Obrigado pela preferencia!"></textarea>
+        <div style="font-size:11px;color:var(--text3);margin-top:4px">
+          Aparece no rodape do cupom de venda. Pode ter varias linhas — ex.: trocas,
+          horario de funcionamento, WhatsApp. Deixe em branco para nao imprimir rodape.
+        </div>
+      </div>
     </div>
 
     <!-- Cloudflare Tunnel (visível quando É servidor) -->
@@ -2481,6 +2491,12 @@ const Config = {
     const cupomLayout = await window.pdv.config.get('config.cupom_layout') || 'padrao';
     const selLayout = document.getElementById('cfg-cupom-layout');
     if (selLayout) selLayout.value = cupomLayout;
+    // `?? ` e nao `|| `: string vazia é uma escolha valida (nao imprimir
+    // rodape), e `||` a trocaria pelo padrao toda vez que a tela abrisse.
+    const cupomMsg = await window.pdv.config.get('config.cupom_mensagem')
+      ?? 'Obrigado pela preferencia!';
+    const txtMsg = document.getElementById('cfg-cupom-mensagem');
+    if (txtMsg) txtMsg.value = cupomMsg;
     this._setToggle('cfg-print-server', 'cfg-toggle-print', 'cfg-toggle-print-knob', printAtivo);
     this._setToggle('cfg-print-auto', 'cfg-toggle-print-auto', 'cfg-toggle-print-auto-knob', printAuto);
     if (f('cfg-print-porta')) f('cfg-print-porta').value = printPorta;
@@ -2826,6 +2842,8 @@ const Config = {
     await window.pdv.config.set('config.impressora_nome', impressora);
     await window.pdv.config.set('config.imprimir_automatico', auto);
     await window.pdv.config.set('config.cupom_layout', layout);
+    const mensagem = document.getElementById('cfg-cupom-mensagem')?.value ?? '';
+    await window.pdv.config.set('config.cupom_mensagem', mensagem.slice(0, 300));
 
     if (ativo) {
       const res = await window.pdv.print.serverStart(porta);
