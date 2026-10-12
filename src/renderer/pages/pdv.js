@@ -876,7 +876,16 @@ const PDV = (() => {
   }
 
   function clearCart() {
-    if (cart.length === 0 && !modoEdicao) return;
+    // LIMPAR A TELA é mais do que esvaziar o carrinho: tira cliente,
+    // vendedor, desconto, observacao e entrega junto. A condicao antiga
+    // olhava so o carrinho, entao com o carrinho vazio e um cliente
+    // selecionado — ou um desconto digitado — a tecla F8 nao fazia nada e
+    // parecia quebrada. Nao havia o que limpar segundo o codigo; havia
+    // segundo o operador.
+    const descontoDigitado = Number(document.getElementById('pdv-desconto')?.value || 0) !== 0;
+    const temAlgoALimpar = cart.length > 0 || modoEdicao || selectedClient || vendedorAtual
+      || dadosEntrega || pedidoObservacao || descontoDigitado;
+    if (!temAlgoALimpar) return;
     cart = [];
     // Dispensar é "nesta venda, nao". Na proxima a sugestao volta.
     _dispensadas = new Set();
