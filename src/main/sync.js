@@ -104,6 +104,7 @@ async function syncNow(win) {
     await syncDownConfigTermometro();
     await syncDownEnderecos();
     await syncDownUrlImpressao();
+    await syncDownConfigCupom();
     await syncDownFaltas();
     await syncDownOrcamentos();
     await syncDownCancelamentosOrcamentos();
@@ -144,6 +145,9 @@ function mapProduto(p) {
     unidade:     p.unidade     || 'UN',
     categoria:   p.categoria   || null,
     marca:       p.marca       || null,
+    // Rotulo que junta o mesmo item de marcas diferentes. Desce no caminho
+    // legado (`select(*)`) e, na rota autenticada, so com `?campos=v2`.
+    grupo_similar: p.grupo_similar ?? null,
     foto_url:    p.foto_url    || null,
     ativo:          p.ativo !== false,
     disponivel_pdv: p.disponivel_pdv !== false,
@@ -214,6 +218,13 @@ async function syncDownProdutos() {
   const forcarBackfillPromo = !store.get('sync.produtos_promo_backfill_v1');
   if (forcarBackfillPromo) ultimaSync = null;
 
+  // Mesma coisa para `grupo_similar`, pela mesma razao: produto agrupado
+  // antes de a coluna existir nunca teria o `updated_at` tocado de novo, e
+  // ficaria sem grupo para sempre — o modal de similares simplesmente nao
+  // abriria, sem erro nenhum a investigar.
+  const forcarBackfillGrupo = !store.get('sync.produtos_grupo_similar_backfill_v1');
+  if (forcarBackfillGrupo) ultimaSync = null;
+
   // Rede de segurança: se o catálogo local ficou muito menor que o remoto
   // (limpeza de dados legados, corrupção, etc.), o sync incremental nunca
   // resgataria os produtos que sumiram localmente — o updated_at deles no
@@ -243,6 +254,7 @@ async function syncDownProdutos() {
 
   store.set('sync.ultima_sync_produtos', inicioSync);
   if (forcarBackfillPromo) store.set('sync.produtos_promo_backfill_v1', true);
+  if (forcarBackfillGrupo) store.set('sync.produtos_grupo_similar_backfill_v1', true);
   const modo = ultimaSync ? 'incremental' : 'completo';
   console.log(`[SYNC] Produtos: ${totalSalvos} sincronizados (${modo})`);
 
@@ -455,6 +467,31 @@ async function syncDownUrlImpressao() {
     }
   } catch (err) {
     console.warn('[SYNC] URL de impressão: erro (não crítico):', err.message);
+  }
+}
+
+// A mensagem do rodape do cupom, vinda da empresa.
+//
+// Ao contrario da URL de impressao, o terminal-caixa TAMBEM precisa disto:
+// quem imprime e ele, entao e o store dele que o cupom le. Se o CAIXA ficasse
+// de fora, a configuracao da empresa nao chegaria justamente na maquina que
+// monta o papel.
+//
+// Guarda em chave propria. `config.cupom_mensagem` continua sendo a
+// sobreposicao deste terminal e nao e tocada aqui — sobrescrever o que o
+// operador digitou seria decidir por ele, em silencio.
+async function syncDownConfigCupom() {
+  try {
+    const msg = await api.buscarMensagemCupomDaEmpresa();
+    // `undefined` = nao deu para perguntar (sem identidade, rede fora, rota
+    // antiga). Mantem o que esta guardado. `null` = a empresa nao tem linha.
+    if (msg === undefined) return;
+    if (msg !== store.get('config.cupom_mensagem_empresa')) {
+      store.set('config.cupom_mensagem_empresa', msg);
+      console.log('[SYNC] Mensagem do cupom atualizada pela empresa');
+    }
+  } catch (err) {
+    console.warn('[SYNC] Mensagem do cupom: erro (nao critico):', err.message);
   }
 }
 

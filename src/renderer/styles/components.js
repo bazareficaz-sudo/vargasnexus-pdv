@@ -2354,6 +2354,49 @@ const Config = {
     <button class="btn btn-primary btn-sm" style="margin-top:14px" onclick="Config.salvarImpressao()">Salvar configuração de impressão</button>
   </div>
 
+  <!--
+    CARD PROPRIO, SEMPRE VISIVEL.
+    Nasceu dentro do bloco do servidor de impressao, que so aparece quando o
+    terminal e o CAIXA. No YOGA o campo simplesmente nao existia na tela.
+    Mensagem de cupom nao e configuracao de rede: card separado.
+  -->
+  <div class="card" style="margin-bottom:16px">
+    <div style="font-size:13px;font-weight:600;margin-bottom:4px">🧾 Mensagem do cupom</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:14px">
+      O texto que sai no fim do cupom de venda.
+    </div>
+
+    <div id="cfg-cupom-aviso" style="display:none;font-size:11px;margin-bottom:12px;padding:8px 10px;border-radius:8px;background:rgba(251,191,36,.1);color:var(--orange)"></div>
+
+    <div class="form-group">
+      <label class="form-label">Mensagem da empresa</label>
+      <div id="cfg-cupom-empresa" style="white-space:pre-line;font-size:12px;padding:10px;background:var(--bg3);border:1px solid var(--border2);border-radius:8px;color:var(--text2);min-height:40px"></div>
+      <div style="font-size:11px;color:var(--text3);margin-top:4px">
+        Vem do sistema web, em Configurações → Impressão. Vale para todos os terminais
+        e também para o comprovante em PDF — para mudar, mude lá.
+      </div>
+    </div>
+
+    <div class="form-group" style="margin-top:14px">
+      <label class="form-label">Sobrepor só neste terminal (opcional)</label>
+      <textarea class="input" id="cfg-cupom-mensagem" rows="3" maxlength="300"
+        style="resize:vertical;font-family:inherit"
+        placeholder="Em branco: usa a mensagem da empresa"></textarea>
+      <div style="font-size:11px;color:var(--text3);margin-top:4px">
+        Em branco quer dizer "não configurei aqui", e aí vale a da empresa. Para
+        imprimir cupom <b>sem</b> rodapé, apague a mensagem no sistema web — é um
+        lugar só para desligar.
+      </div>
+    </div>
+
+    <div class="form-group" style="margin-top:14px">
+      <label class="form-label">O que vai sair no papel</label>
+      <div id="cfg-cupom-efetivo" style="white-space:pre-line;font-size:12px;padding:10px;background:var(--bg3);border:1px solid var(--border2);border-radius:8px;min-height:40px"></div>
+    </div>
+
+    <button class="btn btn-primary btn-sm" style="margin-top:4px" onclick="Config.salvarCupom()">Salvar mensagem</button>
+  </div>
+
   <div class="card" style="margin-bottom:16px">
     <div style="font-size:13px;font-weight:600;margin-bottom:4px">🖥️ Tela do Cliente</div>
     <div style="font-size:11px;color:var(--text3);margin-bottom:14px">
@@ -2481,10 +2524,15 @@ const Config = {
     const cupomLayout = await window.pdv.config.get('config.cupom_layout') || 'padrao';
     const selLayout = document.getElementById('cfg-cupom-layout');
     if (selLayout) selLayout.value = cupomLayout;
+    // Mensagem do cupom. A da empresa chega pelo sync; a local é sobreposição
+    // e pode estar em branco, que significa "não configurei aqui".
+    const txtMsg = document.getElementById('cfg-cupom-mensagem');
+    if (txtMsg) txtMsg.value = await window.pdv.config.get('config.cupom_mensagem') ?? '';
     this._setToggle('cfg-print-server', 'cfg-toggle-print', 'cfg-toggle-print-knob', printAtivo);
     this._setToggle('cfg-print-auto', 'cfg-toggle-print-auto', 'cfg-toggle-print-auto-knob', printAuto);
     if (f('cfg-print-porta')) f('cfg-print-porta').value = printPorta;
     if (f('cfg-print-ip'))    f('cfg-print-ip').value    = printIp;
+    await this._pintarCupom();
     if (printAtivo) {
       if (f('cfg-print-server-section')) f('cfg-print-server-section').style.display = '';
       if (f('cfg-print-client-section')) f('cfg-print-client-section').style.display = 'none';
@@ -2835,6 +2883,60 @@ const Config = {
       await window.pdv.print.serverStop();
     }
     Toast.show('Configuração de impressão salva!', 'success');
+  },
+
+  // A TELA NAO RECALCULA A REGRA: pergunta ao processo principal qual
+  // mensagem vai sair, pela mesma funcao que monta o papel. Reimplementar a
+  // ordem aqui so garantiria que um dia a tela e o cupom discordassem.
+  async _pintarCupom() {
+    const empresa = await window.pdv.config.get('config.cupom_mensagem_empresa');
+    const efetiva = await window.pdv.print.mensagemCupom();
+
+    const elEmp = document.getElementById('cfg-cupom-empresa');
+    if (elEmp) {
+      // Tres estados diferentes, e nenhum deles é o outro: nunca chegou do
+      // servidor, chegou vazia (a empresa desligou o rodape), ou tem texto.
+      if (typeof empresa !== 'string') {
+        elEmp.textContent = 'Ainda nao recebida do servidor — sincronize.';
+        elEmp.style.fontStyle = 'italic';
+      } else if (empresa.trim() === '') {
+        elEmp.textContent = 'A empresa escolheu cupom sem rodape.';
+        elEmp.style.fontStyle = 'italic';
+      } else {
+        elEmp.textContent = empresa;
+        elEmp.style.fontStyle = '';
+      }
+    }
+
+    const elEf = document.getElementById('cfg-cupom-efetivo');
+    if (elEf) {
+      const texto = String(efetiva ?? '').trim();
+      elEf.textContent = texto || 'Cupom sem rodape.';
+      elEf.style.fontStyle = texto ? '' : 'italic';
+    }
+
+    // Quem envia o cupom para o CAIXA nao imprime com a propria configuracao:
+    // quem monta o papel é a outra maquina. Dizer isso aqui evita o operador
+    // digitar uma frase que nunca vai sair.
+    const aviso = document.getElementById('cfg-cupom-aviso');
+    if (aviso) {
+      const ehServidor = document.getElementById('cfg-print-server')?.checked || false;
+      const temIp = !!(document.getElementById('cfg-print-ip')?.value || '').trim();
+      const enviaFora = !ehServidor && temIp;
+      aviso.style.display = enviaFora ? '' : 'none';
+      aviso.textContent = enviaFora
+        ? '⚠ Este terminal envia o cupom para o CAIXA, que é quem monta o papel. '
+          + 'A sobreposicao local so vale quando este terminal imprime sozinho — '
+          + 'a mensagem da empresa vale nos dois casos.'
+        : '';
+    }
+  },
+
+  async salvarCupom() {
+    const mensagem = document.getElementById('cfg-cupom-mensagem')?.value ?? '';
+    await window.pdv.config.set('config.cupom_mensagem', mensagem.slice(0, 300));
+    await this._pintarCupom();
+    Toast.show('Mensagem do cupom salva!', 'success');
   },
 
   _atualizarUiTunnel(status) {

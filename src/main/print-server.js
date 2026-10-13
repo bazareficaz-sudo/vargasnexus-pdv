@@ -16,6 +16,14 @@ let server = null;
 const fila = [];
 let imprimindo = false;
 
+// A mensagem do rodape é digitada pelo operador e entra direto no HTML do
+// cupom. Sem escapar, um `<` perdido quebraria o layout impresso.
+function escaparHtml(txt) {
+  return String(txt)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 // ─── Geração do HTML do cupom ────────────────────────────────────────────────
 
 // Configurações por layout
@@ -28,6 +36,27 @@ const LAYOUTS = {
   grande:   { largura: '72mm', fonteBase: '12pt', fonteSm: '10pt', fonteLg: '16pt', fonteTotal: '15pt', margem: '4mm 3mm' },
 };
 
+// QUEM MANDA NA MENSAGEM DO RODAPE, EM ORDEM.
+//
+// 1. `config.cupom_mensagem` — a sobreposicao DESTE terminal, quando tem
+//    texto. Campo em branco e "nao configurei aqui", nao "quero cupom sem
+//    rodape": existe UM lugar para desligar o rodape, e e o da empresa.
+//    Duas formas de desligar a mesma coisa so produzem duvida depois.
+// 2. `config.cupom_mensagem_empresa` — o que o sync trouxe do servidor. E a
+//    mesma linha que alimenta o comprovante em PDF, entao papel e PDF saem
+//    iguais. String vazia AQUI desliga o rodape, porque e decisao da empresa.
+// 3. o texto de sempre, para quem nunca configurou em lugar nenhum.
+//
+// A empresa vem antes do padrao e depois do local de proposito: o valor
+// central e o normal, a excecao e local e tem que ser deliberada.
+function mensagemDoCupom() {
+  const local = store.get('config.cupom_mensagem');
+  if (typeof local === 'string' && local.trim() !== '') return local;
+  const empresa = store.get('config.cupom_mensagem_empresa');
+  if (typeof empresa === 'string') return empresa;
+  return 'Obrigado pela preferencia!';
+}
+
 function gerarHtmlCupom(dados) {
   const { numero, empresa_nome, vendedor_nome, cliente_nome, itens = [],
           subtotal = 0, desconto = 0, total = 0, forma_pagamento = '',
@@ -35,6 +64,16 @@ function gerarHtmlCupom(dados) {
 
   const layoutNome = store.get('config.cupom_layout') || 'padrao';
   const L = LAYOUTS[layoutNome] || LAYOUTS.padrao;
+
+  // Mensagem de rodape configuravel (Configuracoes > Impressao).
+  //
+  // Fica no store do terminal, do lado de `cupom_layout`. Se um dia for
+  // centralizada por empresa, muda so a origem desta linha — o cupom ja le
+  // de um lugar so.
+  //
+  // Sem configuracao, vale o texto de sempre: quem nunca abriu a tela nao
+  // perde o rodape que ja tinha.
+  const mensagem = String(mensagemDoCupom()).trim();
 
   const fmt = (v) => Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const data = created_at ? new Date(created_at).toLocaleString('pt-BR') : new Date().toLocaleString('pt-BR');
@@ -109,8 +148,8 @@ function gerarHtmlCupom(dados) {
 
   ${observacao ? `<hr class="sep"><div class="sm">📝 ${observacao}</div>` : ''}
 
-  <hr class="sep">
-  <div class="center sm" style="margin-top:4px">Obrigado pela preferencia!</div>
+  ${mensagem ? `<hr class="sep">
+  <div class="center sm" style="margin-top:4px;white-space:pre-line">${escaparHtml(mensagem)}</div>` : ''}
 </body>
 </html>`;
 }
@@ -518,6 +557,7 @@ module.exports = {
   enviarParaServidor,
   listarImpressoras,
   gerarHtmlCupom,
+  mensagemDoCupom,
   gerarHtmlCupomEntrega,
   gerarHtmlOrcamento,
 };

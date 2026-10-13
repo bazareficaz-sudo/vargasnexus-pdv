@@ -20,6 +20,10 @@ contextBridge.exposeInMainWorld('pdv', {
   },
 
   // Sugestões de produtos
+  // Compre Junto: so ids voltam do servidor; o catalogo local completa.
+  compreJunto: {
+    buscar: (ids, limite) => ipcRenderer.invoke('compreJunto:buscar', ids, limite),
+  },
   sugestoes: {
     porCarrinho:  (ids) => ipcRenderer.invoke('sugestoes:porCarrinho', ids),
     porCliente:   (clienteId, ids) => ipcRenderer.invoke('sugestoes:porCliente', clienteId, ids),
@@ -32,6 +36,10 @@ contextBridge.exposeInMainWorld('pdv', {
     buscarGestao: (query) => ipcRenderer.invoke('produtos:buscarGestao', query),
     getById: (id) => ipcRenderer.invoke('produtos:getById', id),
     getByEan: (ean) => ipcRenderer.invoke('produtos:getByEan', ean),
+    // As outras marcas do mesmo item, do SQLite — por isso funciona offline.
+    similares: (grupo) => ipcRenderer.invoke('produtos:similares', grupo),
+    // O Compre Junto devolve so ids; o catalogo local completa o resto.
+    porRemoteIds: (ids) => ipcRenderer.invoke('produtos:porRemoteIds', ids),
     total: () => ipcRenderer.invoke('produtos:total'),
     salvar: (p) => ipcRenderer.invoke('produtos:salvar', p),
     atualizar: (id, dados) => ipcRenderer.invoke('produtos:atualizar', id, dados),
@@ -153,6 +161,7 @@ contextBridge.exposeInMainWorld('pdv', {
     serverStop:    ()       => ipcRenderer.invoke('print:server:stop'),
     serverStatus:  ()       => ipcRenderer.invoke('print:server:status'),
     listar:        ()       => ipcRenderer.invoke('print:listar'),
+    mensagemCupom: ()       => ipcRenderer.invoke('print:mensagem-cupom'),
     ping:          (url)   => ipcRenderer.invoke('print:ping', url),
     orcamento:     (orc)   => ipcRenderer.invoke('print:orcamento', orc),
   },

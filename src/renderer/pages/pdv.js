@@ -216,6 +216,44 @@ const PDV = (() => {
 .si-nome{font-weight:600;line-height:1.3}
 .si-sub{font-size:10px;color:var(--text3)}
 .si-marca{font-size:12px;color:var(--text2)}
+.si-selo-similar{font-size:10px;font-weight:600;color:var(--accent);background:var(--accent-bg);
+  border:1px solid var(--accent);border-radius:4px;padding:0 4px;margin-left:6px;white-space:nowrap}
+/* Modal de similares */
+.sim-linha{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;cursor:pointer;
+  border:1px solid transparent}
+.sim-linha.ativa{background:var(--accent-bg);border-color:var(--accent)}
+.sim-num{width:20px;text-align:center;font-size:11px;font-weight:700;color:var(--text3);flex-shrink:0}
+.sim-foto{width:40px;height:40px;object-fit:cover;border-radius:6px;flex-shrink:0}
+.sim-foto-fb{display:flex;align-items:center;justify-content:center;background:var(--bg3);font-size:20px}
+.sim-info{flex:1;min-width:0}
+.sim-marca{font-size:13px;font-weight:700}
+.sim-nome{font-size:12px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sim-sku{font-size:10px;color:var(--text3)}
+.sim-direita{text-align:right;flex-shrink:0}
+.sim-preco{font-size:13px;font-weight:700;color:var(--accent)}
+.sim-estoque{font-size:11px;color:var(--green)}
+.sim-sem-estoque{font-size:11px;color:var(--red);font-weight:600}
+/* Compre Junto */
+.cj-cabecalho{display:flex;align-items:baseline;gap:8px;margin-bottom:6px}
+.cj-titulo{font-size:12px;font-weight:700;color:var(--orange)}
+.cj-sub{font-size:11px;color:var(--text3)}
+.cj-faixa{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px}
+.cj-card{position:relative;flex-shrink:0;width:230px;display:flex;gap:8px;align-items:center;
+  background:var(--bg2);border:1px solid var(--border2);border-radius:8px;padding:6px 18px 6px 6px}
+.cj-card.cj-sem-estoque{opacity:.6}
+.cj-foto{width:40px;height:40px;object-fit:cover;border-radius:6px;flex-shrink:0}
+.cj-foto-fb{display:flex;align-items:center;justify-content:center;background:var(--bg3);font-size:20px}
+.cj-corpo{min-width:0;flex:1;cursor:pointer}
+.cj-nome{font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cj-linha2{display:flex;align-items:center;gap:4px;margin-top:1px}
+.cj-marca{font-size:10px;font-weight:600;color:var(--text2)}
+.cj-preco{font-size:12px;font-weight:700;color:var(--accent)}
+.cj-estoque{font-size:10px;color:var(--green)}
+.cj-estoque-zero{font-size:10px;color:var(--red)}
+.cj-motivo{font-size:10px;color:var(--orange);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cj-x{position:absolute;top:2px;right:4px;background:none;border:none;color:var(--text3);
+  font-size:14px;line-height:1;cursor:pointer;padding:0}
+.cj-x:hover{color:var(--text)}
 .si-estoque{text-align:center;font-size:12px;white-space:nowrap}
 .si-preco{text-align:right;font-weight:700;color:var(--accent);font-family:'Syne',sans-serif;white-space:nowrap}
 .si-preco-normal{color:var(--accent);font-size:12px;line-height:1.5}
@@ -380,10 +418,10 @@ const PDV = (() => {
                <div class="si-thumb-fallback" style="display:none">${p.emoji || '📦'}</div>`
             : `<div class="si-thumb-fallback">${p.emoji || '📦'}</div>`;
           return `<tr class="search-item ${semEstoque ? 'out-of-stock' : ''}" id="si-${i}"
-            onclick="${!semEstoque ? `PDV.selecionarProduto(${JSON.stringify(p).replace(/"/g, '&quot;')})` : ''}">
+            onclick="${!semEstoque ? `PDV.escolherDaLista(${JSON.stringify(p).replace(/"/g, '&quot;')})` : ''}">
             <td class="si-thumb">${thumbHtml}</td>
             <td class="si-cod">${p.sku || '—'}${p.localizacao ? `<div class="si-local">📍 ${p.localizacao}</div>` : ''}</td>
-            <td><div class="si-nome">${p.emoji ? p.emoji + ' ' : ''}${p.nome}</div><div class="si-sub">${p.ean ? 'EAN: ' + p.ean : ''}</div></td>
+            <td><div class="si-nome">${p.emoji ? p.emoji + ' ' : ''}${p.nome}${p.grupo_similar ? ' <span class="si-selo-similar">⇄ tem similares</span>' : ''}</div><div class="si-sub">${p.ean ? 'EAN: ' + p.ean : ''}</div></td>
             <td class="si-marca">${p.marca || '—'}</td>
             <td class="si-estoque" style="white-space:nowrap">${estoqueHtml}${faltaBtn}</td>
             <td class="si-preco">${promocaoVigente(p)
@@ -430,9 +468,9 @@ const PDV = (() => {
     } else if (e.key === 'Enter') {
       e.preventDefault();
       if (searchHighlight >= 0 && searchResults[searchHighlight]) {
-        selecionarProduto(searchResults[searchHighlight]);
+        escolherDaLista(searchResults[searchHighlight]);
       } else if (searchResults.length === 1) {
-        selecionarProduto(searchResults[0]);
+        escolherDaLista(searchResults[0]);
       }
     } else if (e.key === 'F12') {
       e.preventDefault();
@@ -465,7 +503,10 @@ const PDV = (() => {
 
   function _abrirModalFaltaPDV(produto) {
     _faltaTipo = 'falta';
-    document.getElementById('pdv-results').style.display = 'none';
+    // A LISTA NAO FECHA. Anotar uma falta nao devia custar uma busca nova:
+    // no balcao o vendedor percorre varios itens parecidos de uma vez, e
+    // cada F12 jogava fora o resultado inteiro. O modal tem z-index 1000
+    // contra 50 da lista, entao ele ja aparecia por cima de qualquer jeito.
     const p = JSON.stringify(produto).replace(/"/g, '&quot;');
     Modal.open(`
       <div style="display:flex;flex-direction:column;gap:12px;min-width:340px">
@@ -528,7 +569,7 @@ const PDV = (() => {
         </div>
 
         <div style="display:flex;gap:8px;margin-top:4px">
-          <button class="btn btn-ghost" style="flex:1" onclick="Modal.close()">Cancelar</button>
+          <button class="btn btn-ghost" style="flex:1" onclick="PDV._fecharFaltaPDV()">Cancelar</button>
           <button class="btn btn-primary" style="flex:2" id="fpdv-salvar"
             onclick="PDV._confirmarFaltaPDV(${p})">
             📋 Registrar Falta
@@ -551,6 +592,25 @@ const PDV = (() => {
     if (salvar) salvar.textContent = _faltaTipo === 'encomenda' ? '📌 Registrar Encomenda' : '📋 Registrar Falta';
   }
 
+  // Devolve o teclado para a lista. Sem isto ela ficaria visivel e morta —
+  // as setas so funcionam com o foco no campo de busca.
+  //
+  // Sem `select()` de proposito: selecionar o texto faria a proxima tecla
+  // apagar a busca inteira, e a lista que se quer preservar sumiria junto.
+  function _voltarParaLista() {
+    setTimeout(() => {
+      document.getElementById('pdv-search')?.focus();
+      const itens = document.querySelectorAll('.search-item:not(.out-of-stock)');
+      itens.forEach((el, i) => el.classList.toggle('highlighted', i === searchHighlight));
+      if (searchHighlight >= 0) itens[searchHighlight]?.scrollIntoView({ block: 'nearest' });
+    }, 60);
+  }
+
+  function _fecharFaltaPDV() {
+    Modal.close();
+    _voltarParaLista();
+  }
+
   async function _confirmarFaltaPDV(produto) {
     const qty = parseFloat(document.getElementById('fpdv-qty')?.value) || 1;
     const wa = document.getElementById('fpdv-wa')?.value.trim() || '';
@@ -560,6 +620,7 @@ const PDV = (() => {
     const preco = parseFloat(document.getElementById('fpdv-preco')?.value);
     const tipo = _faltaTipo;
     Modal.close();
+    _voltarParaLista();
     try {
       await window.pdv.faltas.registrar({
         produto_id: produto.id || null,
@@ -690,7 +751,7 @@ const PDV = (() => {
   }
 
   // ─── Carrinho ─────────────────────────────────────────────────
-  function addToCartConfirmado(produto, quantidade, precoUnitario, eDevolucao = false) {
+  function addToCartConfirmado(produto, quantidade, precoUnitario, eDevolucao = false, origemSugestao = null) {
     const precoTabela = produto.preco_venda;
     const emPromo = !eDevolucao && promocaoVigente(produto);
     const precoPromo = emPromo ? Number(produto.preco_promocional) : null;
@@ -702,6 +763,9 @@ const PDV = (() => {
 
     const existing = cart.find(i => i.produto_id === produto.id);
     if (existing) {
+      // A origem é do PRIMEIRO lancamento e nao muda depois. Quem buscou o
+      // produto e so entao clicou na sugestao para somar uma unidade nao
+      // fez uma venda sugerida; sobrescrever aqui inflaria a medicao.
       const novaQty = existing.quantidade + quantidade;
       existing.quantidade = novaQty;
       existing.preco_unitario = precoUnitario;
@@ -711,6 +775,13 @@ const PDV = (() => {
     } else {
       cart.push({
         produto_id: produto.id,
+        // O servidor fala em uuid do Supabase; o id acima é o local. O
+        // Compre Junto precisa mandar o remoto, e resolver isso na hora de
+        // perguntar custaria uma ida ao banco por tecla.
+        produto_remote_id: produto.remote_id || null,
+        // `compre_junto` quando o vendedor clicou na sugestao. Null quando
+        // ele mesmo buscou — e null é a verdade, nao um valor que falta.
+        origem_sugestao: origemSugestao,
         produto_nome: produto.nome,
         produto_sku: produto.sku,
         emoji: produto.emoji || '📦',
@@ -828,8 +899,19 @@ const PDV = (() => {
   }
 
   function clearCart() {
-    if (cart.length === 0 && !modoEdicao) return;
+    // LIMPAR A TELA é mais do que esvaziar o carrinho: tira cliente,
+    // vendedor, desconto, observacao e entrega junto. A condicao antiga
+    // olhava so o carrinho, entao com o carrinho vazio e um cliente
+    // selecionado — ou um desconto digitado — a tecla F8 nao fazia nada e
+    // parecia quebrada. Nao havia o que limpar segundo o codigo; havia
+    // segundo o operador.
+    const descontoDigitado = Number(document.getElementById('pdv-desconto')?.value || 0) !== 0;
+    const temAlgoALimpar = cart.length > 0 || modoEdicao || selectedClient || vendedorAtual
+      || dadosEntrega || pedidoObservacao || descontoDigitado;
+    if (!temAlgoALimpar) return;
     cart = [];
+    // Dispensar é "nesta venda, nao". Na proxima a sugestao volta.
+    _dispensadas = new Set();
     selectedClient = null;
     vendedorAtual = null;
     dadosEntrega = null;
@@ -1049,8 +1131,253 @@ ${podeDesconto ? `
     Toast.show('Item atualizado', 'success');
   }
 
-  // ─── Sugestões ────────────────────────────────────────────────
+  // ─── Produtos similares ───────────────────────────────────────
+  //
+  // O gestor agrupa no cadastro os produtos que sao o MESMO item de marcas
+  // diferentes (`produtos.grupo_similar`). Quando o vendedor escolhe um deles
+  // PELA LISTA DA BUSCA, o PDV mostra as marcas antes de lancar: "disjuntor
+  // mono 32A" sem marca nao é um produto, é uma prateleira.
+  //
+  // LEITOR E SKU NAO PASSAM POR AQUI. Quem bipou o codigo de barras ou digitou
+  // o SKU ja disse qual marca quer; parar o caixa nesse caso so atrasaria.
+  // Como aqui a busca é um campo so (diferente do web, que tem entrada
+  // separada), a distincao é feita pelo TERMO: se ele é exatamente o EAN ou o
+  // SKU do produto, a marca ja foi identificada.
+  //
+  // O modal NUNCA segura a venda. Grupo de um produto so, consulta vazia ou
+  // erro: segue direto com o que o vendedor escolheu.
+  let _similares = null;   // { opcoes, idx } enquanto o modal esta aberto
+
+  function _termoIdentificaMarca(produto, termo) {
+    const t = String(termo || '').trim().toLowerCase();
+    if (!t) return false;
+    const ean = String(produto.ean || '').trim().toLowerCase();
+    const sku = String(produto.sku || '').trim().toLowerCase();
+    return (!!ean && t === ean) || (!!sku && t === sku);
+  }
+
+  async function escolherDaLista(produto) {
+    if (!produto) return;
+    const termo = document.getElementById('pdv-search')?.value || '';
+    if (!produto.grupo_similar || _termoIdentificaMarca(produto, termo)) {
+      selecionarProduto(produto);
+      return;
+    }
+
+    let opcoes = [];
+    try {
+      opcoes = await window.pdv.produtos.similares(produto.grupo_similar) || [];
+    } catch (err) {
+      console.warn('[SIMILARES] falha ao consultar:', err.message);
+      selecionarProduto(produto);
+      return;
+    }
+    // Menos de dois é "nao ha escolha a fazer".
+    if (opcoes.length < 2) { selecionarProduto(produto); return; }
+    if (!opcoes.some(o => o.id === produto.id)) opcoes.unshift(produto);
+
+    document.getElementById('pdv-results').style.display = 'none';
+    _similares = { opcoes, idx: Math.max(0, opcoes.findIndex(o => o.id === produto.id)) };
+    _abrirModalSimilares();
+  }
+
+  function _abrirModalSimilares() {
+    if (!_similares) return;
+    Modal.open(`
+<div style="font-size:11px;color:var(--text3);margin-bottom:10px">
+  ↑ ↓ para escolher · <b>Enter</b> confirma · <b>1-9</b> escolhe direto · <b>Esc</b> volta para a busca
+</div>
+<div id="sim-lista" style="max-height:52vh;overflow:auto">${_linhasSimilares()}</div>`,
+      'Produtos similares — confira a marca');
+    document.addEventListener('keydown', _onSimilaresKey, true);
+    setTimeout(() => _rolarParaSimilarAtivo(), 30);
+  }
+
+  function _linhasSimilares() {
+    return _similares.opcoes.map((p, i) => {
+      const ativo = i === _similares.idx;
+      const estoque = Number(p.estoque || 0);
+      const preco = promocaoVigente(p) && _formaEhAvista(payMethod)
+        ? Number(p.preco_promocional) : Number(p.preco_venda || 0);
+      const thumb = p.foto_url
+        ? `<img src="${p.foto_url}" class="sim-foto" alt=""
+             onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+           <div class="sim-foto sim-foto-fb" style="display:none">${p.emoji || '📦'}</div>`
+        : `<div class="sim-foto sim-foto-fb">${p.emoji || '📦'}</div>`;
+      return `<div class="sim-linha${ativo ? ' ativa' : ''}" id="sim-${i}"
+        onmouseenter="PDV._realcarSimilar(${i})" onclick="PDV._confirmarSimilar(${i})">
+        <div class="sim-num">${i < 9 ? i + 1 : '·'}</div>
+        ${thumb}
+        <div class="sim-info">
+          <div class="sim-marca">${p.marca || 'sem marca'}</div>
+          <div class="sim-nome">${p.nome}</div>
+          <div class="sim-sku">${p.sku || '—'}</div>
+        </div>
+        <div class="sim-direita">
+          <div class="sim-preco">R$ ${fmtMoney(preco)}</div>
+          <div class="${estoque > 0 ? 'sim-estoque' : 'sim-sem-estoque'}">
+            ${estoque > 0 ? `${estoque} ${p.unidade || 'UN'}` : 'Sem estoque'}
+          </div>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  function _realcarSimilar(i) {
+    if (!_similares || i === _similares.idx) return;
+    _similares.idx = i;
+    const lista = document.getElementById('sim-lista');
+    if (lista) lista.innerHTML = _linhasSimilares();
+  }
+
+  function _rolarParaSimilarAtivo() {
+    document.getElementById(`sim-${_similares?.idx ?? 0}`)
+      ?.scrollIntoView({ block: 'nearest' });
+  }
+
+  function _confirmarSimilar(i) {
+    const escolhido = _similares?.opcoes[i];
+    _fecharSimilares();
+    if (escolhido) selecionarProduto(escolhido);
+  }
+
+  function _fecharSimilares() {
+    document.removeEventListener('keydown', _onSimilaresKey, true);
+    _similares = null;
+    Modal.close();
+  }
+
+  function _onSimilaresKey(e) {
+    if (!_similares) return;
+    const { opcoes, idx } = _similares;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault(); e.stopPropagation();
+      _realcarSimilar(Math.min(idx + 1, opcoes.length - 1)); _rolarParaSimilarAtivo();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault(); e.stopPropagation();
+      _realcarSimilar(Math.max(idx - 1, 0)); _rolarParaSimilarAtivo();
+    } else if (e.key === 'Enter') {
+      e.preventDefault(); e.stopPropagation();
+      _confirmarSimilar(idx);
+    } else if (/^[1-9]$/.test(e.key) && opcoes[Number(e.key) - 1]) {
+      e.preventDefault(); e.stopPropagation();
+      _confirmarSimilar(Number(e.key) - 1);
+    } else if (e.key === 'Escape') {
+      e.preventDefault(); e.stopPropagation();
+      _fecharSimilares();
+      setTimeout(() => document.getElementById('pdv-search')?.focus(), 30);
+    }
+  }
+
+  // ─── Compre Junto ─────────────────────────────────────────────
+  //
+  // O que os clientes costumam levar junto, calculado no servidor sobre o
+  // historico da loja INTEIRA, mais o que o gestor fixou e menos o que ele
+  // ocultou no cadastro. O painel local antigo via so as vendas deste
+  // terminal.
+  //
+  // SO IDS VOLTAM DO SERVIDOR. Nome, preco, promocao e estoque saem do
+  // catalogo local, com a mesma regra do resto do carrinho — senao a mesma
+  // tela teria duas fontes de preco.
+  //
+  // RESERVA, e nao sumico: sem internet, com erro ou estouro de prazo, cai no
+  // painel local em vez de desaparecer. O vendedor nao fica sem sugestao
+  // quando a internet oscila. Resposta boa e VAZIA é outra coisa — significa
+  // "nao ha o que sugerir", e aí o painel sai da tela mesmo.
+  let _dispensadas = new Set();   // zeradas a cada venda nova
+  let _compreJuntoToken = 0;
+
   async function renderSugestoes() {
+    const wrap = document.getElementById('pdv-sugestoes-wrap');
+    if (!wrap) return;
+    // Devolucao nao entra: quem esta devolvendo nao esta comprando.
+    const base = cart.filter(i => !i.devolucao);
+    if (base.length === 0) { wrap.style.display = 'none'; return; }
+
+    const token = ++_compreJuntoToken;
+    const remoteIds = [...new Set(base.map(i => i.produto_remote_id).filter(Boolean))];
+    const sugestoes = remoteIds.length
+      ? await window.pdv.compreJunto.buscar(remoteIds, 10)
+      : null;
+    // Carrinho mudou enquanto a resposta vinha: a desta chamada ja nao vale.
+    if (token !== _compreJuntoToken) return;
+
+    if (sugestoes === null) { await _renderSugestoesLocais(); return; }
+    const cards = await _montarCardsCompreJunto(sugestoes, base);
+    if (cards.length === 0) { wrap.style.display = 'none'; return; }
+
+    wrap.style.display = 'block';
+    wrap.innerHTML = `
+      <div class="cj-cabecalho">
+        <span class="cj-titulo">💡 Ofereça também</span>
+        <span class="cj-sub">o que os clientes costumam levar junto com estes itens</span>
+      </div>
+      <div class="cj-faixa">${cards.join('')}</div>`;
+  }
+
+  async function _montarCardsCompreJunto(sugestoes, base) {
+    const visiveis = sugestoes.filter(s => !_dispensadas.has(s.produto_id));
+    if (visiveis.length === 0) return [];
+
+    const produtos = await window.pdv.produtos.porRemoteIds(visiveis.map(s => s.produto_id));
+    const porRemote = new Map(produtos.map(p => [p.remote_id, p]));
+    const nomeBase = new Map(base.map(i => [i.produto_remote_id, i.produto_nome]));
+    // Ja no carrinho nao é sugestao: é o que o vendedor acabou de lancar.
+    const noCarrinho = new Set(base.map(i => i.produto_remote_id));
+
+    const lista = [];
+    for (const s of visiveis) {
+      if (noCarrinho.has(s.produto_id)) continue;
+      const p = porRemote.get(s.produto_id);
+      if (!p) continue;   // inativo, fora do PDV ou ainda nao sincronizado
+      lista.push({ ...p, vezes: s.vezes, fixo: s.fixo, baseNome: nomeBase.get(s.base_id) || '' });
+    }
+    // Com estoque primeiro: oferecer o que nao tem para entregar so frustra o
+    // cliente. Sem estoque continua visivel, no fim, porque pode haver
+    // encomenda ou o cadastro estar atrasado.
+    lista.sort((a, b) => Number(b.estoque > 0) - Number(a.estoque > 0));
+
+    return lista.slice(0, 6).map(s => {
+      const estoque = Number(s.estoque || 0);
+      const preco = promocaoVigente(s) && _formaEhAvista(payMethod)
+        ? Number(s.preco_promocional) : Number(s.preco_venda || 0);
+      const motivo = s.fixo ? '★ indicado' : `junto em ${s.vezes} vendas`;
+      const thumb = s.foto_url
+        ? `<img src="${s.foto_url}" class="cj-foto" alt="" loading="lazy"
+             onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+           <div class="cj-foto cj-foto-fb" style="display:none">${s.emoji || '📦'}</div>`
+        : `<div class="cj-foto cj-foto-fb">${s.emoji || '📦'}</div>`;
+      return `<div class="cj-card${estoque > 0 ? '' : ' cj-sem-estoque'}">
+        ${thumb}
+        <div class="cj-corpo" title="Adicionar 1 ${s.unidade || 'UN'} à venda"
+             onclick="PDV.adicionarSugestao('${s.id}')">
+          <div class="cj-nome">${s.nome}</div>
+          <div class="cj-linha2">
+            ${s.marca ? `<span class="cj-marca">${s.marca}</span>` : ''}
+            <span class="cj-preco">R$ ${fmtMoney(preco)}</span>
+            <span class="${estoque > 0 ? 'cj-estoque' : 'cj-estoque-zero'}">
+              ${estoque > 0 ? `· ${estoque} ${s.unidade || 'UN'}` : '· sem estoque'}
+            </span>
+          </div>
+          <div class="cj-motivo">${motivo}${s.baseNome ? ` · ${s.baseNome}` : ''}</div>
+        </div>
+        <button class="cj-x" title="Dispensar nesta venda"
+          onclick="event.stopPropagation();PDV._dispensarSugestao('${s.remote_id}')">×</button>
+      </div>`;
+    });
+  }
+
+  function _dispensarSugestao(remoteId) {
+    _dispensadas.add(remoteId);
+    renderSugestoes();
+  }
+
+  // ─── Sugestões ────────────────────────────────────────────────
+  // RESERVA. Vale quando o servidor nao respondeu — sem internet, erro ou
+  // prazo estourado. Ve so as vendas DESTE terminal, mas tem duas coisas que
+  // o Compre Junto nao tem: o historico do cliente selecionado e o "mais
+  // vendidos" quando nao ha associacao nenhuma.
+  async function _renderSugestoesLocais() {
     const wrap = document.getElementById('pdv-sugestoes-wrap');
     if (!wrap) return;
     if (cart.length === 0) { wrap.style.display = 'none'; return; }
@@ -1101,10 +1428,14 @@ ${podeDesconto ? `
       </div>`;
   }
 
-  async function adicionarSugestao(produtoId) {
+  // Um clique, uma unidade. Nao abre o painel de quantidade: a sugestao so
+  // vale a pena se custar menos que buscar o produto na mao.
+  async function adicionarSugestao(produtoId, origem = 'compre_junto') {
     const produto = await window.pdv.produtos.getById(produtoId);
     if (!produto) return;
-    addToCart(produto, 1);
+    const emPromo = promocaoVigente(produto) && _formaEhAvista(payMethod);
+    const preco = emPromo ? Number(produto.preco_promocional) : produto.preco_venda;
+    addToCartConfirmado(produto, 1, preco, false, origem);
   }
 
   // ─── Promoção ─────────────────────────────────────────────────
@@ -1757,6 +2088,7 @@ ${podeDesconto ? `
         preco_unitario: i.preco_unitario,
         desconto: i.desconto,
         total: i.total,
+        origem_sugestao: i.origem_sugestao || null,
       }))
     };
 
@@ -2314,6 +2646,13 @@ ${podeDesconto ? `
         return;
       }
 
+      // ── ESC no modal de falta: fecha e devolve o teclado a lista ──
+      if (e.key === 'Escape' && modalAberto && document.getElementById('fpdv-qty')) {
+        e.preventDefault();
+        _fecharFaltaPDV();
+        return;
+      }
+
       // ── ESC no comprovante: fecha e volta para busca ──────────
       if (e.key === 'Escape' && modalAberto) {
         const temComprovante = document.querySelector('.modal-actions .btn-primary[onclick="Modal.close()"]');
@@ -2543,8 +2882,10 @@ ${podeDesconto ? `
   }
 
   return { render, init, onSearch, onSearchKey, _abrirModalFaltaPDV, _confirmarFaltaPDV, _setTipoFalta,
+    _fecharFaltaPDV,
     selecionarProduto, fecharQtyPanel, qpKeyDown, confirmarQtyPreco,
     addToCart, changeQty, removeItem, clearCart, _confirmarLimparCarrinho, adicionarSugestao,
+    escolherDaLista, _confirmarSimilar, _fecharSimilares, _dispensarSugestao, _realcarSimilar,
     abrirEditarItem, _aplicarDescontoItem, _salvarEdicaoItem,
     toggleEntregar, _selecionarTurno, entrarModoEdicao, cancelarEdicao,
     setPayment, calcTroco, finalizarVenda, abrirPagamento, updateTotals,

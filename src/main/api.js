@@ -295,7 +295,11 @@ async function sincronizarProdutos(ultimaSync = null, onBatch = null) {
     let usouRota = true;
 
     while (true) {
-      const qs = new URLSearchParams({ pagina: String(pagina) });
+      // `campos=v2` pede `grupo_similar`. O caminho legado (`select(*)`) ja o
+      // traz; aqui o terminal precisa DECLARAR que sabe ler, senao a coluna
+      // sumiria do payload no dia em que a flag `produtos` fosse ligada, e os
+      // similares parariam de aparecer sem erro nenhum a investigar.
+      const qs = new URLSearchParams({ pagina: String(pagina), campos: 'v2' });
       if (ultimaSync) qs.set('desde', ultimaSync);
       const r = await terminal.chamarProtegida(`/api/pdv/produtos?${qs}`, null, { metodo: 'GET' });
 
@@ -489,6 +493,10 @@ async function registrarVenda(venda) {
     preco_unitario: i.preco_unitario,
     desconto: i.desconto || 0,
     subtotal: i.total,
+    // De onde veio o item: `compre_junto` quando o vendedor clicou na
+    // sugestao. Sem isto nao da para responder "quanto o Compre Junto
+    // vendeu" — a pergunta que justifica a funcionalidade existir.
+    origem_sugestao: i.origem_sugestao || null,
   }));
 
   const depositoIdVenda = usuario.deposito_id || venda.deposito_id || null;
@@ -604,6 +612,7 @@ async function registrarVenda(venda) {
         desconto: i.desconto,
         total: i.subtotal,
         tipo: Number(i.quantidade) < 0 ? 'devolucao' : 'venda',
+        origem_sugestao: i.origem_sugestao || null,
       }))
     );
     if (errItens) console.warn('[VENDA] Erro ao inserir venda_itens:', errItens.message);
@@ -1886,6 +1895,100 @@ async function buscarUrlImpressao() {
   return data?.print_server_url || null;
 }
 
+// A MENSAGEM DO RODAPE DO CUPOM VEM DA EMPRESA, NAO DA MAQUINA.
+//
+// O cupom termico e montado por quem IMPRIME, lendo o store dele: um terminal
+// que manda o job para o CAIXA nao usa a propria configuracao. Com seis
+// terminais, a mesma frase teria que ser digitada em cada um — e divergiria
+// na primeira troca de telefone. O comprovante em PDF ja lia de
+// `empresa_config_impressao` desde que a tela de Configuracoes existe.
+//
+// Lida do servidor, a frase e uma so, e deixa de importar quem renderiza.
+//
+// POR QUE PELA ROTA, E NAO DIRETO DO BANCO: `empresa_config_impressao` nao
+// esta aberta ao `anon` — conferido em producao. Ler direto exigiria devolver
+// um privilegio que foi retirado de proposito.
+//
+// O QUE ACONTECE QUANDO FALHA: devolve `undefined`, e quem chama nao mexe no
+// que esta guardado. Terminal sem identidade, servidor fora do ar ou versao
+// antiga da rota continuam imprimindo o rodape de sempre. Aqui, ao contrario
+// de venda, cair no comportamento anterior nao cria inconsistencia nenhuma:
+// nao ha escrita, nao ha dinheiro e nao ha duplicata possivel.
+async function buscarMensagemCupomDaEmpresa() {
+  const terminal = require('./terminal');
+  const r = await terminal.chamarProtegida('/api/pdv/impressao', null, { metodo: 'GET' });
+  if (!r.ok) {
+    if (r.motivo !== 'sem_identidade') {
+      console.warn('[CUPOM] Nao foi possivel ler a mensagem da empresa:', r.motivo, r.erro);
+    }
+    return undefined;
+  }
+  // Rota publicada antes desta mudanca responde sem o campo `cupom`. Isso nao
+  // e "a empresa apagou o rodape" — e "o servidor nao sabe opinar". Sao
+  // coisas diferentes, e so a segunda deixa o valor local como esta.
+  if (!r.dados || typeof r.dados.cupom !== 'object' || r.dados.cupom === null) return undefined;
+  const msg = r.dados.cupom.mensagem_rodape;
+  if (msg === null) return null;            // empresa sem linha: nada a dizer
+  if (typeof msg !== 'string') return undefined;
+  return msg.slice(0, 300);
+}
+
+// ─── Compre Junto ─────────────────────────────────────────────────────
+
+// O QUE OS CLIENTES COSTUMAM LEVAR JUNTO.
+//
+// O terminal ja sugeria, mas so pelas vendas DELE, no SQLite local: sem o
+// historico da loja inteira e sem os ajustes de "fixar" e "ocultar" que o
+// gestor faz no cadastro. Esta rota traz a mesma conta que o PDV web usa.
+//
+// SO IDS VOLTAM, de proposito. Nome, preco, promocao e estoque saem do
+// catalogo local, com a mesma regra do resto do carrinho. Viessem daqui, a
+// mesma tela teria duas fontes de preco.
+//
+// SEM FLAG DE ROLLOUT: a rota nao substitui caminho nenhum e a resposta e
+// conselho, nunca estado. O pior que uma sugestao errada faz e nao ser
+// clicada.
+//
+// PRAZO CURTO E FALHA MUDA: sugestao nao pode segurar o caixa. Estourou,
+// recusou ou caiu a rede, devolve `null` e a tela cai no painel local em vez
+// de ficar sem sugestao. Nada disso vira erro na tela do vendedor.
+const COMPRE_JUNTO_TIMEOUT_MS = 2000;
+
+async function buscarCompreJunto(remoteIds, limite = 6) {
+  const ids = [...new Set((remoteIds || []).filter(Boolean))];
+  // `null` e [] NAO sao a mesma resposta: null é "nao deu para perguntar" e
+  // faz a tela cair no painel local; [] é "nao ha o que sugerir", e aí o
+  // painel sai da tela mesmo. Trocar um pelo outro esconderia queda de rede
+  // atras de "sem sugestoes".
+  if (ids.length === 0) return null;
+  // A rota recusa o pedido INTEIRO com 400 se um id nao for UUID — um id
+  // herdado do Base44 (24 hex) e bug do terminal, e ela nao engole isso em
+  // silencio. Aqui o filtro e para nao transformar um produto criado
+  // offline, ainda sem remote_id resolvido, em consulta recusada.
+  const uuids = ids.filter(id => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id));
+  if (uuids.length === 0) return null;
+
+  const terminal = require('./terminal');
+  const qs = new URLSearchParams({ ids: uuids.slice(0, 50).join(','), limite: String(limite) });
+
+  let encerrou = false;
+  const prazo = new Promise(resolve => setTimeout(() => { encerrou = true; resolve(null); }, COMPRE_JUNTO_TIMEOUT_MS));
+  const pedido = terminal.chamarProtegida(`/api/pdv/compre-junto?${qs}`, null, { metodo: 'GET' })
+    .catch(err => ({ ok: false, motivo: 'rede', erro: err.message }));
+
+  const r = await Promise.race([pedido, prazo]);
+  if (encerrou || !r) return null;
+  if (!r.ok) {
+    // `sem_identidade` e o estado normal de um terminal ainda nao ativado.
+    // Nao e novidade e nao merece linha de log a cada carrinho.
+    if (r.motivo !== 'sem_identidade') {
+      console.warn(`[COMPRE-JUNTO] ${r.motivo}: ${r.erro}`);
+    }
+    return null;
+  }
+  return Array.isArray(r.dados?.sugestoes) ? r.dados.sugestoes : [];
+}
+
 // ─── Autenticação PDV ─────────────────────────────────────────────────
 
 async function autenticarPDV(login, senha) {
@@ -1998,6 +2101,8 @@ module.exports = {
   sincronizarEnderecosProdutos,
   atualizarUrlImpressao,
   buscarUrlImpressao,
+  buscarMensagemCupomDaEmpresa,
+  buscarCompreJunto,
   autenticarPDV,
 
   // Fora do escopo desta fase — stubs

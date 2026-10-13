@@ -281,6 +281,9 @@ ipcMain.handle('telaCliente:desativar', () => {
 });
 
 // Sugestões
+ipcMain.handle('produtos:similares', (_, grupo) => db.produtos.similares(grupo));
+ipcMain.handle('produtos:porRemoteIds', (_, ids) => db.produtos.porRemoteIds(ids));
+ipcMain.handle('compreJunto:buscar', (_, ids, limite) => api.buscarCompreJunto(ids, limite));
 ipcMain.handle('sugestoes:porCarrinho', (_, ids) => db.sugestoes.porCarrinho(ids));
 ipcMain.handle('sugestoes:porCliente', (_, clienteId, ids) => db.sugestoes.porCliente(clienteId, ids));
 ipcMain.handle('sugestoes:maisVendidos', (_, ids) => db.sugestoes.maisVendidos(ids));
@@ -991,6 +994,12 @@ ipcMain.handle('print:server:status', () => ({
   rodando: printServer.isRunning(),
   porta: store.get('config.print_server_porta') || 3001,
 }));
+// A TELA NAO REIMPLEMENTA A REGRA.
+//
+// A ordem local > empresa > padrao vive em print-server.js, junto de quem
+// monta o papel. Se a tela calculasse por conta propria, bastaria uma das
+// duas mudar para ela passar a mentir sobre o que vai sair impresso.
+ipcMain.handle('print:mensagem-cupom', () => printServer.mensagemDoCupom());
 ipcMain.handle('print:listar', async () => {
   return printServer.listarImpressoras(mainWindow);
 });
