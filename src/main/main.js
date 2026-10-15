@@ -17,6 +17,7 @@ const sync = require('./sync');
 const api = require('./api');
 const printServer = require('./print-server');
 const tunnel = require('./tunnel');
+const envioImpressao = require('./envioImpressao');
 const updater = require('./updater');
 const focusnfe = require('./focusnfe');
 const ia       = require('./ia');
@@ -991,6 +992,18 @@ ipcMain.handle('auth:logout', () => {
 // Sem escolha salva, deduz do que já estava configurado: terminal com IP
 // de CAIXA preenchido já mandava para lá. Assim ninguém acorda com a
 // impressão em outro lugar depois de atualizar.
+// Ver src/main/envioImpressao.js: a regra da segunda tentativa mora la, com
+// as dependencias entrando por parametro, para poder ser testada sem
+// Electron, sem rede e sem um CAIXA do outro lado.
+function enviarParaServidorComRefresco(dados) {
+  return envioImpressao.enviarComRefresco(dados, {
+    enviar: (d) => printServer.enviarParaServidor(d),
+    lerUrlAtual: () => store.get('config.print_server_ip'),
+    buscarUrlNova: () => api.buscarUrlImpressao(),
+    salvarUrl: (url) => store.set('config.print_server_ip', url),
+    log: (url) => console.log('[IMPRESSAO] O CAIXA mudou de endereço; tentando de novo em', url),
+  });
+}
 function destinoImpressao() {
   if (store.get('config.print_server_ativo') === true) return 'local';
   const escolhido = store.get('config.destino_impressao');
@@ -1017,7 +1030,7 @@ ipcMain.handle('print:orcamento', async (_, orc) => {
   // frente esperando o papel, e um orçamento impresso na máquina errada é
   // melhor que orçamento nenhum.
   if (destinoImpressao() === 'servidor') {
-    try { return await printServer.enviarParaServidor({ ...orc, _html: html }); }
+    try { return await enviarParaServidorComRefresco({ ...orc, _html: html }); }
     catch (e) { console.warn('[ORCAMENTO] Servidor de impressão falhou, imprimindo local:', e.message); }
   }
 
@@ -1040,14 +1053,14 @@ ipcMain.handle('print:orcamento', async (_, orc) => {
 ipcMain.handle('print:entrega', async (_, dados) => {
   const html = printServer.gerarHtmlCupomEntrega(dados);
   if (destinoImpressao() === 'servidor') {
-    try { return await printServer.enviarParaServidor({ ...dados, _html: html }); }
+    try { return await enviarParaServidorComRefresco({ ...dados, _html: html }); }
     catch { /* cai no local */ }
   }
   return printServer.imprimirLocal({ ...dados, _html: html });
 });
 ipcMain.handle('print:servidor', async (_, dados) => {
   try {
-    return await printServer.enviarParaServidor(dados);
+    return await enviarParaServidorComRefresco(dados);
   } catch (err) {
     return { erro: err.message };
   }

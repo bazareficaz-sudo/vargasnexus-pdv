@@ -46,7 +46,8 @@ describe('uma regra so, para os tres documentos', () => {
                          MAIN.indexOf("ipcMain.handle('print:servidor'"));
     assert.ok(h.length > 400, `handler=${h.length}`);
     assert.match(h, /destinoImpressao\(\) === 'servidor'/);
-    assert.match(h, /enviarParaServidor\(\{ \.\.\.orc, _html: html \}\)/);
+    // Pelo refresco, não pelo envio cru — ver o bloco da segunda tentativa.
+    assert.match(h, /enviarParaServidorComRefresco\(\{ \.\.\.orc, _html: html \}\)/);
   });
 
   test('a ENTREGA usa a mesma regra, nao mais o IP cru', () => {
@@ -158,5 +159,30 @@ describe('a tela de configuracao', () => {
 
   test('salva junto com o resto da impressao', () => {
     assert.match(CFG, /config\.set\('config\.destino_impressao', destino\)/);
+  });
+});
+
+describe('os tres documentos usam a segunda tentativa', () => {
+  // Ligar so um deles faria o orcamento se recuperar e a venda nao — e
+  // ninguem descobriria por que, porque os tres parecem iguais na tela.
+  test('venda, entrega e orcamento passam pelo refresco', () => {
+    const chamadas = MAIN.split('enviarParaServidorComRefresco(').length - 1;
+    // 1 definicao + 3 chamadas
+    assert.ok(chamadas >= 4, `achei ${chamadas} referencias`);
+    for (const h of ["ipcMain.handle('print:servidor'", "ipcMain.handle('print:entrega'",
+                     "ipcMain.handle('print:orcamento'"]) {
+      const i = MAIN.indexOf(h);
+      assert.ok(i > 0, `nao achei ${h}`);
+      const corpo = MAIN.slice(i, i + 700);
+      assert.match(corpo, /enviarParaServidorComRefresco\(/);
+    }
+  });
+
+  test('e ninguem chama o envio cru por fora do refresco', () => {
+    // Um caminho direto seria o unico que nao se recupera, e seria sempre o
+    // ultimo a ser lembrado.
+    const fora = MAIN.split('function enviarParaServidorComRefresco')[0]
+      + MAIN.split('function enviarParaServidorComRefresco')[1].split('\n}')[1];
+    assert.doesNotMatch(fora, /printServer\.enviarParaServidor\(/);
   });
 });
