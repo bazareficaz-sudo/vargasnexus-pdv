@@ -356,3 +356,151 @@ describe('a mensagem do WhatsApp', () => {
     assert.ok(!m.includes('ITEM 22'), 'nao deveria listar o 23o item');
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// A NEGOCIACAO MONTADA: catalogo + condicoes + saude
+// ─────────────────────────────────────────────────────────────────────────
+const N = require('../src/main/negociacaoOrcamento');
+
+const POLITICA = {
+  config: {
+    ...CFG,
+    orcamento_promo_vira_desconto: true,
+    orcamento_promo_formas: ['pix', 'dinheiro'],
+    orcamento_parcela_minima: 50,
+    orcamento_parcelas_max: 6,
+    orcamento_parcelas_sem_juros: true,
+  },
+  faixas: FAIXAS,
+};
+
+// Caixa d'agua: tabela R$ 300, promocao R$ 270, custo R$ 60.
+const CATALOGO = [{
+  id: 'p1', preco_venda: 300, preco_custo: 60,
+  preco_promocional: 270, promocao_ativa: true,
+}];
+const negociar = (extra = {}, catalogo = CATALOGO) => N.calcular({
+  itens: [{ produto_id: 'p1', produto_nome: 'CAIXA DAGUA', quantidade: 1, preco_unitario: 270 }],
+  descontoManualPct: 0,
+  politica: POLITICA,
+  buscarProdutos: () => catalogo,
+  ...extra,
+});
+
+describe('a negociacao de ponta a ponta', () => {
+  test('o item sai pelo CHEIO e a promocao vira condicao', () => {
+    const r = negociar();
+    assert.equal(r.totalExibido, 300);
+    assert.equal(r.condicoes.descontoAvistaPct, 10);
+    assert.equal(r.aplicaEstrategia, true);
+  });
+
+  test('A CONTA FECHA: o a vista cai no preco praticado', () => {
+    // Se nao fechasse, o papel prometeria um preco que a venda nao cobraria.
+    const r = negociar();
+    assert.equal(r.totalAvista, r.vitrine.totalPraticado);
+    assert.equal(r.totalAvista, 270);
+  });
+
+  test('e as duas condicoes tem margens diferentes', () => {
+    // É o ponto da tela: o vendedor ve quanto custa cada condicao ANTES de
+    // prometer. Parcelar em 6x custa ~13 pontos de margem.
+    const r = negociar();
+    assert.ok(r.saude.avista.margem > r.saude.parcelado.margem);
+    assert.ok(r.saude.avista.margem - r.saude.parcelado.margem > 10,
+      `diferenca foi ${(r.saude.avista.margem - r.saude.parcelado.margem).toFixed(2)}pp`);
+  });
+
+  test('promocao FORA DA JANELA de datas nao conta', () => {
+    // Um desconto de fim de semana nao pode virar desconto a vista eterno.
+    const vencida = [{ ...CATALOGO[0], promocao_fim: '2020-01-01' }];
+    const r = negociar({}, vencida);
+    assert.equal(r.aplicaEstrategia, false);
+    assert.equal(r.totalExibido, 270);
+    assert.equal(r.condicoes.descontoAvistaPct, 0);
+  });
+
+  test('estrategia desligada: o item sai pelo preco praticado', () => {
+    const r = N.calcular({
+      itens: [{ produto_id: 'p1', produto_nome: 'X', quantidade: 1, preco_unitario: 270 }],
+      politica: { ...POLITICA, config: { ...POLITICA.config, orcamento_promo_vira_desconto: false } },
+      buscarProdutos: () => CATALOGO,
+    });
+    assert.equal(r.aplicaEstrategia, false);
+    assert.equal(r.totalExibido, 270);
+  });
+});
+
+describe('o desconto manual DESCONSIDERA a promocao', () => {
+  test('manual substitui, nao soma', () => {
+    // Regra do lojista. Somar daria 25% onde se quis 15%.
+    const r = negociar({ descontoManualPct: 15 });
+    assert.equal(r.condicoes.descontoAvistaPct, 15);
+    assert.equal(r.totalAvista, 255);
+  });
+
+  test('manual MENOR que a promocao dispara o aviso', () => {
+    // 5% sobre um cheio de R$ 300 da R$ 285 — pior que os R$ 270 do balcao.
+    const r = negociar({ descontoManualPct: 5 });
+    assert.ok(r.aviso, 'deveria avisar');
+    assert.match(r.aviso, /PIOR/);
+    assert.ok(r.totalAvista > r.vitrine.totalPraticado,
+      `a vista ${r.totalAvista} deveria ser maior que o praticado ${r.vitrine.totalPraticado}`);
+  });
+
+  test('manual maior que a promocao nao avisa', () => {
+    assert.equal(negociar({ descontoManualPct: 20 }).aviso, null);
+  });
+});
+
+describe('a faixa aperta o parcelamento', () => {
+  test('margem excelente libera o teto da empresa', () => {
+    const r = negociar();
+    assert.equal(r.saude.base.faixa.nome, 'Excelente');
+    assert.equal(r.condicoes.parcelasMax, 6);
+  });
+
+  test('margem na faixa "Atencao" derruba para so a vista', () => {
+    // Mesmo preco, custo alto: a margem cai e o parcelamento sai.
+    const caro = [{ ...CATALOGO[0], preco_custo: 160 }];
+    const r = negociar({}, caro);
+    assert.equal(r.saude.base.faixa.nome, 'Atenção');
+    assert.equal(r.condicoes.parcelasMax, null);
+    assert.equal(r.saude.parcelado, null);
+  });
+});
+
+describe('produto sem custo nao inventa margem', () => {
+  test('avisa semCusto e a faixa nao decide o parcelamento', () => {
+    const semCusto = [{ ...CATALOGO[0], preco_custo: 0 }];
+    const r = negociar({}, semCusto);
+    assert.equal(r.semCusto, true);
+    // Sem o custo a margem sairia ~94% e "Excelente" liberaria 6x por um
+    // motivo que nao existe. A faixa se cala, fica so o teto da empresa.
+    assert.equal(r.condicoes.parcelasMax, 6);
+  });
+
+  test('produto fora do catalogo local nao quebra', () => {
+    // Orcamento antigo cujo produto foi apagado, ou item avulso.
+    const r = negociar({}, []);
+    assert.equal(r.semCusto, true);
+    assert.equal(r.totalExibido, 270);
+    assert.ok(Array.isArray(r.linhas));
+  });
+
+  test('lista de itens vazia devolve estrutura vazia, nao erro', () => {
+    const r = N.calcular({ itens: [], politica: POLITICA, buscarProdutos: () => [] });
+    assert.equal(r.totalExibido, 0);
+    assert.deepEqual(r.linhas, []);
+  });
+
+  test('sem politica nenhuma ainda responde', () => {
+    // Terminal recem-instalado, antes do primeiro sync.
+    const r = N.calcular({
+      itens: [{ produto_id: 'p1', produto_nome: 'X', quantidade: 1, preco_unitario: 270 }],
+      buscarProdutos: () => CATALOGO,
+    });
+    assert.equal(r.aplicaEstrategia, false);
+    assert.ok(r.saude.base.faixa, 'deveria cair nas faixas de fabrica');
+  });
+});

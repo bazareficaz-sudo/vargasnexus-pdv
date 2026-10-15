@@ -457,7 +457,7 @@ function gerarHtmlOrcamento(dados) {
   const { numero, empresa_nome = '', vendedor_nome = '', cliente_nome = '',
           cliente_telefone = '', forma_pagamento = '', validade_dias = 7,
           subtotal = 0, desconto = 0, total = 0, observacao = '',
-          itens = [], created_at } = dados;
+          itens = [], created_at, negociacao = null } = dados;
 
   const fmt   = v => Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const data  = created_at ? new Date(created_at).toLocaleDateString('pt-BR') : new Date().toLocaleDateString('pt-BR');
@@ -471,12 +471,27 @@ function gerarHtmlOrcamento(dados) {
   const formaTxt = formaMap[forma_pagamento] || forma_pagamento || '—';
   const descItens = itens.reduce((s, i) => s + (Number(i.desconto) || 0), 0);
 
+  // Quando a negociacao esta junto, o item sai pelo preco CHEIO e a promocao
+  // reaparece no bloco de condicoes. A marca aponta de onde vem o desconto
+  // sem repetir numero — numero repetido convida o cliente a refazer a conta
+  // e a achar um erro que nao existe.
+  const porProduto = new Map((negociacao?.itens || []).map(i => [i.produto_id, i]));
+
   const linhasItens = itens.map(i => {
     const qtd  = Number(i.quantidade || 0);
-    const unit = Number(i.preco_unitario || 0);
-    const tot  = Number(i.total || 0);
+    const neg = porProduto.get(i.produto_id);
+    const exibido = (negociacao?.aplicaEstrategia && neg) ? Number(neg.precoCheio) : Number(i.preco_unitario || 0);
+    const unit = exibido;
+    // O total da linha acompanha o unitario. Mostrar "1 × R$ 300,00" com total
+    // de R$ 270,00 na linha de baixo é o tipo de incoerencia que o cliente
+    // acha em dois segundos e usa para desconfiar do resto do papel.
+    //
+    // Desconto por item nao entra quando a estrategia aplica — mesma escolha
+    // do web em `totalItemExibido`: o desconto do item ja esta refletido no
+    // preco praticado, e some dentro do desconto a vista.
+    const tot  = (negociacao?.aplicaEstrategia && neg) ? exibido * qtd : Number(i.total || 0);
     return `
-      <tr><td colspan="2" class="prod-nome">${i.produto_nome || ''}</td></tr>
+      <tr><td colspan="2" class="prod-nome">${i.produto_nome || ''}${(negociacao?.aplicaEstrategia && neg?.temPromo) ? ' <span class="promo-mark">★</span>' : ''}</td></tr>
       <tr>
         <td class="prod-calc">${qtd} × R$ ${fmt(unit)}${Number(i.desconto) > 0 ? `<br><span class="desc-tag">desconto: − R$ ${fmt(i.desconto)}</span>` : ''}</td>
         <td class="right prod-total">R$ ${fmt(tot)}</td>
@@ -510,6 +525,19 @@ function gerarHtmlOrcamento(dados) {
   .desc-tag   { color: #c0392b; font-size: 10pt; }
   .label-row td { font-size: 11pt; padding-top: 3px; }
   .total-row td { font-size: 18pt; font-weight: bold; padding-top: 10px; }
+  /* A negociação. Corpo grande de propósito: é o que o cliente leva para
+     comparar, e o que ele compara é o número, não o nome da loja. */
+  .promo-mark { font-size: 11pt; }
+  .cond-box   { border: 2px solid #000; border-radius: 4px;
+                padding: 8px 10px; margin-top: 10px; }
+  .cond-titulo{ text-align: center; font-size: 11pt; font-weight: bold;
+                letter-spacing: 1px; margin-bottom: 6px; }
+  .cond-item  { margin-top: 8px; }
+  .cond-item:first-of-type { margin-top: 0; }
+  .cond-rotulo{ font-size: 11pt; font-weight: bold; letter-spacing: .5px; }
+  .cond-valor { font-size: 19pt; font-weight: bold; line-height: 1.15; }
+  .cond-obs   { font-size: 10pt; }
+  .cond-sep   { border: none; border-top: 1px dashed #000; margin: 8px 0; }
 </style>
 </head>
 <body>
@@ -532,21 +560,46 @@ function gerarHtmlOrcamento(dados) {
     ${descItens > 0 ? `<tr class="label-row"><td>Desconto nos itens</td><td class="right desc-tag">− R$ ${fmt(descItens)}</td></tr>` : ''}
     ${Number(desconto) > 0 ? `<tr class="label-row"><td>Desconto geral</td><td class="right desc-tag">− R$ ${fmt(desconto)}</td></tr>` : ''}
     ` : ''}
-    <tr class="total-row"><td>TOTAL</td><td class="right">R$ ${fmt(total)}</td></tr>
+    <tr class="total-row"><td>TOTAL</td><td class="right">R$ ${fmt(negociacao ? negociacao.totalExibido : total)}</td></tr>
   </table>
 
   <hr class="sep">
 
+  ${negociacao && negociacao.linhas.length > 0 ? `
+  <div class="cond-box">
+    <div class="cond-titulo">COMO VOCÊ PODE PAGAR</div>
+
+    ${negociacao.condicoes.parcelasMax > 1 ? `
+    <div class="cond-item">
+      <div class="cond-rotulo">NO CARTÃO</div>
+      <div class="cond-valor">${negociacao.condicoes.parcelasMax}x de
+        R$ ${fmt(negociacao.totalExibido / negociacao.condicoes.parcelasMax)}</div>
+      <div class="cond-obs">${negociacao.condicoes.parcelasSemJuros ? 'sem juros · ' : ''}total R$ ${fmt(negociacao.totalExibido)}</div>
+    </div>` : ''}
+
+    ${negociacao.condicoes.descontoAvistaPct > 0 ? `
+    ${negociacao.condicoes.parcelasMax > 1 ? '<hr class="cond-sep">' : ''}
+    <div class="cond-item">
+      <div class="cond-rotulo">${(negociacao.condicoes.avistaFormas || [])
+        .map(f => ({pix:'PIX',dinheiro:'DINHEIRO',debito:'DÉBITO',transferencia:'TRANSFERÊNCIA'}[f] || String(f).toUpperCase()))
+        .join(' OU ')}</div>
+      <div class="cond-valor">R$ ${fmt(negociacao.totalAvista)}</div>
+      <div class="cond-obs">você economiza R$ ${fmt(negociacao.totalExibido - negociacao.totalAvista)}</div>
+    </div>` : ''}
+  </div>` : `
   <div class="sm" style="margin-top:2px">
-    <strong>Forma de pagamento:</strong> ${formaTxt}<br>
-    <strong>Validade da proposta:</strong> até ${venc}
+    <strong>Forma de pagamento:</strong> ${formaTxt}
+  </div>`}
+
+  <div class="center sm" style="margin-top:8px">
+    <strong>Esta proposta vale até ${venc}</strong>
   </div>
 
   ${observacao ? `<hr class="sep"><div class="sm">📝 ${observacao}</div>` : ''}
 
   <hr class="sep">
   <div class="center sm" style="margin-top:6px">Sujeito a alteração de preços sem aviso prévio.</div>
-  <div class="center bold" style="margin-top:6px">Obrigado pela preferência!</div>
+  <div class="center bold" style="margin-top:6px;white-space:pre-line;font-size:13pt">${escaparHtml(String(mensagemDoCupom()).trim())}</div>
 </body>
 </html>`;
 }
