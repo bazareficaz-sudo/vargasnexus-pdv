@@ -119,7 +119,23 @@ function calcular({ itens, descontoManualPct, politica, buscarProdutos, agora } 
     observacao: null,
   };
 
-  const totalAvista = C.totalAvista(totalExibido, condicoes);
+  // ── O VALOR À VISTA É UM PREÇO, NÃO UMA CONTA DE PERCENTUAL ───────────
+  //
+  // Quando o desconto vem da promoção, o valor à vista JÁ EXISTE: é a soma
+  // dos preços promocionais, que é o que o PDV vai cobrar. O percentual é
+  // descrição, e descrição arredondada em duas casas.
+  //
+  // Visto numa prévia com produtos reais: 1.465,00 cheio, 6,96% de desconto
+  // ponderado, e `1465 × (1 − 0,0696)` dá 1.363,04 — quatro centavos acima
+  // dos 1.363,00 que a venda cobraria. O papel prometeria um preço que a
+  // loja não pratica, e por diferença pequena demais para alguém desconfiar
+  // antes do caixa.
+  //
+  // Com desconto MANUAL é o contrário: ali o percentual é a decisão, e o
+  // valor sai dele.
+  const totalAvista = (manualPct > 0 || !aplicaEstrategia)
+    ? C.totalAvista(totalExibido, condicoes)
+    : vitrine.totalPraticado;
 
   // Quanto de desconto é, medido sobre o preço praticado — que é por onde os
   // itens entram no cálculo de margem.

@@ -1268,8 +1268,11 @@ ${orc.observacao?`<div style="background:var(--bg3);border-radius:8px;padding:10
     const semaforo = (s) => {
       if (!s || !s.faixa) return '';
       const cor = s.faixa.cor || '#64748b';
+      // MARKUP, que é a regua do balcao e a que as faixas usam. A margem vai
+      // junto entre parenteses: sao a mesma venda em duas escalas, e misturar
+      // as duas sem dizer qual é qual ja confundiu gente demais aqui.
       return `<span class="neg-faixa" style="color:${cor}">${s.faixa.emoji || ''} ${s.faixa.nome}`
-        + ` · margem ${fm(s.margem)}%</span>`;
+        + ` · markup ${fm(s.markup)}% <span class="neg-margem">(margem ${fm(s.margem)}%)</span></span>`;
     };
 
     el.innerHTML = `

@@ -115,14 +115,16 @@ describe('o item sai pelo preco CHEIO', () => {
     assert.match(html, /R\$ 344,00/);
   });
 
-  test('o item em promocao recebe a marca; o sem promocao, nao', () => {
-    // A marca aponta de onde vem o desconto sem repetir numero. Numero
-    // repetido convida o cliente a refazer a conta e achar erro que nao ha.
+  test('o item em promocao ganha a linha da economia; o sem promocao, nao', () => {
+    // O item sem promocao fica VISIVELMENTE sem a linha — mostra sozinho que
+    // ali nao ha desconto a dar, sem gastar uma coluna para repetir o mesmo
+    // numero duas vezes.
     const { html } = cupom();
-    const linhaCaixa = html.slice(html.indexOf('CAIXA DAGUA'), html.indexOf('CAIXA DAGUA') + 120);
-    const linhaAdapt = html.slice(html.indexOf('ADAPTADOR'), html.indexOf('ADAPTADOR') + 120);
-    assert.match(linhaCaixa, /promo-mark/);
-    assert.doesNotMatch(linhaAdapt, /promo-mark/);
+    const linhaCaixa = html.slice(html.indexOf('CAIXA DAGUA'), html.indexOf('ADAPTADOR'));
+    const linhaAdapt = html.slice(html.indexOf('ADAPTADOR'), html.indexOf('</table>'));
+    assert.match(linhaCaixa, /prod-avista/);
+    assert.match(linhaCaixa, /à vista R\$ 270,00 — economiza R\$ 30,00/);
+    assert.doesNotMatch(linhaAdapt, /prod-avista/);
   });
 
   test('e o preco unitario impresso é o de tabela', () => {
@@ -180,10 +182,10 @@ describe('o desconto manual no papel', () => {
 });
 
 describe('faixa apertada tira o parcelamento do papel', () => {
-  test('margem em "Atenção" imprime so o a vista', () => {
+  test('markup em "Atenção" imprime so o a vista', () => {
     const caro = [
-      { id: 'p1', preco_venda: 300, preco_custo: 170, preco_promocional: 270, promocao_ativa: true },
-      { id: 'p2', preco_venda: 22, preco_custo: 13 },
+      { id: 'p1', preco_venda: 300, preco_custo: 185, preco_promocional: 270, promocao_ativa: true },
+      { id: 'p2', preco_venda: 22, preco_custo: 15 },
     ];
     const { gerarHtmlOrcamento } = carregarComStore({});
     const negociacao = N.calcular({
@@ -205,7 +207,9 @@ describe('o total da linha acompanha o unitario', () => {
     const linha = html.slice(html.indexOf('CAIXA DAGUA'), html.indexOf('ADAPTADOR'));
     assert.match(linha, /1 × R\$ 300,00/);
     assert.match(linha, /R\$ 300,00<\/td>/);
-    assert.doesNotMatch(linha, /R\$ 270,00/);
+    // O 270 aparece de propósito, mas SÓ na linha da economia — nunca como
+    // total da linha, que é onde a incoerência moraria.
+    assert.doesNotMatch(linha, /R\$ 270,00<\/td>/);
   });
 
   test('e a soma das linhas bate com o TOTAL', () => {

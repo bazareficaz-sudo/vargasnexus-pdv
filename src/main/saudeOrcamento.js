@@ -57,6 +57,9 @@ function taxaPorForma(forma, parcelas, cfg) {
 
 // A faixa é uma ESCADA, e escada se define pelo degrau de baixo.
 //
+// O valor comparado é o MARKUP — ver `avaliar`. A coluna no banco se chama
+// `margem_min` por historia, nao por significado.
+//
 // ── POR QUE NÃO USAR `margem_max` ────────────────────────────────────────
 //
 // A versão natural seria "a janela que contém a margem": `>= min && < max`.
@@ -77,14 +80,14 @@ function taxaPorForma(forma, parcelas, cfg) {
 // próxima vez que alguém editasse as faixas. Consertar a REGRA resolve
 // sempre: ordena da maior margem para a menor e pega a primeira cujo piso a
 // margem alcança. `margem_max` passa a ser decorativo, que é o que ele é.
-function encontrarFaixa(margem, faixas) {
+function encontrarFaixa(valor, faixas) {
   const lista = (faixas && faixas.length ? faixas : FAIXAS_PADRAO)
     .filter((f) => f.ativo !== false);
   if (lista.length === 0) return null;
   const ordenadas = [...lista].sort(
     (a, b) => (b.margem_min ?? -Infinity) - (a.margem_min ?? -Infinity));
   const achada = ordenadas.find(
-    (f) => margem >= (f.margem_min == null ? -Infinity : Number(f.margem_min)));
+    (f) => valor >= (f.margem_min == null ? -Infinity : Number(f.margem_min)));
   // Só sobra fallback se TODAS as faixas tiverem piso acima da margem — aí a
   // última (a de piso mais baixo) é mesmo a certa.
   return achada || ordenadas[ordenadas.length - 1] || null;
@@ -113,9 +116,33 @@ function avaliar(itens, desconto, forma, parcelas, cfg, faixas) {
   const custoTotalReal = custoTotal + custoTaxaPag + custoImposto
     + custoOperacional + custoComissao + custoEmbalagem + custoFrete;
   const lucroLiquido = totalComDesc - custoTotalReal;
-  const margem = totalComDesc > 0 ? (lucroLiquido / totalComDesc) * 100 : 0;
 
-  const faixa = encontrarFaixa(margem, faixas);
+  // ── MARKUP, E NÃO MARGEM, É A RÉGUA DAQUI ──────────────────────────────
+  //
+  // São contas diferentes sobre o mesmo lucro:
+  //
+  //     margem = lucro ÷ PREÇO DE VENDA
+  //     markup = lucro ÷ CUSTO
+  //
+  // O balcão raciocina em markup — é o número que a tela de venda do PDV
+  // mostra (embora com o rótulo errado, "margem"). Medido no catálogo:
+  // markup mediano 78,6%, margem mediana 44%. É a mesma loja, em duas
+  // escalas.
+  //
+  // As faixas configuradas (70/50/30/5) só fazem sentido como markup: lidas
+  // como margem, 61% do catálogo cai em "Atenção" e deixa de parcelar; lidas
+  // como markup, a distribuição acompanha o negócio.
+  //
+  // `margem` continua calculada e devolvida: é o número que o contador usa,
+  // e some dele seria trocar um problema por outro.
+  const margem = totalComDesc > 0 ? (lucroLiquido / totalComDesc) * 100 : 0;
+  const markup = custoTotal > 0
+    ? (lucroLiquido / custoTotal) * 100
+    // Sem custo não existe markup: dividir por zero daria Infinity, e
+    // Infinity cairia sempre na melhor faixa. `semCusto` abaixo avisa quem lê.
+    : 0;
+
+  const faixa = encontrarFaixa(markup, faixas);
   const descontoMaxPct = num(faixa?.desconto_max_pct);
 
   // SEM CUSTO a margem sai inflada — o item entra como se fosse lucro puro.
@@ -131,6 +158,8 @@ function avaliar(itens, desconto, forma, parcelas, cfg, faixas) {
     custoTotalReal: Math.round(custoTotalReal * 100) / 100,
     lucroLiquido: Math.round(lucroLiquido * 100) / 100,
     margem: Math.round(margem * 100) / 100,
+    // A regua que escolheu a faixa. Quem exibe mostra esta.
+    markup: Math.round(markup * 100) / 100,
     taxaPagPct,
     faixa,
     descontoMaxPct,

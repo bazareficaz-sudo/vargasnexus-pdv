@@ -491,11 +491,13 @@ function gerarHtmlOrcamento(dados) {
     // preco praticado, e some dentro do desconto a vista.
     const tot  = (negociacao?.aplicaEstrategia && neg) ? exibido * qtd : Number(i.total || 0);
     return `
-      <tr><td colspan="2" class="prod-nome">${i.produto_nome || ''}${(negociacao?.aplicaEstrategia && neg?.temPromo) ? ' <span class="promo-mark">★</span>' : ''}</td></tr>
+      <tr><td colspan="2" class="prod-nome">${i.produto_nome || ''}</td></tr>
       <tr>
         <td class="prod-calc">${qtd} × R$ ${fmt(unit)}${Number(i.desconto) > 0 ? `<br><span class="desc-tag">desconto: − R$ ${fmt(i.desconto)}</span>` : ''}</td>
         <td class="right prod-total">R$ ${fmt(tot)}</td>
-      </tr>`;
+      </tr>
+      ${(negociacao?.aplicaEstrategia && neg?.temPromo) ? `
+      <tr><td colspan="2" class="prod-avista">★ à vista R$ ${fmt(neg.precoPraticado * qtd)} — economiza R$ ${fmt(tot - neg.precoPraticado * qtd)}</td></tr>` : ''}`;
   }).join('');
 
   return `<!DOCTYPE html>
@@ -527,7 +529,8 @@ function gerarHtmlOrcamento(dados) {
   .total-row td { font-size: 18pt; font-weight: bold; padding-top: 10px; }
   /* A negociação. Corpo grande de propósito: é o que o cliente leva para
      comparar, e o que ele compara é o número, não o nome da loja. */
-  .promo-mark { font-size: 11pt; }
+  .promo-mark  { font-size: 11pt; }
+  .prod-avista { font-size: 10.5pt; font-weight: bold; padding-top: 1px; }
   .cond-box   { border: 2px solid #000; border-radius: 4px;
                 padding: 8px 10px; margin-top: 10px; }
   .cond-titulo{ text-align: center; font-size: 11pt; font-weight: bold;

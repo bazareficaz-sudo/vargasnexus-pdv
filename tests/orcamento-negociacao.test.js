@@ -158,8 +158,8 @@ describe('sem custo cadastrado, a faixa NAO opina', () => {
   });
 
   test('com custo, o teto vem da faixa', () => {
-    // R$ 100 com custo R$ 40: margem ~54% -> faixa "Boa" -> 3x.
-    const a = S.avaliar([item(100, 40)], 0, 'pix', 1, CFG, FAIXAS);
+    // R$ 100 com custo R$ 60: markup liquido ~57% -> faixa "Boa" -> 3x.
+    const a = S.avaliar([item(100, 60)], 0, 'pix', 1, CFG, FAIXAS);
     assert.equal(a.faixa.nome, 'Boa');
     assert.equal(S.tetoDeParcelasDaFaixa(a), 3);
   });
@@ -167,7 +167,7 @@ describe('sem custo cadastrado, a faixa NAO opina', () => {
   test('faixa que proibe parcelamento devolve 1, nao null', () => {
     // 1 é "so a vista", decidido. null seria "nao sei", e aí o teto da
     // empresa valeria sozinho — o oposto do que a faixa manda.
-    const a = S.avaliar([item(100, 60)], 0, 'pix', 1, CFG, FAIXAS);
+    const a = S.avaliar([item(100, 68)], 0, 'pix', 1, CFG, FAIXAS);
     assert.equal(a.faixa.nome, 'Atenção');
     assert.equal(S.tetoDeParcelasDaFaixa(a), 1);
   });
@@ -308,17 +308,17 @@ describe('parcelas: a regra da parcela minima', () => {
   });
 
   test('ponta a ponta: orcamento real com faixa real', () => {
-    // R$ 1.000 com custo R$ 450 -> margem 49,51% -> faixa "Atenção" ->
-    // parcelamento proibido, mesmo com teto 6 e total que daria 20x.
-    const a = S.avaliar([item(1000, 450)], 0, 'pix', 1, CFG, FAIXAS);
+    // R$ 1.000 com custo R$ 680 -> markup liquido ~39% -> faixa "Atenção"
+    // -> parcelamento proibido, mesmo com teto 6 e total que daria 20x.
+    const a = S.avaliar([item(1000, 680)], 0, 'pix', 1, CFG, FAIXAS);
     assert.equal(a.faixa.nome, 'Atenção');
     assert.equal(C.parcelasSugeridas(1000, {
       ...cfg, tetoFaixa: S.tetoDeParcelasDaFaixa(a),
     }), 1);
   });
 
-  test('e o mesmo orcamento com margem boa parcela em 3', () => {
-    const a = S.avaliar([item(1000, 400)], 0, 'pix', 1, CFG, FAIXAS);
+  test('e o mesmo orcamento com markup bom parcela em 3', () => {
+    const a = S.avaliar([item(1000, 600)], 0, 'pix', 1, CFG, FAIXAS);
     assert.equal(a.faixa.nome, 'Boa');
     assert.equal(C.parcelasSugeridas(1000, {
       ...cfg, tetoFaixa: S.tetoDeParcelasDaFaixa(a),
@@ -454,15 +454,15 @@ describe('o desconto manual DESCONSIDERA a promocao', () => {
 });
 
 describe('a faixa aperta o parcelamento', () => {
-  test('margem excelente libera o teto da empresa', () => {
+  test('markup excelente libera o teto da empresa', () => {
     const r = negociar();
     assert.equal(r.saude.base.faixa.nome, 'Excelente');
     assert.equal(r.condicoes.parcelasMax, 6);
   });
 
-  test('margem na faixa "Atencao" derruba para so a vista', () => {
-    // Mesmo preco, custo alto: a margem cai e o parcelamento sai.
-    const caro = [{ ...CATALOGO[0], preco_custo: 160 }];
+  test('markup na faixa "Atencao" derruba para so a vista', () => {
+    // Mesmo preco, custo alto: o markup cai e o parcelamento sai.
+    const caro = [{ ...CATALOGO[0], preco_custo: 185 }];
     const r = negociar({}, caro);
     assert.equal(r.saude.base.faixa.nome, 'Atenção');
     assert.equal(r.condicoes.parcelasMax, null);
@@ -502,5 +502,98 @@ describe('produto sem custo nao inventa margem', () => {
     });
     assert.equal(r.aplicaEstrategia, false);
     assert.ok(r.saude.base.faixa, 'deveria cair nas faixas de fabrica');
+  });
+});
+
+describe('o valor a vista é um PRECO, nao uma conta de percentual', () => {
+  test('bate ao centavo com o total promocional', () => {
+    // Achado numa previa com produtos reais do catalogo: 1.465,00 cheio,
+    // 6,96% ponderado, e 1465 × (1 − 0,0696) = 1.363,04 — quatro centavos
+    // acima dos 1.363,00 que a venda cobraria. O papel prometeria um preco
+    // que a loja nao pratica, por diferenca pequena demais para alguem
+    // desconfiar antes do caixa.
+    const cat = [
+      { id: 'a', preco_venda: 832.00, preco_promocional: 780.00, preco_custo: 520.00, promocao_ativa: true },
+      { id: 'b', preco_venda: 589.00, preco_promocional: 539.00, preco_custo: 388.90, promocao_ativa: true },
+      { id: 'c', preco_venda: 22.00, preco_custo: 9.00 },
+    ];
+    const r = N.calcular({
+      itens: [
+        { produto_id: 'a', produto_nome: 'KIT VASO', quantidade: 1, preco_unitario: 780 },
+        { produto_id: 'b', produto_nome: 'PORTA', quantidade: 1, preco_unitario: 539 },
+        { produto_id: 'c', produto_nome: 'ADAPTADOR', quantidade: 2, preco_unitario: 22 },
+      ],
+      politica: POLITICA, buscarProdutos: () => cat,
+    });
+    assert.equal(r.totalExibido, 1465);
+    assert.equal(r.totalAvista, 1363, 'o a vista tem de ser o total promocional, ao centavo');
+    assert.equal(r.totalAvista, r.vitrine.totalPraticado);
+  });
+
+  test('com desconto MANUAL, o percentual é que manda', () => {
+    // Ali o percentual é a decisao do vendedor, e o valor sai dele.
+    const r = negociar({ descontoManualPct: 20 });
+    assert.equal(r.totalAvista, 240);   // 300 × 0,80
+  });
+
+  test('sem estrategia ligada, nao inventa valor a vista', () => {
+    const r = N.calcular({
+      itens: [{ produto_id: 'p1', produto_nome: 'X', quantidade: 1, preco_unitario: 270 }],
+      politica: { ...POLITICA, config: { ...POLITICA.config, orcamento_promo_vira_desconto: false } },
+      buscarProdutos: () => CATALOGO,
+    });
+    assert.equal(r.totalAvista, r.totalExibido);
+  });
+});
+
+describe('a regua é MARKUP, nao margem', () => {
+  // O balcao raciocina em markup — e a tela de venda do PDV ja mostrava
+  // markup, so que com o rotulo "margem". As faixas (70/50/30/5) so fazem
+  // sentido nessa escala. Medido no catalogo de 12.576 produtos com custo:
+  //
+  //   lidas como MARGEM   61% cai em "Atencao" e nao parcela
+  //   lidas como MARKUP   92% fica em Excelente/Boa e parcela
+  //
+  // Mediana do markup liquido: 68,8%, bem no limite entre as duas melhores.
+
+  test('devolve as DUAS contas, e sao diferentes', () => {
+    // Margem continua: é o numero que o contador usa. Sumir com ela seria
+    // trocar um problema por outro.
+    const a = S.avaliar([item(100, 50)], 0, 'dinheiro', 1,
+      { ...CFG, imposto_pct: 0 }, FAIXAS);
+    assert.equal(a.markup, 100);   // (100-50)/50
+    assert.equal(a.margem, 50);    // (100-50)/100
+  });
+
+  test('a FAIXA é escolhida pelo markup', () => {
+    // Custo 50 em R$ 100: markup 100% (Excelente), margem 50% (seria "Boa").
+    // Se a faixa viesse da margem, este orcamento perderia metade do
+    // parcelamento a que tem direito.
+    const a = S.avaliar([item(100, 50)], 0, 'dinheiro', 1,
+      { ...CFG, imposto_pct: 0 }, FAIXAS);
+    assert.equal(a.faixa.nome, 'Excelente');
+  });
+
+  test('o imposto e a taxa entram ANTES da conta', () => {
+    // Markup bruto do KIT VASO: (780-520)/520 = 50%. Com 5% de imposto e a
+    // taxa do Pix, o liquido cai para ~41,8% — e muda de faixa. A diferenca
+    // entre o bruto e o liquido é o que decide se parcela.
+    const bruto = S.avaliar([item(780, 520)], 0, 'dinheiro', 1,
+      { ...CFG, imposto_pct: 0 }, FAIXAS);
+    const liquido = S.avaliar([item(780, 520)], 0, 'pix', 1, CFG, FAIXAS);
+    assert.equal(bruto.markup, 50);
+    assert.ok(liquido.markup < 42 && liquido.markup > 41,
+      `markup liquido deu ${liquido.markup}`);
+    assert.equal(bruto.faixa.nome, 'Boa');
+    assert.equal(liquido.faixa.nome, 'Atenção');
+  });
+
+  test('sem custo o markup é 0, nao Infinity', () => {
+    // Infinity cairia sempre na melhor faixa e liberaria tudo. Zero cai na
+    // pior, e `semCusto` avisa quem le para nao confiar no semaforo.
+    const a = S.avaliar([item(100, 0)], 0, 'pix', 1, CFG, FAIXAS);
+    assert.equal(a.markup, 0);
+    assert.equal(a.semCusto, true);
+    assert.ok(Number.isFinite(a.markup));
   });
 });
