@@ -65,6 +65,20 @@ function createWindow() {
     if (store.get('config.print_server_ativo') === true) {
       const porta = store.get('config.print_server_porta') || 3001;
       printServer.start(porta);
+
+      // O TÚNEL TAMBÉM, e este é o ponto: o Quick Tunnel ganha uma URL
+      // nova a cada reinício, então alguém no CAIXA abria as Configurações
+      // e clicava em "Ativar Tunnel" TODO DIA. Enquanto não clicava, os
+      // outros terminais imprimiam em lugar nenhum.
+      //
+      // Sem await de propósito: o primeiro uso baixa o cloudflared (~30MB),
+      // e a tela não pode esperar por isso para abrir. A URL é publicada
+      // pelo callback quando ficar pronta.
+      if (store.get('config.tunnel_auto') !== false) {
+        iniciarTunnel(porta)
+          .then((r) => console.log('[TUNNEL] Ativado no boot:', r?.url || '(sem url)'))
+          .catch((e) => console.warn('[TUNNEL] Falha ao ativar no boot:', e.message));
+      }
     }
     // Tela do Cliente: se já está ligada neste terminal, abre direto. Senão,
     // se detectar um segundo monitor pela primeira vez, pergunta uma única
@@ -956,6 +970,36 @@ ipcMain.handle('auth:logout', () => {
 });
 
 // Impressão
+// PARA ONDE VAI A IMPRESSÃO.
+//
+// Até aqui cada documento decidia sozinho, e decidia diferente:
+//
+//   cupom de venda   IP preenchido -> servidor
+//   entrega          IP preenchido -> servidor, com queda para local
+//   ORÇAMENTO        sempre local  <- o defeito relatado pelo balcão
+//
+// O CAIXA recebia o cupom de venda e não recebia o orçamento, e não
+// havia onde olhar para entender por quê: a escolha estava espalhada em
+// três lugares, um deles no renderer.
+//
+// Agora é uma pergunta só, respondida aqui.
+//
+// QUEM É O SERVIDOR IMPRIME EM CASA. Mandar o job para si mesmo pela
+// internet seria dar a volta ao mundo para chegar na impressora ao lado
+// — e falharia junto com o túnel, que é justamente o que mais cai.
+//
+// Sem escolha salva, deduz do que já estava configurado: terminal com IP
+// de CAIXA preenchido já mandava para lá. Assim ninguém acorda com a
+// impressão em outro lugar depois de atualizar.
+function destinoImpressao() {
+  if (store.get('config.print_server_ativo') === true) return 'local';
+  const escolhido = store.get('config.destino_impressao');
+  if (escolhido === 'local' || escolhido === 'servidor') return escolhido;
+  return String(store.get('config.print_server_ip') || '').trim() ? 'servidor' : 'local';
+}
+
+ipcMain.handle('print:destino', () => destinoImpressao());
+
 ipcMain.handle('print:local', async (_, dados) => {
   return printServer.adicionarNaFila(dados);
 });
@@ -965,6 +1009,18 @@ ipcMain.handle('print:orcamento', async (_, orc) => {
     empresa_nome: store.get('auth.usuario.empresa_nome') || '',
     vendedor_nome: orc.vendedor_nome || store.get('auth.usuario.nome') || '',
   });
+
+  // O defeito relatado: o orçamento nunca chegava ao CAIXA. Agora segue a
+  // mesma regra dos outros documentos.
+  //
+  // Cair para local quando o envio falha é de propósito: o cliente está na
+  // frente esperando o papel, e um orçamento impresso na máquina errada é
+  // melhor que orçamento nenhum.
+  if (destinoImpressao() === 'servidor') {
+    try { return await printServer.enviarParaServidor({ ...orc, _html: html }); }
+    catch (e) { console.warn('[ORCAMENTO] Servidor de impressão falhou, imprimindo local:', e.message); }
+  }
+
   return new Promise((resolve, reject) => {
     const win = new BrowserWindow({ show: false, webPreferences: { nodeIntegration: false } });
     win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
@@ -983,8 +1039,7 @@ ipcMain.handle('print:orcamento', async (_, orc) => {
 });
 ipcMain.handle('print:entrega', async (_, dados) => {
   const html = printServer.gerarHtmlCupomEntrega(dados);
-  const ip   = store.get('config.print_server_ip');
-  if (ip) {
+  if (destinoImpressao() === 'servidor') {
     try { return await printServer.enviarParaServidor({ ...dados, _html: html }); }
     catch { /* cai no local */ }
   }
@@ -1121,7 +1176,12 @@ ipcMain.handle('entregas:atualizar', async (_, id, dados) => {
 ipcMain.handle('entregas:getById', (_, id) => db.entregas.getById(id));
 
 // Cloudflare Tunnel
-ipcMain.handle('tunnel:start', async (_, porta) => {
+// O TÚNEL, NUM LUGAR SÓ.
+//
+// Mesma função para o botão e para o boot. Duas cópias divergiriam, e a
+// que esquecesse de publicar a URL deixaria a loja inteira apontando para
+// um endereço morto — o Quick Tunnel troca de URL a cada reinício.
+function iniciarTunnel(porta) {
   return tunnel.start(porta || store.get('config.print_server_porta') || 3001, (status) => {
     mainWindow?.webContents.send('tunnel:status', status);
     // Publica a URL nova pro Supabase — os terminais de venda consultam
@@ -1130,7 +1190,9 @@ ipcMain.handle('tunnel:start', async (_, porta) => {
       api.atualizarUrlImpressao(status.url).catch(() => {});
     }
   });
-});
+}
+
+ipcMain.handle('tunnel:start', async (_, porta) => iniciarTunnel(porta));
 ipcMain.handle('tunnel:stop', () => { tunnel.stop(); return { ok: true }; });
 ipcMain.handle('tunnel:status', () => tunnel.getStatus());
 

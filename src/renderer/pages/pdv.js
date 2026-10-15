@@ -2307,8 +2307,10 @@ ${podeDesconto ? `
         observacao: venda.observacao || null,
         created_at: venda.created_at || new Date().toISOString(),
       };
-      const ip = await window.pdv.config.get('config.print_server_ip');
-      if (ip) {
+      // A mesma regra dos outros documentos, decidida no main. Ler o IP
+      // aqui era a terceira cópia da escolha — e a que ignorava a
+      // configuração do operador.
+      if (await window.pdv.print.destino() === 'servidor') {
         const res = await window.pdv.print.servidor(dados);
         if (res?.erro) Toast.show('Impressão: ' + res.erro, 'warning');
       } else {
