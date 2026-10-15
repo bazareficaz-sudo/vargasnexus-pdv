@@ -105,6 +105,7 @@ async function syncNow(win) {
     await syncDownEnderecos();
     await syncDownUrlImpressao();
     await syncDownConfigCupom();
+    await syncDownPoliticaSaude();
     await syncDownFaltas();
     await syncDownOrcamentos();
     await syncDownCancelamentosOrcamentos();
@@ -480,6 +481,26 @@ async function syncDownUrlImpressao() {
 // Guarda em chave propria. `config.cupom_mensagem` continua sendo a
 // sobreposicao deste terminal e nao e tocada aqui — sobrescrever o que o
 // operador digitou seria decidir por ele, em silencio.
+// A POLÍTICA COMERCIAL: faixas de margem, taxas e as regras de desconto.
+//
+// Guarda inteira, do jeito que veio. Recortar campos aqui criaria uma
+// terceira definição de política — já bastam as duas que existiam, e a
+// divergência entre elas é o que este sync existe para acabar.
+//
+// Só grava quando veio alguma coisa: política velha é melhor que política
+// nenhuma, e nenhuma faria o terminal cair nas faixas de fábrica, que não
+// são as da loja.
+async function syncDownPoliticaSaude() {
+  try {
+    const p = await api.buscarPoliticaSaude();
+    if (!p || (!p.config && p.faixas.length === 0)) return;
+    store.set('saude_politica', { ...p, recebido_em: new Date().toISOString() });
+    console.log(`[SYNC] Política comercial: ${p.faixas.length} faixa(s)`);
+  } catch (err) {
+    console.warn('[SYNC] Política comercial: erro (nao critico):', err.message);
+  }
+}
+
 async function syncDownConfigCupom() {
   try {
     const msg = await api.buscarMensagemCupomDaEmpresa();

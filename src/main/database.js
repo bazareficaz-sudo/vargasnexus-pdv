@@ -887,6 +887,20 @@ const produtos = {
   //
   // `remote_id` e nao `id`: o servidor fala em uuid do Supabase; o id local é
   // outro. Confundir os dois devolveria lista vazia sem erro nenhum.
+  // Por id LOCAL. O orcamento guarda o id local nos itens, e a negociacao
+  // precisa de custo e preco cheio para calcular margem e promocao — nenhum
+  // dos dois viaja no item, nem no carrinho nem no documento salvo.
+  porIds(ids) {
+    const lista = [...new Set((ids || []).filter(Boolean))];
+    if (lista.length === 0) return [];
+    const marcas = lista.map(() => '?').join(',');
+    return db.prepare(`
+      SELECT id, remote_id, nome, preco_venda, preco_custo, unidade,
+             preco_promocional, promocao_ativa, promocao_inicio, promocao_fim
+      FROM produtos WHERE id IN (${marcas})
+    `).all(...lista);
+  },
+
   porRemoteIds(remoteIds) {
     const ids = [...new Set((remoteIds || []).filter(Boolean))];
     if (ids.length === 0) return [];

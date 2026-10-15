@@ -20,6 +20,12 @@ contextBridge.exposeInMainWorld('pdv', {
   },
 
   // Sugestões de produtos
+  // A negociação do orçamento: condições, saúde por condição e avisos.
+  // Calculada no processo principal — a tela só exibe.
+  orcamento_negociacao: {
+    calcular: (dados) => ipcRenderer.invoke('orcamento:negociar', dados),
+  },
+
   // Compre Junto: so ids voltam do servidor; o catalogo local completa.
   compreJunto: {
     buscar: (ids, limite) => ipcRenderer.invoke('compreJunto:buscar', ids, limite),

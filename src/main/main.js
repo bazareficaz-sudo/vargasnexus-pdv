@@ -281,6 +281,21 @@ ipcMain.handle('telaCliente:desativar', () => {
 });
 
 // Sugestões
+// A NEGOCIAÇÃO DO ORÇAMENTO É CALCULADA AQUI, NÃO NA TELA.
+//
+// A tela mostra o que este handler devolve e mais nada. Se ela
+// recalculasse, bastaria uma das duas mudar para a tela passar a mentir
+// sobre o que vai sair impresso — e o papel é o que vai para a mão do
+// cliente.
+ipcMain.handle('orcamento:negociar', (_, dados) => {
+  const negociacao = require('./negociacaoOrcamento');
+  return negociacao.calcular({
+    itens: dados?.itens || [],
+    descontoManualPct: dados?.descontoManualPct || 0,
+    politica: store.get('saude_politica') || null,
+    buscarProdutos: (ids) => db.produtos.porIds(ids),
+  });
+});
 ipcMain.handle('produtos:similares', (_, grupo) => db.produtos.similares(grupo));
 ipcMain.handle('produtos:porRemoteIds', (_, ids) => db.produtos.porRemoteIds(ids));
 ipcMain.handle('compreJunto:buscar', (_, ids, limite) => api.buscarCompreJunto(ids, limite));

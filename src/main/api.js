@@ -1933,6 +1933,34 @@ async function buscarMensagemCupomDaEmpresa() {
   return msg.slice(0, 300);
 }
 
+// ─── Politica comercial (saude da venda) ──────────────────────────────
+
+// A POLITICA REAL, QUE O TERMINAL NUNCA VIU.
+//
+// A tela de venda do PDV mostra "desconto max. 12%" — numero que ninguem
+// configurou, vindo de um default de codigo, porque `config_desconto` esta
+// VAZIA em producao. A politica de verdade vive em `saude_faixas`, que o
+// `anon` nao pode ler (conferido: has_table_privilege falso).
+//
+// Por isso vem pela rota autenticada. Falha devolve `undefined` e quem chama
+// mantem o que tinha: politica velha e melhor que politica nenhuma, e nada
+// aqui bloqueia venda.
+async function buscarPoliticaSaude() {
+  const terminal = require('./terminal');
+  const r = await terminal.chamarProtegida('/api/pdv/saude', null, { metodo: 'GET' });
+  if (!r.ok) {
+    if (r.motivo !== 'sem_identidade') {
+      console.warn(`[SAUDE] Nao foi possivel ler a politica: ${r.motivo} ${r.erro}`);
+    }
+    return undefined;
+  }
+  if (!r.dados || typeof r.dados !== 'object') return undefined;
+  return {
+    config: r.dados.config ?? null,
+    faixas: Array.isArray(r.dados.faixas) ? r.dados.faixas : [],
+  };
+}
+
 // ─── Compre Junto ─────────────────────────────────────────────────────
 
 // O QUE OS CLIENTES COSTUMAM LEVAR JUNTO.
@@ -2103,6 +2131,7 @@ module.exports = {
   buscarUrlImpressao,
   buscarMensagemCupomDaEmpresa,
   buscarCompreJunto,
+  buscarPoliticaSaude,
   autenticarPDV,
 
   // Fora do escopo desta fase — stubs
