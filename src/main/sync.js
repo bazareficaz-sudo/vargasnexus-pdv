@@ -89,8 +89,28 @@ async function syncNow(win) {
     // 1. Upload: enviar alterações locais antes de sobrescrever com download
     await syncUpProdutos();
     await recuperarClientesPendentes();
-    await processarFilaSync();
+
+    // RECUPERAR ANTES DE PROCESSAR, e esta ordem importa.
+    //
+    // `recuperarVendasPendentes` devolve à fila as vendas que saíram dela sem
+    // subir — a que esperou por rota desligada, a que pegou a internet fora no
+    // momento errado. Ela rodava DEPOIS de `processarFilaSync`, então a venda
+    // recuperada só era enviada no ciclo seguinte.
+    //
+    // Na prática: duas sincronizações para subir uma venda, e com o automático
+    // a cada 5 minutos, dez minutos de espera. Ninguém notava, porque na
+    // segunda rodada funcionava.
+    //
+    // Medido em 16/10/2026, no Balcão 02: a flag `orcamentos` foi ligada às
+    // 15h, o operador sincronizou, e a venda continuou parada — `pdv_operacoes`
+    // mostrava a última tentativa de conversão às 12:34, antes da correção. A
+    // sincronização tinha reenfileirado, e só isso.
+    //
+    // Invertendo, a venda recuperada sobe no MESMO ciclo. Não há risco de
+    // envio duplo: a consulta de `recuperarVendasPendentes` exclui quem já tem
+    // entrada não processada na fila.
     await recuperarVendasPendentes();
+    await processarFilaSync();
     await processarReparoEstoque();
 
     // 2. Baixar dados do servidor (servidor → local) — agora o Base44 já tem os dados locais
