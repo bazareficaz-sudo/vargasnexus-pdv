@@ -4,6 +4,9 @@ const PDV = (() => {
   let selectedClient = null;
   let searchTimeout = null;
   let payMethod = 'dinheiro';
+  // Em quantas vezes o cartao foi passado. 1 é a venda a vista, que é o
+  // caso comum e o que toda venda gravada antes deste campo quis dizer.
+  let payParcelas = 1;
   let valorPago = 0;
   let vendedorAtual = null; // { id, codigo, nome, comissao }
   let dadosEntrega = null;  // preenchido na etapa "Agendar Entrega"
@@ -835,6 +838,7 @@ const PDV = (() => {
     dadosEntrega = null;
     modoEdicao = null;
     payMethod = 'dinheiro';
+    payParcelas = 1;
     valorPago = 0;
     pedidoObservacao = '';
     _atualizarBotaoObservacao();
@@ -857,7 +861,7 @@ const PDV = (() => {
       id: 'espera_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
       numero, label,
       cart: JSON.parse(JSON.stringify(cart)),
-      selectedClient, vendedorAtual, dadosEntrega, payMethod, valorPago, modoEdicao,
+      selectedClient, vendedorAtual, dadosEntrega, payMethod, payParcelas, valorPago, modoEdicao,
       observacao: pedidoObservacao,
       desconto: getDesconto(),
       criadoEm: new Date().toISOString(),
@@ -911,6 +915,9 @@ const PDV = (() => {
     vendedorAtual = v.vendedorAtual || null;
     dadosEntrega = v.dadosEntrega || null;
     payMethod = v.payMethod || 'dinheiro';
+    // Venda em espera guardada antes deste campo volta como a vista, que é o
+    // que ela era: o PDV nao tinha como registrar outra coisa.
+    payParcelas = v.payParcelas || 1;
     valorPago = v.valorPago || 0;
     modoEdicao = v.modoEdicao || null;
     pedidoObservacao = v.observacao || '';
@@ -1298,11 +1305,67 @@ ${podeDesconto ? `
     <span style="font-size:20px">${o.icon}</span><span>${o.label}</span>
   </button>`).join('')}
 </div>
-<div id="modal-pay-extra" style="margin-bottom:12px">${payMethod === 'dinheiro' ? _trocoHtml(total) : ''}</div>
+<div id="modal-pay-extra" style="margin-bottom:12px">${_extraHtml(payMethod, total)}</div>
 <div class="modal-actions">
   <button class="btn btn-ghost" onclick="Modal.close()">ESC · Cancelar</button>
   <button class="btn btn-primary btn-lg" onclick="PDV._confirmarPagamento()">↵ Enter · Confirmar</button>
 </div>`, dadosEntrega ? 'Pagamento — Etapa 2 de 3' : 'Pagamento — F9');
+  }
+
+  // ATE QUANTAS VEZES A LISTA OFERECE.
+  //
+  // Nao é o limite da loja: o limite de verdade é `parcelas_max` no cadastro
+  // da forma, que vive no servidor e o terminal ainda nao sincroniza. Deixar
+  // 12 aqui nao autoriza nada -- ver o comentario de `_parcelasHtml`.
+  const PARCELAS_MAX = 12;
+
+  // EM QUANTAS VEZES — e quanto fica cada uma.
+  //
+  // ESTE CAMPO REGISTRA O QUE A MAQUININHA FEZ. Ele nao decide o que ela
+  // oferece nem autoriza parcelamento nenhum: o operador acabou de ver a
+  // tela da maquininha e sabe o numero certo. Por isso a lista é generosa e
+  // nao consulta cadastro -- um cadastro desatualizado no terminal impediria
+  // de registrar uma venda que JA aconteceu, e aí o custo voltaria a ser
+  // calculado como se fosse a vista, que é exatamente o defeito que este
+  // campo existe para corrigir.
+  //
+  // O valor por parcela é informativo. Quem cobra juro, e quanto, é a
+  // adquirente; o custo de cada degrau mora no cadastro da loja.
+  function _parcelasHtml(total) {
+    const botoes = [];
+    for (let n = 1; n <= PARCELAS_MAX; n++) {
+      botoes.push(`
+  <button class="pay-opt ${n === payParcelas ? 'active' : ''}" data-parcela="${n}"
+    onclick="PDV._setParcelas(${n},this)" style="padding:8px 4px;font-size:12px;line-height:1.3">
+    <span style="font-weight:700">${n}x</span>
+    <span style="font-size:10px;color:var(--text3)">${fmtMoney(total / n)}</span>
+  </button>`);
+    }
+    return `
+<div style="background:var(--bg3);border-radius:8px;padding:12px">
+  <label class="form-label">Em quantas vezes passou no cartão</label>
+  <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:6px;margin-top:6px">
+    ${botoes.join('')}
+  </div>
+  <div style="margin-top:8px;font-size:11px;color:var(--text3);text-align:center">
+    O valor de cada parcela é informativo — quem cobra é a maquininha.
+  </div>
+</div>`;
+  }
+
+  function _setParcelas(n, btn) {
+    payParcelas = n;
+    document.querySelectorAll('[data-parcela]').forEach(b => b.classList.remove('active'));
+    btn?.classList.add('active');
+  }
+
+  // O campo extra de cada forma, num lugar so: a montagem do modal e a troca
+  // de forma tinham a mesma condicao escrita duas vezes, e acrescentar o
+  // credito deixaria as duas livres para divergir.
+  function _extraHtml(method, total) {
+    if (method === 'dinheiro') return _trocoHtml(total);
+    if (method === 'credito') return _parcelasHtml(total);
+    return '';
   }
 
   function _trocoHtml(total) {
@@ -1338,8 +1401,11 @@ ${podeDesconto ? `
     }
     document.querySelectorAll('.pay-opt').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
+    // Trocar de forma zera a parcela: 3x escolhido no credito nao pode
+    // sobreviver a uma troca para debito e ir parar na venda.
+    payParcelas = 1;
     const extra = document.getElementById('modal-pay-extra');
-    if (extra) extra.innerHTML = method === 'dinheiro' ? _trocoHtml(getTotal()) : '';
+    if (extra) extra.innerHTML = _extraHtml(method, getTotal());
     // Focar campo de valor para dinheiro; manter foco fora de input para outros métodos
     if (method === 'dinheiro') {
       setTimeout(() => document.getElementById('modal-valor-pago')?.focus(), 30);
@@ -1772,6 +1838,11 @@ ${podeDesconto ? `
       desconto,
       total,
       forma_pagamento: eDevolucao ? 'devolucao' : payMethod,
+      // Em quantas vezes passou. So o credito oferece a escolha; o resto é 1,
+      // e devolucao nao é pagamento. `comporDaVendaLocal` le este campo e
+      // `validarPagamento` recusa parcela em dinheiro, entao o 1 explicito
+      // aqui é a resposta certa e nao um valor de enchimento.
+      parcelas: (!eDevolucao && payMethod === 'credito') ? payParcelas : 1,
       valor_pago: eDevolucao ? 0 : valorPago,
       troco: eDevolucao ? valorDevolver : (payMethod === 'dinheiro' ? Math.max(0, valorPago - total) : 0),
       usa_credito: payMethod === 'carteira',
@@ -2400,6 +2471,10 @@ ${podeDesconto ? `
     dadosEntrega = null;
     vendedorAtual = null;
     payMethod = venda.forma_pagamento || 'dinheiro';
+    // A venda que volta para edicao nao traz parcela: o servidor nao a
+    // devolve neste caminho. Reabrir em 1 e deixar o operador reinformar é
+    // melhor que herdar um numero que pode nao ser o daquela venda.
+    payParcelas = 1;
     valorPago = 0;
     // Edição de venda não altera observação (a tela de edição não manda
     // esse campo pro servidor) — evita mostrar no botão uma nota antiga
@@ -2577,7 +2652,7 @@ ${podeDesconto ? `
     abrirEditarItem, _aplicarDescontoItem, _salvarEdicaoItem,
     toggleEntregar, _selecionarTurno, entrarModoEdicao, cancelarEdicao,
     setPayment, calcTroco, finalizarVenda, abrirPagamento, updateTotals,
-    _selectPay, _calcTrocoModal, _confirmarPagamento,
+    _selectPay, _setParcelas, _calcTrocoModal, _confirmarPagamento,
     _abrirModalEntrega, _buscarCep, _voltarParaPagamento, _confirmarEntrega, _imprimirEntregaModal,
     _abrirModalVendedor, _validarVendedor, _finalizarComVendedor, _vendedorAtualValido,
     openClientSearch, searchClientes, selectClient, clearClient,

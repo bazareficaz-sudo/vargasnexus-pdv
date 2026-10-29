@@ -566,3 +566,87 @@ describe('6) definicao de estritamente local', () => {
     });
   }
 });
+
+// ─────────────────── 22) A PARCELA ATRAVESSA ───────────────────
+//
+// O contrato entre a TELA e o resto. `pdv.js` nao tem teste -- é renderer --
+// mas o que ele produz é um objeto, e o objeto tem contrato. Estes testes
+// pinam esse contrato: se a tela mandar `parcelas`, a linha do SQLite tem de
+// nascer com ela, e o payload v2 tem de leva-la.
+//
+// Se alguem mudar o nome do campo na tela, estes testes nao quebram --
+// quebra a loja. Por isso o primeiro deles usa EXATAMENTE a forma do objeto
+// que `finalizarVenda` monta.
+
+describe('22) a parcela atravessa da tela ao payload', () => {
+  test('credito em 3x grava 3 no pagamento local', t => {
+    const { db } = ambiente(t);
+    const v = db.vendas.registrar(venda({
+      total: 150, forma_pagamento: 'credito', parcelas: 3, valor_pago: 0,
+    }));
+    const pagamentos = pagamentosDe(db, v.id);
+    assert.equal(pagamentos.length, 1);
+    assert.equal(pagamentos[0].forma, 'credito');
+    assert.equal(pagamentos[0].parcelas, 3);
+  });
+
+  test('venda a vista grava 1, sem a tela precisar dizer nada', t => {
+    const { db } = ambiente(t);
+    const v = db.vendas.registrar(venda({
+      total: 100, forma_pagamento: 'dinheiro', valor_pago: 100,
+    }));
+    assert.equal(pagamentosDe(db, v.id)[0].parcelas, 1);
+  });
+
+  test('credito sem parcela informada tambem é 1', t => {
+    const { db } = ambiente(t);
+    const v = db.vendas.registrar(venda({
+      total: 100, forma_pagamento: 'credito', valor_pago: 0,
+    }));
+    assert.equal(pagamentosDe(db, v.id)[0].parcelas, 1);
+  });
+
+  // A tela nunca manda isto -- ela so oferece parcela no credito. Mas o
+  // contrato tem de recusar, porque a tela nao é a unica porta: `editar` e
+  // qualquer chamada futura passam pelo mesmo motor.
+  test('dinheiro parcelado é recusado na gravacao, nao gravado torto', t => {
+    const { db } = ambiente(t);
+    assert.throws(
+      () => db.vendas.registrar(venda({
+        total: 100, forma_pagamento: 'dinheiro', valor_pago: 100, parcelas: 4,
+      })),
+      e => e.codigo === 'composicao_pagamento_invalida',
+    );
+    // E nao sobrou meia venda: a gravacao é transacional.
+    const n = db.db().prepare('SELECT count(*) AS n FROM venda_pagamentos').get().n;
+    assert.equal(n, 0);
+  });
+
+  test('o payload v2 da venda gravada leva a parcela', t => {
+    const { db } = ambiente(t);
+    const v = db.vendas.registrar(venda({
+      total: 150, forma_pagamento: 'credito', parcelas: 6, valor_pago: 0,
+    }));
+    const { montarPayloadVendaV1 } = require('../src/main/payloadVendaV1');
+    const r = montarPayloadVendaV1(db.vendas.getById(v.id), {
+      empresaId: EMPRESA, terminalId: 'PDV-001', pagamentosV2: true,
+    });
+    assert.equal(r.ok, true, r.erro);
+    assert.equal(r.payload.schema_version, 2);
+    assert.equal(r.payload.pagamentos[0].parcelas, 6);
+  });
+
+  test('sem pedir v2, a venda parcelada sincroniza como sempre sincronizou', t => {
+    const { db } = ambiente(t);
+    const v = db.vendas.registrar(venda({
+      total: 150, forma_pagamento: 'credito', parcelas: 6, valor_pago: 0,
+    }));
+    const { montarPayloadVendaV1 } = require('../src/main/payloadVendaV1');
+    const r = montarPayloadVendaV1(db.vendas.getById(v.id), {
+      empresaId: EMPRESA, terminalId: 'PDV-001',
+    });
+    assert.equal(r.ok, true, r.erro);
+    assert.equal(r.payload.schema_version, 1);
+    assert.ok(!('pagamentos' in r.payload));
+  });
+});
