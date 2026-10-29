@@ -105,6 +105,11 @@ function montarPayloadVendaV1(venda, ctx = {}) {
     valor_entregue: p.valor_entregue == null ? null : numero(p.valor_entregue),
     troco: p.troco == null ? null : numero(p.troco),
     sequencia: p.sequencia == null ? 1 : numero(p.sequencia, 1),
+    // A parcela entra SEMPRE, com 1 explicito quando ausente. O servidor
+    // trata ausente e 1 como a mesma coisa no hash da composicao, entao
+    // mandar o numero nao vira conflito para venda que ja sincronizou —
+    // mas mandar explicito deixa o payload dizer o que quer dizer.
+    parcelas: p.parcelas == null ? 1 : numero(p.parcelas, 1),
   })) : null;
 
   const payload = {

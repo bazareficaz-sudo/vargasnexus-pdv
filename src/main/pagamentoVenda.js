@@ -111,6 +111,25 @@ function validarPagamento(p, indice = 0) {
     return { ok: false, erro: `${rotulo}: sequencia invalida.` };
   }
 
+  // A PARCELA. Ausente é 1: a venda à vista é o caso comum e nao deve
+  // obrigar a UI a dizer o obvio — e 1 é tambem o que toda venda gravada
+  // antes deste campo quis dizer.
+  //
+  // O teto de 99 é o mesmo do servidor, e é sanidade, nao regra de negocio.
+  // O limite real da loja é `parcelas_max` no cadastro da forma, que este
+  // modulo nao conhece de proposito: aqui so mora aritmetica.
+  const parc = p.parcelas == null || p.parcelas === '' ? 1 : Number(p.parcelas);
+  if (!Number.isInteger(parc) || parc < 1 || parc > 99) {
+    return { ok: false, erro: `${rotulo}: numero de parcelas invalido.` };
+  }
+
+  // Dinheiro na mao nao se parcela. As outras formas podem: credito é o caso
+  // obvio, mas carne e credito do cliente tambem sao parcelados por ai, e
+  // quem decide é o cadastro da loja, nao este arquivo.
+  if (ehEspecie(p.forma) && parc > 1) {
+    return { ok: false, erro: `${rotulo}: pagamento em dinheiro nao tem parcelas.` };
+  }
+
   return {
     ok: true,
     valor: {
@@ -119,6 +138,7 @@ function validarPagamento(p, indice = 0) {
       valor_entregue: entregue === null ? null : entregue / 100,
       troco: troco === null ? null : troco / 100,
       sequencia: seq,
+      parcelas: parc,
     },
   };
 }
@@ -171,7 +191,7 @@ function validarComposicao(lista, total) {
  * `valor_entregue`/`troco` so saem quando a UI realmente os forneceu: hoje
  * `pdv.js` so abre o campo de troco para dinheiro.
  */
-function comporDaVendaLocal({ forma_pagamento, total, valor_pago } = {}) {
+function comporDaVendaLocal({ forma_pagamento, total, valor_pago, parcelas } = {}) {
   if (typeof forma_pagamento !== 'string' || !forma_pagamento) return [];
   if (ehAgregada(forma_pagamento)) return [];
   if (!ehCanonica(forma_pagamento)) return [];
@@ -180,6 +200,12 @@ function comporDaVendaLocal({ forma_pagamento, total, valor_pago } = {}) {
   if (!Number.isFinite(c) || c <= 0) return [];
 
   const pagamento = { forma: forma_pagamento, valor: c / 100, sequencia: 1 };
+
+  // A venda de forma unica tambem pode ser parcelada — é o caso mais comum
+  // de todos no credito. So viaja quando a UI informou: ausente continua
+  // produzindo exatamente o objeto que produzia antes deste campo, e quem
+  // valida o numero é `validarPagamento`, nao este adaptador.
+  if (parcelas != null && parcelas !== '') pagamento.parcelas = parcelas;
 
   if (ehEspecie(forma_pagamento) && valor_pago != null && valor_pago !== '') {
     const ce = centavos(valor_pago);

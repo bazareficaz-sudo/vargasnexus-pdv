@@ -152,6 +152,10 @@ function createTables() {
       valor_entregue REAL,          -- so em especie, e so quando a UI informou
       troco REAL,                   -- so em especie: entregue menos aplicado
       sequencia INTEGER NOT NULL DEFAULT 1,
+      -- Em quantas vezes ESTE pagamento foi feito. 1 em dinheiro, pix e
+      -- debito. O padrao 1 é o que toda venda gravada antes deste campo quis
+      -- dizer, e é o que o servidor assume quando o terminal nao manda.
+      parcelas INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       FOREIGN KEY (venda_id) REFERENCES vendas(id)
     );
@@ -583,6 +587,11 @@ function runMigrations() {
     // novo. A decisão é tomada UMA vez, antes do primeiro byte remoto, e
     // vale para sempre naquela venda.
     'ALTER TABLE vendas ADD COLUMN sync_protocolo TEXT',
+
+    // A parcela do cartao. Terminal que ja tem banco criado ganha a coluna
+    // aqui; banco novo ja nasce com ela no CREATE TABLE acima. Padrao 1 —
+    // nenhuma venda ja gravada muda de significado.
+    'ALTER TABLE venda_pagamentos ADD COLUMN parcelas INTEGER NOT NULL DEFAULT 1',
   ];
   for (const sql of migrations) {
     try { db.exec(sql); } catch { /* coluna já existe */ }
@@ -1629,9 +1638,9 @@ const vendas = {
         for (const pag of conferida.valor) {
           db.prepare(`
             INSERT INTO venda_pagamentos
-            (id, venda_id, forma, valor, valor_entregue, troco, sequencia, created_at)
-            VALUES (?,?,?,?,?,?,?,?)
-          `).run(uuidv4(), id, pag.forma, pag.valor, pag.valor_entregue, pag.troco, pag.sequencia, now);
+            (id, venda_id, forma, valor, valor_entregue, troco, sequencia, parcelas, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?)
+          `).run(uuidv4(), id, pag.forma, pag.valor, pag.valor_entregue, pag.troco, pag.sequencia, pag.parcelas, now);
         }
       }
 
@@ -1830,9 +1839,9 @@ const vendas = {
         for (const pag of conferida.valor) {
           db.prepare(`
             INSERT INTO venda_pagamentos
-            (id, venda_id, forma, valor, valor_entregue, troco, sequencia, created_at)
-            VALUES (?,?,?,?,?,?,?,?)
-          `).run(uuidv4(), id, pag.forma, pag.valor, pag.valor_entregue, pag.troco, pag.sequencia, now);
+            (id, venda_id, forma, valor, valor_entregue, troco, sequencia, parcelas, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?)
+          `).run(uuidv4(), id, pag.forma, pag.valor, pag.valor_entregue, pag.troco, pag.sequencia, pag.parcelas, now);
         }
       }
     });
