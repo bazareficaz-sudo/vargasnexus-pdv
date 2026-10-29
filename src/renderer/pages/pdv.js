@@ -7,6 +7,9 @@ const PDV = (() => {
   // Em quantas vezes o cartao foi passado. 1 é a venda a vista, que é o
   // caso comum e o que toda venda gravada antes deste campo quis dizer.
   let payParcelas = 1;
+  // As partes da venda dividida: { forma, valor, parcelas }. Vazia em toda
+  // venda de forma unica, que continua sendo o caminho de sempre.
+  let payComposicao = [];
   let valorPago = 0;
   let vendedorAtual = null; // { id, codigo, nome, comissao }
   let dadosEntrega = null;  // preenchido na etapa "Agendar Entrega"
@@ -839,6 +842,7 @@ const PDV = (() => {
     modoEdicao = null;
     payMethod = 'dinheiro';
     payParcelas = 1;
+    payComposicao = [];
     valorPago = 0;
     pedidoObservacao = '';
     _atualizarBotaoObservacao();
@@ -861,7 +865,8 @@ const PDV = (() => {
       id: 'espera_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
       numero, label,
       cart: JSON.parse(JSON.stringify(cart)),
-      selectedClient, vendedorAtual, dadosEntrega, payMethod, payParcelas, valorPago, modoEdicao,
+      selectedClient, vendedorAtual, dadosEntrega, payMethod, payParcelas, payComposicao,
+      valorPago, modoEdicao,
       observacao: pedidoObservacao,
       desconto: getDesconto(),
       criadoEm: new Date().toISOString(),
@@ -918,6 +923,7 @@ const PDV = (() => {
     // Venda em espera guardada antes deste campo volta como a vista, que é o
     // que ela era: o PDV nao tinha como registrar outra coisa.
     payParcelas = v.payParcelas || 1;
+    payComposicao = Array.isArray(v.payComposicao) ? v.payComposicao : [];
     valorPago = v.valorPago || 0;
     modoEdicao = v.modoEdicao || null;
     pedidoObservacao = v.observacao || '';
@@ -1365,7 +1371,102 @@ ${podeDesconto ? `
   function _extraHtml(method, total) {
     if (method === 'dinheiro') return _trocoHtml(total);
     if (method === 'credito') return _parcelasHtml(total);
+    if (method === 'misto') return _mistoHtml(total);
     return '';
+  }
+
+  // ── A VENDA DIVIDIDA ───────────────────────────────────────────
+  //
+  // O botao Misto existia e NAO PERGUNTAVA NADA: gravava a venda com a forma
+  // "misto" e seguia. Venda assim nao entra em gaveta nenhuma nem na
+  // maquininha, porque o sistema nao sabe quanto foi de cada coisa -- tres
+  // delas em producao, R$ 50,44, sem divisao em lugar nenhum, nem no SQLite
+  // do terminal nem no servidor. Era pior que nao ter o botao.
+  //
+  // A SOMA É CONFERIDA EM CENTAVOS INTEIROS. R$ 0,1 + R$ 0,2 em ponto
+  // flutuante nao da R$ 0,3, e uma venda que "nao fecha por um centavo"
+  // trava o balcao com cliente na frente. Mesma regra de `pagamentoVenda`,
+  // que confere de novo na gravacao: esta tela adianta o erro, nao o
+  // substitui.
+
+  const ROTULO_FORMA = {
+    dinheiro: 'Dinheiro', pix: 'PIX', credito: 'Crédito',
+    debito: 'Débito', carteira: 'Carteira',
+  };
+
+  const cent = v => Math.round(Number(v || 0) * 100);
+
+  function _mistoFalta(total) {
+    return cent(total) - payComposicao.reduce((s, p) => s + cent(p.valor), 0);
+  }
+
+  function _mistoHtml(total) {
+    const falta = _mistoFalta(total);
+    const linhas = payComposicao.map((p, i) => `
+  <div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--bg2);border-radius:6px">
+    <span style="flex:1;font-size:13px">${ROTULO_FORMA[p.forma] || p.forma}${
+      p.parcelas > 1 ? ` <span style="color:var(--text3)">· ${p.parcelas}x</span>` : ''}</span>
+    <span style="font-weight:700;font-size:13px">R$ ${fmtMoney(p.valor)}</span>
+    <button class="btn btn-ghost" style="padding:2px 8px;font-size:11px"
+      onclick="PDV._mistoRemove(${i})">remover</button>
+  </div>`).join('');
+
+    const opcoes = Object.entries(ROTULO_FORMA)
+      .map(([k, r]) => `<option value="${k}">${r}</option>`).join('');
+    const parcelas = [];
+    for (let n = 1; n <= PARCELAS_MAX; n++) parcelas.push(`<option value="${n}">${n}x</option>`);
+
+    return `
+<div style="background:var(--bg3);border-radius:8px;padding:12px">
+  <label class="form-label">Como o cliente dividiu</label>
+  ${linhas ? `<div style="display:flex;flex-direction:column;gap:6px;margin:8px 0">${linhas}</div>` : ''}
+
+  <div style="display:grid;grid-template-columns:1.2fr 1fr auto auto;gap:6px;margin-top:8px">
+    <select class="input" id="misto-forma" onchange="PDV._mistoFormaMudou()">${opcoes}</select>
+    <input class="input" id="misto-valor" type="number" step="0.01" min="0.01"
+      placeholder="0,00" value="${falta > 0 ? (falta / 100).toFixed(2) : ''}"
+      onkeydown="if(event.key==='Enter'){event.preventDefault();PDV._mistoAdd();}">
+    <select class="input" id="misto-parcelas" style="display:none">${parcelas}</select>
+    <button class="btn btn-primary" style="padding:8px 14px" onclick="PDV._mistoAdd()">Somar</button>
+  </div>
+
+  <div style="margin-top:10px;text-align:center;font-family:'Syne',sans-serif;font-weight:700;font-size:15px;color:${
+    falta === 0 ? 'var(--green)' : (falta > 0 ? 'var(--text3)' : 'var(--red, #d33)')}">
+    ${falta === 0
+      ? 'Fecha exatamente.'
+      : (falta > 0
+          ? `Falta R$ ${fmtMoney(falta / 100)}`
+          : `Passou R$ ${fmtMoney(-falta / 100)}`)}
+  </div>
+</div>`;
+  }
+
+  function _mistoFormaMudou() {
+    const forma = document.getElementById('misto-forma')?.value;
+    const sel = document.getElementById('misto-parcelas');
+    if (sel) sel.style.display = forma === 'credito' ? '' : 'none';
+  }
+
+  function _mistoAdd() {
+    const forma = document.getElementById('misto-forma')?.value;
+    const valor = Number(document.getElementById('misto-valor')?.value || 0);
+    const parcelas = forma === 'credito'
+      ? Number(document.getElementById('misto-parcelas')?.value || 1) : 1;
+
+    if (!forma || cent(valor) <= 0) {
+      Toast.show('Informe um valor maior que zero', 'warning');
+      return;
+    }
+    payComposicao.push({ forma, valor: cent(valor) / 100, parcelas });
+    const extra = document.getElementById('modal-pay-extra');
+    if (extra) extra.innerHTML = _mistoHtml(getTotal());
+    setTimeout(() => document.getElementById('misto-valor')?.focus(), 30);
+  }
+
+  function _mistoRemove(i) {
+    payComposicao.splice(i, 1);
+    const extra = document.getElementById('modal-pay-extra');
+    if (extra) extra.innerHTML = _mistoHtml(getTotal());
   }
 
   function _trocoHtml(total) {
@@ -1401,9 +1502,11 @@ ${podeDesconto ? `
     }
     document.querySelectorAll('.pay-opt').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
-    // Trocar de forma zera a parcela: 3x escolhido no credito nao pode
-    // sobreviver a uma troca para debito e ir parar na venda.
+    // Trocar de forma zera a parcela e a divisao: 3x escolhido no credito
+    // nao pode sobreviver a uma troca para debito e ir parar na venda, e
+    // partes somadas no Misto nao podem sobrar numa venda de forma unica.
     payParcelas = 1;
+    payComposicao = [];
     const extra = document.getElementById('modal-pay-extra');
     if (extra) extra.innerHTML = _extraHtml(method, getTotal());
     // Focar campo de valor para dinheiro; manter foco fora de input para outros métodos
@@ -1424,6 +1527,25 @@ ${podeDesconto ? `
   // Etapa 2: após confirmar pagamento, checar saúde e pedir código do vendedor
   async function _confirmarPagamento() {
     const total = getTotal();
+
+    // A VENDA DIVIDIDA SO PASSA SE FECHAR. Deixar passar sem fechar gravaria
+    // outra vez uma venda "misto" sem divisao -- o defeito que esta tela
+    // existe para acabar. A conferencia é em centavos; `validarComposicao`
+    // confere de novo na gravacao, e esta aqui so antecipa a recusa para
+    // antes de o operador perder a tela.
+    if (payMethod === 'misto') {
+      if (payComposicao.length === 0) {
+        Toast.show('Some as partes: quanto foi em cada forma', 'warning');
+        return;
+      }
+      const falta = _mistoFalta(total);
+      if (falta !== 0) {
+        Toast.show(falta > 0
+          ? `Ainda falta R$ ${fmtMoney(falta / 100)} para fechar a venda`
+          : `As partes passam R$ ${fmtMoney(-falta / 100)} do total`, 'warning');
+        return;
+      }
+    }
 
     // Verificar autorização se venda em prejuízo
     const saudeAtual = SaudeVenda.getUltimoResultado();
@@ -1843,6 +1965,13 @@ ${podeDesconto ? `
       // `validarPagamento` recusa parcela em dinheiro, entao o 1 explicito
       // aqui é a resposta certa e nao um valor de enchimento.
       parcelas: (!eDevolucao && payMethod === 'credito') ? payParcelas : 1,
+      // As partes da venda dividida. So viaja no Misto, e so com partes
+      // somadas -- `registrar` usa esta lista quando ela existe e cai no
+      // adaptador de forma unica quando nao. Os ids nascem na gravacao, no
+      // SQLite, que é onde a identidade idempotente de cada pagamento mora.
+      pagamentos: (!eDevolucao && payMethod === 'misto' && payComposicao.length)
+        ? payComposicao.map((p, i) => ({ ...p, sequencia: i + 1 }))
+        : undefined,
       valor_pago: eDevolucao ? 0 : valorPago,
       troco: eDevolucao ? valorDevolver : (payMethod === 'dinheiro' ? Math.max(0, valorPago - total) : 0),
       usa_credito: payMethod === 'carteira',
@@ -2475,6 +2604,7 @@ ${podeDesconto ? `
     // devolve neste caminho. Reabrir em 1 e deixar o operador reinformar é
     // melhor que herdar um numero que pode nao ser o daquela venda.
     payParcelas = 1;
+    payComposicao = [];
     valorPago = 0;
     // Edição de venda não altera observação (a tela de edição não manda
     // esse campo pro servidor) — evita mostrar no botão uma nota antiga
@@ -2653,6 +2783,7 @@ ${podeDesconto ? `
     toggleEntregar, _selecionarTurno, entrarModoEdicao, cancelarEdicao,
     setPayment, calcTroco, finalizarVenda, abrirPagamento, updateTotals,
     _selectPay, _setParcelas, _calcTrocoModal, _confirmarPagamento,
+    _mistoAdd, _mistoRemove, _mistoFormaMudou,
     _abrirModalEntrega, _buscarCep, _voltarParaPagamento, _confirmarEntrega, _imprimirEntregaModal,
     _abrirModalVendedor, _validarVendedor, _finalizarComVendedor, _vendedorAtualValido,
     openClientSearch, searchClientes, selectClient, clearClient,

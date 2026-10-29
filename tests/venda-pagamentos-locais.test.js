@@ -650,3 +650,64 @@ describe('22) a parcela atravessa da tela ao payload', () => {
     assert.ok(!('pagamentos' in r.payload));
   });
 });
+
+// ─────────────────── 23) A VENDA DIVIDIDA ───────────────────
+//
+// O contrato da tela do Misto. Ela monta `venda.pagamentos` e `registrar`
+// usa essa lista; sem ela, o adaptador de forma unica devolve vazio para
+// "misto" -- que é o comportamento de hoje e o defeito que a tela corrige.
+
+describe('23) a venda dividida grava as partes', () => {
+  test('R$ 50 em dinheiro + R$ 100 no credito em 3x vira duas linhas', t => {
+    const { db } = ambiente(t);
+    const v = db.vendas.registrar(venda({
+      total: 150, forma_pagamento: 'misto', pagamentos: [
+        { forma: 'dinheiro', valor: 50, parcelas: 1, sequencia: 1 },
+        { forma: 'credito', valor: 100, parcelas: 3, sequencia: 2 },
+      ],
+    }));
+    const p = pagamentosDe(db, v.id);
+    assert.equal(p.length, 2);
+    assert.deepEqual(p.map(x => [x.forma, x.valor, x.parcelas]), [
+      ['dinheiro', 50, 1],
+      ['credito', 100, 3],
+    ]);
+  });
+
+  // O caso real: Balcao 04, 20/10, R$ 12,50 gravados como "misto" e sem
+  // divisao nenhuma -- nem no terminal, nem no servidor.
+  test('a venda de R$ 12,50 do Balcao 04 fecha ao centavo', t => {
+    const { db } = ambiente(t);
+    const v = db.vendas.registrar(venda({
+      total: 12.50, forma_pagamento: 'misto', pagamentos: [
+        { forma: 'dinheiro', valor: 2.50, sequencia: 1 },
+        { forma: 'debito', valor: 10.00, sequencia: 2 },
+      ],
+    }));
+    const p = pagamentosDe(db, v.id);
+    assert.equal(p.reduce((s, x) => s + Math.round(x.valor * 100), 0), 1250);
+  });
+
+  test('partes que nao fecham com o total sao recusadas', t => {
+    const { db } = ambiente(t);
+    assert.throws(
+      () => db.vendas.registrar(venda({
+        total: 150, forma_pagamento: 'misto', pagamentos: [
+          { forma: 'dinheiro', valor: 50, sequencia: 1 },
+          { forma: 'credito', valor: 90, sequencia: 2 },
+        ],
+      })),
+      e => e.codigo === 'composicao_pagamento_invalida',
+    );
+    assert.equal(db.db().prepare('SELECT count(*) AS n FROM venda_pagamentos').get().n, 0);
+  });
+
+  // O DEFEITO DE HOJE, documentado. Sem a lista, "misto" nao produz
+  // pagamento nenhum -- e é por isso que as tres vendas de producao nao
+  // entraram em gaveta nem na maquininha.
+  test('misto SEM as partes continua gravando zero pagamentos', t => {
+    const { db } = ambiente(t);
+    const v = db.vendas.registrar(venda({ total: 150, forma_pagamento: 'misto' }));
+    assert.equal(pagamentosDe(db, v.id).length, 0);
+  });
+});
