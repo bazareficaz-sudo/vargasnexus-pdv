@@ -1060,23 +1060,67 @@ const WA = {
 
 // ─── Vendas ───────────────────────────────────────────────────────
 const Vendas = {
-  _todoTerminais: false,
+  // A LISTA E SEMPRE A DA LOJA INTEIRA, para quem tem permissao de ver.
+  //
+  // Antes havia um checkbox "Todos os terminais": desmarcado lia o banco LOCAL
+  // daquela maquina, marcado lia o servidor. Duas fontes diferentes atras de um
+  // rotulo que nao dizia isso -- e, como nao havia botao de atualizar, o caixa
+  // marcava e desmarcava o dia inteiro so para puxar venda nova.
+  //
+  // Agora a fonte e uma so e a atualizacao e de verdade: automatica a cada 10s
+  // enquanto a tela estiver aberta na data de hoje, mais um botao.
   _sortCol: 'data',
   _sortDir: 'desc',
   _sel: new Set(),
   _lista: [],
+  /** Ids que existem no SQLite DESTA maquina: so eles podem imprimir e editar. */
+  _locais: new Set(),
+  _timer: null,
+  _atualizadoEm: null,
+  _carregando: false,
+
+  /**
+   * A atualizacao automatica e ESCOLHA de quem esta no caixa, e a escolha fica
+   * gravada na maquina. Quem passa o dia na tela quer ligada; quem abre para
+   * conferir uma venda antiga pode nao querer a lista mexendo embaixo do dedo.
+   *
+   * `localStorage` e de proposito: e preferencia de tela, daquele computador,
+   * e nao tem por que viajar para o servidor nem valer para os outros
+   * terminais. Fora que ler isso nao pode depender de rede.
+   */
+  _lerAuto() {
+    try { return localStorage.getItem('vendas.auto') !== 'nao'; } catch { return true; }
+  },
+
+  ligarAuto(val) {
+    try { localStorage.setItem('vendas.auto', val ? 'sim' : 'nao'); } catch {}
+    this._carimbar(false);
+    if (val) this.load({ silencioso: true });
+  },
 
   render() {
     const podeVerTodos = podePermissao('ver_vendas_todos_terminais');
     return `
+<style>
+  /* A TELA QUE O CAIXA OLHA O DIA INTEIRO.
+     Fonte e altura de linha maiores que o padrao do app: aqui nao se procura
+     um dado, se le a tela de longe enquanto o cliente espera. */
+  #vendas-table { font-size: 15px; }
+  #vendas-table thead th { font-size: 12px; letter-spacing:.4px; padding: 10px 12px; }
+  #vendas-table tbody td { padding: 12px; vertical-align: middle; }
+  #vendas-table tbody tr:hover { background: var(--bg2, rgba(0,0,0,.02)); }
+</style>
 <div class="page-header">
-  <div><div class="page-title">Vendas</div></div>
+  <div>
+    <div class="page-title">Vendas</div>
+    <div class="page-subtitle" id="vendas-carimbo" style="font-size:12px;color:var(--text3)"></div>
+  </div>
   <div class="page-actions" style="display:flex;gap:8px;align-items:center">
-    ${podeVerTodos ? `
-    <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2);cursor:pointer;white-space:nowrap">
-      <input type="checkbox" id="venda-todos-terminais" onchange="Vendas.toggleTodos(this.checked)" style="cursor:pointer">
-      Todos os terminais
-    </label>` : ''}
+    <button class="btn btn-ghost btn-sm" id="vendas-btn-atualizar" onclick="Vendas.atualizarAgora()" title="Puxar as vendas novas agora" style="white-space:nowrap">↻ Atualizar</button>
+    <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text2);cursor:pointer;white-space:nowrap" title="Puxa as vendas novas a cada 10 segundos, sem precisar clicar">
+      <input type="checkbox" id="vendas-auto" ${Vendas._lerAuto() ? 'checked' : ''} onchange="Vendas.ligarAuto(this.checked)" style="cursor:pointer">
+      Atualizar sozinho
+    </label>
     <button class="btn btn-ghost btn-sm" title="Corrigir nome do cliente nas vendas enviadas ao Base44 sem identificação" onclick="Vendas.repararClientes()" style="white-space:nowrap">🔧 Reparar Clientes</button>
     <input class="input" id="venda-busca-produto" type="text" placeholder="🔍 Buscar por produto..." style="min-width:200px" oninput="Vendas.load()">
     <input class="input" id="venda-data" type="date" value="${new Date().toISOString().split('T')[0]}" onchange="Vendas.load()">
@@ -1098,9 +1142,60 @@ const Vendas = {
 </div>`;
   },
 
-  async init() { this._todoTerminais = false; this._sel = new Set(); this._lista = []; await this.load(); },
+  async init() {
+    this._sel = new Set();
+    this._lista = [];
+    this._locais = new Set();
+    await this.load();
+    this._ligarTimer();
+  },
 
-  toggleTodos(val) { this._todoTerminais = val; this._sel = new Set(); this.load(); },
+  /**
+   * A atualizacao automatica, que se desliga sozinha.
+   *
+   * O app nao tem gancho de "saiu da tela" -- `navigate` so troca o innerHTML.
+   * Entao o proprio tique confere se a tabela ainda existe no DOM; quando ela
+   * some, o intervalo se mata. Sem isto o timer ficaria consultando o servidor
+   * para sempre, em segundo plano, numa tela que ninguem esta vendo.
+   */
+  _ligarTimer() {
+    if (this._timer) clearInterval(this._timer);
+    this._timer = setInterval(() => {
+      if (!document.getElementById('vendas-tbody')) {
+        clearInterval(this._timer);
+        this._timer = null;
+        return;
+      }
+      if (!this._lerAuto()) return;
+      // So a data de hoje se atualiza sozinha: ficar repuxando um dia passado
+      // gasta rede para mostrar sempre a mesma coisa.
+      const data = document.getElementById('venda-data')?.value;
+      if (data !== new Date().toISOString().split('T')[0]) return;
+      this.load({ silencioso: true });
+    }, 10000);
+  },
+
+  /** O clique no botao: mostra que esta carregando e limpa a selecao. */
+  async atualizarAgora() {
+    const btn = document.getElementById('vendas-btn-atualizar');
+    if (btn) { btn.disabled = true; btn.textContent = '↻ Atualizando…'; }
+    try { await this.load(); }
+    finally { if (btn) { btn.disabled = false; btn.textContent = '↻ Atualizar'; } }
+  },
+
+  _carimbar(erro) {
+    const el = document.getElementById('vendas-carimbo');
+    if (!el) return;
+    const hora = this._atualizadoEm
+      ? this._atualizadoEm.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+      : '—';
+    // Sem rede a lista NAO e esvaziada: ela continua valendo, so fica velha. Um
+    // dia em branco por causa de oscilacao de internet assusta mais que ajuda.
+    const auto = this._lerAuto();
+    el.innerHTML = erro
+      ? `<span style="color:var(--red)">Sem conexão — mostrando o que foi carregado às ${hora}</span>`
+      : `Atualizado às ${hora}${auto ? ' · atualiza sozinho a cada 10s' : ' · atualização automática desligada'}`;
+  },
 
   _thSort(col, label) {
     const ativo = this._sortCol === col;
@@ -1178,51 +1273,89 @@ const Vendas = {
     this._renderTabela();
   },
 
-  async load() {
+  async load(opts = {}) {
+    // `silencioso` e o tique automatico: NAO limpa a selecao, NAO pisca
+    // "Carregando..." e NAO repinta se nada mudou. Sem esses tres cuidados a
+    // atualizacao de 10s seria pior que o checkbox -- a operadora perderia as
+    // vendas que marcou para NFC-e e o scroll pularia na mao dela.
+    const silencioso = opts.silencioso === true;
     const data = document.getElementById('venda-data')?.value || new Date().toISOString().split('T')[0];
     const tbody = document.getElementById('vendas-tbody');
     if (!tbody) return;
-    this._sel = new Set();
-    this._atualizarBarraSel();
+    if (this._carregando) return;
+    this._carregando = true;
 
-    if (this._todoTerminais) {
-      tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:20px;color:var(--text3)">Carregando...</td></tr>';
-      try {
-        const lista = await window.pdv.vendas.listarCloud(data);
-        this._lista = lista;
-
-        const tt = document.getElementById('vendas-totais');
-        if (tt && podePermissao('ver_total_vendas_dia')) {
-          const ativos  = lista.filter(v => v.status !== 'cancelada');
-          const totalValor = ativos.reduce((s, v) => s + (v.total || 0), 0);
-          const pix        = ativos.filter(v => v.forma_pagamento === 'pix').reduce((s, v) => s + (v.total || 0), 0);
-          const dinheiro   = ativos.filter(v => v.forma_pagamento === 'dinheiro').reduce((s, v) => s + (v.total || 0), 0);
-          const cartao     = ativos.filter(v => ['credito','debito','cartao_credito','cartao_debito'].includes(v.forma_pagamento)).reduce((s, v) => s + (v.total || 0), 0);
-          tt.innerHTML = `
-            <div class="card"><div class="card-label">Total Vendas</div><div class="card-value">R$ ${fmtMoney(totalValor)}</div></div>
-            <div class="card"><div class="card-label">Transações</div><div class="card-value">${ativos.length}</div></div>
-            <div class="card"><div class="card-label">PIX + Dinheiro</div><div class="card-value">R$ ${fmtMoney(pix + dinheiro)}</div></div>
-            <div class="card"><div class="card-label">Cartão</div><div class="card-value">R$ ${fmtMoney(cartao)}</div></div>`;
-        } else if (tt) { tt.innerHTML = ''; }
-
-        this._renderTabela();
-      } catch(e) {
-        tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:20px;color:var(--red)">Erro ao carregar: ${e.message}</td></tr>`;
+    if (!silencioso) {
+      this._sel = new Set();
+      this._atualizarBarraSel();
+      if (!this._lista.length) {
+        tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;padding:20px;color:var(--text3)">Carregando...</td></tr>';
       }
-    } else {
-      const buscaProduto = document.getElementById('venda-busca-produto')?.value?.trim() || '';
-      const lista  = await window.pdv.vendas.listar({ data_inicio: data, data_fim: data, ...(buscaProduto ? { produto: buscaProduto } : {}) });
-      const totais = await window.pdv.vendas.totaisHoje();
+    }
+
+    const buscaProduto = document.getElementById('venda-busca-produto')?.value?.trim() || '';
+    const podeVerTodos = podePermissao('ver_vendas_todos_terminais');
+
+    try {
+      let lista;
+      if (podeVerTodos) {
+        lista = await window.pdv.vendas.listarCloud(data);
+        if (buscaProduto) {
+          // O filtro por produto existia so no caminho local. Na nuvem a venda
+          // traz `itens` em jsonb, entao da para filtrar aqui sem outra
+          // consulta -- e sem um segundo jeito de perguntar a mesma coisa.
+          const alvo = buscaProduto.toLowerCase();
+          lista = lista.filter(v => JSON.stringify(v.itens || '').toLowerCase().includes(alvo));
+        }
+      } else {
+        // Quem nao tem `ver_vendas_todos_terminais` continua vendo so o que
+        // esta maquina gravou. Abrir a loja inteira para todo mundo seria
+        // alargar permissao por conta de uma mudanca de tela.
+        lista = await window.pdv.vendas.listar({
+          data_inicio: data, data_fim: data,
+          ...(buscaProduto ? { produto: buscaProduto } : {}),
+        });
+      }
+
+      // Quais dessas vendas existem NESTA maquina. E o que decide se a linha
+      // pode imprimir, editar e emitir NFC-e: essas tres precisam do registro
+      // local, e uma venda de outro balcao simplesmente nao esta aqui.
+      if (podeVerTodos) {
+        try {
+          const locais = await window.pdv.vendas.listar({ data_inicio: data, data_fim: data, limit: 500 });
+          this._locais = new Set((locais || []).map(v => v.id));
+        } catch { /* sem o local, as linhas ficam so com as acoes de nuvem */ }
+      } else {
+        this._locais = new Set((lista || []).map(v => v.id));
+      }
+
+      const mudou = JSON.stringify(lista) !== JSON.stringify(this._lista);
       this._lista = lista;
+      this._atualizadoEm = new Date();
+      this._carimbar(false);
 
       const tt = document.getElementById('vendas-totais');
-      if (tt) tt.innerHTML = podePermissao('ver_total_vendas_dia') ? `
-        <div class="card"><div class="card-label">Total Vendas</div><div class="card-value">R$ ${fmtMoney(totais?.total_valor)}</div></div>
-        <div class="card"><div class="card-label">Transações</div><div class="card-value">${totais?.total_vendas || 0}</div></div>
-        <div class="card"><div class="card-label">PIX + Dinheiro</div><div class="card-value">R$ ${fmtMoney((totais?.pix||0)+(totais?.dinheiro||0))}</div></div>
-        <div class="card"><div class="card-label">Cartão</div><div class="card-value">R$ ${fmtMoney(totais?.cartao)}</div></div>` : '';
+      if (tt) {
+        if (podePermissao('ver_total_vendas_dia')) {
+          const ativos = lista.filter(v => v.status !== 'cancelada');
+          const soma = (f) => ativos.filter(f).reduce((t, v) => t + (Number(v.total) || 0), 0);
+          tt.innerHTML = `
+            <div class="card"><div class="card-label">Total Vendas</div><div class="card-value">R$ ${fmtMoney(soma(() => true))}</div></div>
+            <div class="card"><div class="card-label">Transações</div><div class="card-value">${ativos.length}</div></div>
+            <div class="card"><div class="card-label">PIX + Dinheiro</div><div class="card-value">R$ ${fmtMoney(soma(v => v.forma_pagamento === 'pix' || v.forma_pagamento === 'dinheiro'))}</div></div>
+            <div class="card"><div class="card-label">Cartão</div><div class="card-value">R$ ${fmtMoney(soma(v => ['credito','debito','cartao_credito','cartao_debito'].includes(v.forma_pagamento)))}</div></div>`;
+        } else { tt.innerHTML = ''; }
+      }
 
-      this._renderTabela();
+      if (mudou || !silencioso) this._renderTabela();
+    } catch (e) {
+      // A lista de antes continua na tela. So o carimbo muda.
+      this._carimbar(true);
+      if (!this._lista.length) {
+        tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:20px;color:var(--red)">Não foi possível carregar: ${e.message}</td></tr>`;
+      }
+    } finally {
+      this._carregando = false;
     }
   },
 
@@ -1231,14 +1364,14 @@ const Vendas = {
     const tbody = document.getElementById('vendas-tbody');
     if (!tbody) return;
 
-    const nuvem = this._todoTerminais;
-    const cols = 10;
+    const cols = 11;
 
     if (thead) thead.innerHTML = `<tr>
       <th style="width:32px"><input type="checkbox" title="Selecionar todas" onchange="Vendas.toggleTodasSel(this)"></th>
       ${this._thSort('numero', '#')}
       ${this._thSort('data', 'Data / Hora')}
-      <th>${nuvem ? 'Terminal' : 'Terminal'}</th>
+      <th>Terminal</th>
+      <th>Vendedor</th>
       ${this._thSort('cliente', 'Cliente')}
       ${this._thSort('pagamento', 'Pagamento')}
       ${this._thSort('total', 'Total')}
@@ -1262,7 +1395,12 @@ const Vendas = {
       const dataFmt = dt ? new Date(dt).toLocaleDateString('pt-BR', {day:'2-digit',month:'2-digit'}) : '—';
       const horaFmt = dt ? new Date(dt).toLocaleTimeString('pt-BR', {hour:'2-digit',minute:'2-digit'}) : '—';
       const pgBadge = v.forma_pagamento === 'pix' ? 'badge-green' : v.forma_pagamento === 'dinheiro' ? 'badge-yellow' : 'badge-blue';
-      const terminal = nuvem ? (v.terminal_id || '—') : 'Este terminal';
+      const terminal = v.terminal_id || '—';
+      const vendedor = v.vendedor_nome || v.operador_nome || '—';
+      // Imprimir, editar e emitir NFC-e precisam do registro LOCAL. Uma venda
+      // de outro balcao nao esta no SQLite desta maquina, e oferecer o botao
+      // seria prometer o que nao da para cumprir.
+      const nuvem = !this._locais.has(id);
 
       const naoSincronizada = !nuvem && !v.remote_id;
       const syncBadge = (nuvem || v.remote_id
@@ -1274,19 +1412,20 @@ const Vendas = {
 
       return `<tr style="${sel ? 'background:var(--accent-soft,rgba(108,99,255,.08))' : ''}">
         <td><input type="checkbox" ${sel ? 'checked' : ''} ${cancelada ? 'disabled' : ''} onchange="Vendas.toggleSel('${id}',this)"></td>
-        <td class="td-mono" style="font-size:13px;font-weight:600;color:var(--accent)">#${v.numero || '—'}</td>
+        <td class="td-mono" style="font-size:15px;font-weight:700;color:var(--accent)">#${v.numero || '—'}</td>
         <td>
-          <div style="font-size:13px;font-weight:500">${horaFmt}</div>
-          <div style="font-size:11px;color:var(--text3)">${dataFmt}</div>
+          <div style="font-size:15px;font-weight:600">${horaFmt}</div>
+          <div style="font-size:12px;color:var(--text3)">${dataFmt}</div>
         </td>
-        <td style="font-size:11px;color:var(--text3)">${terminal}</td>
+        <td style="font-size:13px;color:var(--text2);white-space:nowrap">${terminal}</td>
+        <td style="font-size:13px;color:var(--text2)">${vendedor}</td>
         <td>
           ${v.cliente_nome
-            ? `<div style="font-size:13px;font-weight:600;color:var(--text1)">${v.cliente_nome}</div>`
+            ? `<div style="font-size:15px;font-weight:600;color:var(--text1)">${v.cliente_nome}</div>`
             : `<span style="color:var(--text3);font-size:12px">—</span>`}
         </td>
         <td><span class="badge ${pgBadge}">${v.forma_pagamento || '—'}</span></td>
-        <td style="font-size:15px;font-weight:700;color:var(--accent);white-space:nowrap">R$ ${fmtMoney(v.total)}</td>
+        <td style="font-size:17px;font-weight:700;color:var(--accent);white-space:nowrap">R$ ${fmtMoney(v.total)}</td>
         <td>${cancelada ? '<span class="badge badge-red">Cancelada</span>' : '<span class="badge badge-green">Concluída</span>'}</td>
         <td>${syncBadge}</td>
         <td style="display:flex;gap:4px;flex-wrap:wrap;min-width:120px">
