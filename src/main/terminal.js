@@ -284,7 +284,7 @@ async function obterToken({ forcar = false } = {}) {
 // a unica coisa que varia.
 async function chamarProtegida(rota, corpo, { jaRenovou = false, metodo = 'POST' } = {}) {
   const token = await obterToken();
-  if (!token) return { ok: false, motivo: 'sem_identidade', erro: 'Terminal não ativado' };
+  if (!token) return { ok: false, motivo: 'sem_identidade', erro: 'Terminal não ativado', preWriteLocal: true };
 
   const temCorpo = metodo !== 'GET' && corpo != null;
 
