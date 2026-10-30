@@ -1440,11 +1440,74 @@ const Vendas = {
                  : !cancelada ? `<button class="btn btn-ghost btn-sm" style="color:var(--green);font-size:10px" onclick="Vendas.emitirNFCe('${id}')" title="Emitir NFC-e">🧾 NFC-e</button>` : ''}
                ${!cancelada ? `<button class="btn btn-ghost btn-sm" style="color:#25D366" title="Enviar por WhatsApp" onclick="${v.cliente_telefone ? `WA.abrirModal('Enviar cupom via WhatsApp','${(v.cliente_telefone||'').replace(/'/g,"\\'")}','venda','${id}',WA._vendas['${id}'])` : `WA.abrirModalCapturaCliente('venda','${id}','${(v.cliente_nome||'').replace(/'/g,"\\'")}',WA._vendas['${id}'])` }">${WA_ICON}</button>` : ''}
                ${!cancelada ? `<button class="btn btn-danger btn-sm" onclick="Vendas.cancelar('${id}')">Cancelar</button>` : ''}`}
+          ${!cancelada && Vendas._centavos(v.total) > 0 && podePermissao('fechar_caixa')
+            ? `<button class="btn btn-ghost btn-sm" style="color:var(--green);white-space:nowrap"
+                 title="O cliente pagou o valor redondo e a loja abriu mão dos centavos"
+                 onclick="Vendas.arredondar('${id}', ${Number(v.total) || 0})">¢ Arredondar</button>` : ''}
         </td>
       </tr>`;
     }).join('');
     WA._vendas = WA._vendas || {};
     lista.forEach(v => { WA._vendas[v.id || v.remote_id] = v; });
+  },
+
+  /**
+   * Os centavos que dao para abater nesta venda.
+   *
+   * E o MESMO calculo que o banco faz, e a repeticao e consciente: serve para a
+   * tela ja sugerir o valor e nao oferecer o botao numa venda redonda. A
+   * autoridade continua sendo o banco -- se as duas contas divergirem, quem
+   * manda e a que recusa.
+   *
+   * Centavos INTEIROS antes do resto, senao 1.1 * 3 viraria 0,30000000000004
+   * na sugestao.
+   */
+  _centavos(total) {
+    const n = Number(total);
+    if (!Number.isFinite(n) || n <= 0) return 0;
+    return (Math.round(n * 100) % 100) / 100;
+  },
+
+  arredondar(id, total) {
+    const centavos = this._centavos(total);
+    if (centavos <= 0) return;
+    const redondo = Math.floor(Math.round(Number(total) * 100) / 100);
+    Modal.open(`
+<div style="margin-bottom:14px;font-size:15px">
+  A venda foi de <strong>R$ ${fmtMoney(total)}</strong>.
+  Arredondando, o cliente paga <strong>R$ ${fmtMoney(redondo)}</strong>.
+</div>
+<div class="form-group">
+  <label>Quanto a loja está abrindo mão</label>
+  <input class="input" id="arred-valor" inputmode="decimal" value="${centavos.toFixed(2).replace('.', ',')}">
+  <div style="color:var(--text3);font-size:12px;margin-top:4px">
+    No máximo os centavos da venda — R$ ${fmtMoney(centavos)} — e dentro do limite da loja.
+  </div>
+</div>
+<div class="form-group">
+  <label>Observação (opcional)</label>
+  <input class="input" id="arred-obs" placeholder="Ex.: cliente só tinha nota de 100">
+</div>
+<div class="modal-actions">
+  <button class="btn btn-ghost" onclick="Modal.close()">Cancelar</button>
+  <button class="btn btn-primary" id="arred-ok" onclick="Vendas._confirmarArredondar('${id}')">Registrar</button>
+</div>`, 'Arredondar o recebimento', `Venda #${id.slice(0, 8)}`);
+  },
+
+  async _confirmarArredondar(id) {
+    const bruto = (document.getElementById('arred-valor')?.value || '').trim().replace(/\./g, '').replace(',', '.');
+    const valor = Number(bruto);
+    const obs = (document.getElementById('arred-obs')?.value || '').trim();
+    if (!Number.isFinite(valor) || valor <= 0) return Toast.show('Informe quanto está sendo abatido.', 'error');
+
+    const btn = document.getElementById('arred-ok');
+    if (btn) { btn.disabled = true; btn.textContent = 'Enviando…'; }
+    const r = await window.pdv.caixa.arredondar({ vendaId: id, valor, observacao: obs || null });
+    if (btn) { btn.disabled = false; btn.textContent = 'Registrar'; }
+
+    if (!r || !r.ok) return Toast.show((r && r.erro) || 'Não foi possível arredondar.', 'error');
+    Modal.close();
+    Toast.show(r.aviso || 'Arredondamento registrado.', 'success');
   },
 
   async nfceLote() {

@@ -118,6 +118,60 @@ describe('sem rede, a lista nao some', () => {
   });
 });
 
+describe('o botao de arredondar', () => {
+  // A conta dos centavos esta dentro do objeto `Vendas` e nao da para importar
+  // daqui, entao ela e recriada a partir da propria fonte: se a implementacao
+  // mudar, este teste passa a exercitar a nova.
+  const centavos = (() => {
+    // Sem regex de proposito: o corpo tem quebras de linha e escapar isso num
+    // literal de expressao regular ja quebrou este arquivo uma vez.
+    const marca = '_centavos(total) {';
+    const i = VENDAS.indexOf(marca);
+    assert.ok(i > 0, '_centavos sumiu da tela de Vendas');
+    const corpo = VENDAS.slice(i + marca.length, VENDAS.indexOf(String.fromCharCode(10) + '  },', i));
+    return new Function('total', corpo);
+  })();
+
+  test('sugere os centavos da venda', () => {
+    assert.equal(centavos(100.12), 0.12);
+    assert.equal(centavos(16.5), 0.5);
+    assert.equal(centavos(36.26), 0.26);
+  });
+
+  test('venda redonda nao tem o que arredondar', () => {
+    assert.equal(centavos(10), 0);
+    assert.equal(centavos(100), 0);
+  });
+
+  test('float nao vira sugestao com quatro casas', () => {
+    // Sem arredondar em centavos INTEIROS antes do resto, 1.1 * 3 apareceria
+    // como 0,30000000000000004 na caixinha.
+    assert.equal(centavos(1.1 * 3), 0.3);
+    assert.equal(centavos(0.1 + 0.2), 0.3);
+  });
+
+  test('valor invalido nao inventa centavo', () => {
+    for (const v of [0, -5, NaN, null, undefined]) assert.equal(centavos(v), 0);
+  });
+
+  test('o botao so aparece com centavos E com permissao', () => {
+    assert.match(VENDAS, /_centavos\(v\.total\) > 0 && podePermissao\('fechar_caixa'\)/);
+  });
+
+  test('o valor digitado aceita virgula', () => {
+    // No balcao ninguem digita ponto decimal.
+    assert.match(VENDAS, /arred-valor[\s\S]{0,160}replace\(',', '\.'\)/);
+  });
+
+  test('a idempotencia e pela venda, nao por tentativa', () => {
+    const remoto = fs.readFileSync(
+      path.resolve(__dirname, '..', 'src/main/caixaRemoto.js'), 'utf8');
+    // Uma venda recebe UM arredondamento. Chave sorteada por clique faria o
+    // segundo clique tirar os centavos de novo.
+    assert.match(remoto, /caixa\.arredondamento:\$\{p\.vendaId\}/);
+  });
+});
+
 describe('o que a tela passou a mostrar', () => {
   test('a coluna do vendedor', () => {
     assert.match(VENDAS, /<th>Vendedor<\/th>/);

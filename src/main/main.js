@@ -721,6 +721,7 @@ ipcMain.handle('caixa:estado', () => caixaRemoto.estado());
 ipcMain.handle('caixa:saida', (_, p) => caixaRemoto.registrarSaida(p));
 ipcMain.handle('caixa:abrir', (_, p) => caixaRemoto.abrir(p));
 ipcMain.handle('caixa:fechar', (_, p) => caixaRemoto.fechar(p));
+ipcMain.handle('caixa:arredondar', (_, p) => caixaRemoto.arredondar(p));
 
 // IA
 ipcMain.handle('ia:fiscal', async (_, nome, categoria, unidade) => ia.sugerirFiscal(nome, categoria, unidade));

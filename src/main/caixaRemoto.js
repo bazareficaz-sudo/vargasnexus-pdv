@@ -165,4 +165,30 @@ async function fechar(p = {}) {
   return { ok: true, ...r.dados };
 }
 
-module.exports = { estado, registrarSaida, abrir, fechar, uuidDe, traduzir, operador };
+/**
+ * O arredondamento no recebimento.
+ *
+ * Idempotente pela VENDA, nao por tentativa: uma venda recebe um
+ * arredondamento, e o segundo clique devolve "ja registrado" em vez de tirar os
+ * centavos de novo. Por isso a chave sai do id da venda e nao de um sorteio.
+ *
+ * Os dois tetos -- a politica da loja e os centavos da venda -- sao conferidos
+ * no banco. A tela sugere o valor, o servidor decide.
+ */
+async function arredondar(p = {}) {
+  const op = operador();
+  if (!op) return { ok: false, motivo: 'sem_operador', erro: 'Faça login antes de mexer no caixa.' };
+  if (!p.vendaId) return { ok: false, motivo: 'sem_venda', erro: 'Tentativa sem a venda.' };
+
+  const r = await terminal.chamarProtegida('/api/pdv/caixa/arredondamento', {
+    idempotency_key: `caixa.arredondamento:${p.vendaId}`,
+    venda_id: p.vendaId,
+    operador_id: op.id,
+    valor: Number(p.valor),
+    observacao: p.observacao || null,
+  });
+  if (!r.ok) return traduzir(r);
+  return { ok: true, ...r.dados };
+}
+
+module.exports = { estado, registrarSaida, abrir, fechar, arredondar, uuidDe, traduzir, operador };
