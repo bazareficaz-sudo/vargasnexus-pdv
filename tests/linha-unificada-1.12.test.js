@@ -87,13 +87,22 @@ describe('a parcela do cartao, que é o motivo da unificacao', () => {
     test(onde, () => assert.ok(temNoFonte(marcador), `marcador ausente: ${marcador}`));
   }
 
-  test('a composicao v2 continua desligada por omissao', () => {
-    // `podeV2` exige `ctx.pagamentosV2 === true`, e quem monta o payload em
-    // `sync.js` nao passa esse campo. Desligado por omissao é mais seguro que
-    // desligado por flag: nao existe lugar para ligar por engano.
+  test('a composicao viaja, e quem decide se vale é o servidor', () => {
+    // MUDOU EM 30/10/2026, e a inversao é o ponto.
+    //
+    // Antes `sync.js` nao passava `pagamentosV2`, e o v2 ficava desligado por
+    // omissao. Parecia seguro e era caro: a parcela era capturada na tela,
+    // gravada no SQLite e NUNCA saia do terminal. Medido em producao -- venda
+    // de R$ 1.000 em 6x lancava R$ 30,40 de taxa no lugar de R$ 154,40, e
+    // venda mista nao entrava no caixa.
+    //
+    // Agora a composicao viaja sempre que existe, e o gate mora no servidor
+    // (`rotas_habilitadas.pagamentos_v2`, em `composicaoNoPayload`). Rollout
+    // por terminal sem build novo, e com a flag desligada o payload que chega
+    // a RPC e identico ao de antes.
     const sync = fs.readFileSync(path.join(raiz, 'src/main/sync.js'), 'utf8');
-    assert.ok(!sync.includes('pagamentosV2'),
-      'sync.js passou a ligar o v2 — isso é decisao separada, com a taxa conferida');
+    assert.match(sync, /pagamentosV2:\s*true/,
+      'sync.js parou de oferecer a composicao — a parcela volta a ficar presa no terminal');
   });
 });
 

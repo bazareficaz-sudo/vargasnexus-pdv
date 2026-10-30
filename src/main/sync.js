@@ -704,6 +704,21 @@ function _montarNovoPayloadV1(venda) {
     depositoId: usuario.deposito_id || venda.deposito_id,
     terminalId: store.get('config.terminal_id'),
     operadorNome: usuario.nome,
+    // A COMPOSICAO VIAJA SEMPRE QUE EXISTE, e quem decide se vale e o
+    // SERVIDOR, pela liberacao daquele terminal -- nunca por nada lido deste
+    // lado. Ver `composicaoNoPayload` no servidor.
+    //
+    // Nao e ligar o v2 sem decisao: e parar de esconder o dado. A parcela e a
+    // divisao do pagamento sao capturadas na tela e gravadas no SQLite local
+    // desde a 4C.4 -- e nunca saiam daqui, porque este objeto nao tinha o
+    // campo. O efeito medido em producao em 30/10: venda de R$ 1.000 em 6x
+    // lancava R$ 30,40 de taxa (aliquota de 1x) no lugar de R$ 154,40, e venda
+    // mista nao entrava no caixa de jeito nenhum.
+    //
+    // Com a flag desligada no servidor, a rota estripa `pagamentos` e devolve
+    // `schema_version` a 1 -- o payload fica identico ao de antes. Rollout por
+    // terminal continua sendo uma linha no banco, sem build novo.
+    pagamentosV2: true,
   });
 }
 
