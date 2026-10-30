@@ -4,6 +4,12 @@ const PDV = (() => {
   let selectedClient = null;
   let searchTimeout = null;
   let payMethod = 'dinheiro';
+  // Em quantas vezes o cartao foi passado. 1 é a venda a vista, que é o
+  // caso comum e o que toda venda gravada antes deste campo quis dizer.
+  let payParcelas = 1;
+  // As partes da venda dividida: { forma, valor, parcelas }. Vazia em toda
+  // venda de forma unica, que continua sendo o caminho de sempre.
+  let payComposicao = [];
   let valorPago = 0;
   let vendedorAtual = null; // { id, codigo, nome, comissao }
   let dadosEntrega = null;  // preenchido na etapa "Agendar Entrega"
@@ -216,6 +222,44 @@ const PDV = (() => {
 .si-nome{font-weight:600;line-height:1.3}
 .si-sub{font-size:10px;color:var(--text3)}
 .si-marca{font-size:12px;color:var(--text2)}
+.si-selo-similar{font-size:10px;font-weight:600;color:var(--accent);background:var(--accent-bg);
+  border:1px solid var(--accent);border-radius:4px;padding:0 4px;margin-left:6px;white-space:nowrap}
+/* Modal de similares */
+.sim-linha{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;cursor:pointer;
+  border:1px solid transparent}
+.sim-linha.ativa{background:var(--accent-bg);border-color:var(--accent)}
+.sim-num{width:20px;text-align:center;font-size:11px;font-weight:700;color:var(--text3);flex-shrink:0}
+.sim-foto{width:40px;height:40px;object-fit:cover;border-radius:6px;flex-shrink:0}
+.sim-foto-fb{display:flex;align-items:center;justify-content:center;background:var(--bg3);font-size:20px}
+.sim-info{flex:1;min-width:0}
+.sim-marca{font-size:13px;font-weight:700}
+.sim-nome{font-size:12px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sim-sku{font-size:10px;color:var(--text3)}
+.sim-direita{text-align:right;flex-shrink:0}
+.sim-preco{font-size:13px;font-weight:700;color:var(--accent)}
+.sim-estoque{font-size:11px;color:var(--green)}
+.sim-sem-estoque{font-size:11px;color:var(--red);font-weight:600}
+/* Compre Junto */
+.cj-cabecalho{display:flex;align-items:baseline;gap:8px;margin-bottom:6px}
+.cj-titulo{font-size:12px;font-weight:700;color:var(--orange)}
+.cj-sub{font-size:11px;color:var(--text3)}
+.cj-faixa{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px}
+.cj-card{position:relative;flex-shrink:0;width:230px;display:flex;gap:8px;align-items:center;
+  background:var(--bg2);border:1px solid var(--border2);border-radius:8px;padding:6px 18px 6px 6px}
+.cj-card.cj-sem-estoque{opacity:.6}
+.cj-foto{width:40px;height:40px;object-fit:cover;border-radius:6px;flex-shrink:0}
+.cj-foto-fb{display:flex;align-items:center;justify-content:center;background:var(--bg3);font-size:20px}
+.cj-corpo{min-width:0;flex:1;cursor:pointer}
+.cj-nome{font-size:12px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cj-linha2{display:flex;align-items:center;gap:4px;margin-top:1px}
+.cj-marca{font-size:10px;font-weight:600;color:var(--text2)}
+.cj-preco{font-size:12px;font-weight:700;color:var(--accent)}
+.cj-estoque{font-size:10px;color:var(--green)}
+.cj-estoque-zero{font-size:10px;color:var(--red)}
+.cj-motivo{font-size:10px;color:var(--orange);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cj-x{position:absolute;top:2px;right:4px;background:none;border:none;color:var(--text3);
+  font-size:14px;line-height:1;cursor:pointer;padding:0}
+.cj-x:hover{color:var(--text)}
 .si-estoque{text-align:center;font-size:12px;white-space:nowrap}
 .si-preco{text-align:right;font-weight:700;color:var(--accent);font-family:'Syne',sans-serif;white-space:nowrap}
 .si-preco-normal{color:var(--accent);font-size:12px;line-height:1.5}
@@ -380,10 +424,10 @@ const PDV = (() => {
                <div class="si-thumb-fallback" style="display:none">${p.emoji || '📦'}</div>`
             : `<div class="si-thumb-fallback">${p.emoji || '📦'}</div>`;
           return `<tr class="search-item ${semEstoque ? 'out-of-stock' : ''}" id="si-${i}"
-            onclick="${!semEstoque ? `PDV.selecionarProduto(${JSON.stringify(p).replace(/"/g, '&quot;')})` : ''}">
+            onclick="${!semEstoque ? `PDV.escolherDaLista(${JSON.stringify(p).replace(/"/g, '&quot;')})` : ''}">
             <td class="si-thumb">${thumbHtml}</td>
             <td class="si-cod">${p.sku || '—'}${p.localizacao ? `<div class="si-local">📍 ${p.localizacao}</div>` : ''}</td>
-            <td><div class="si-nome">${p.emoji ? p.emoji + ' ' : ''}${p.nome}</div><div class="si-sub">${p.ean ? 'EAN: ' + p.ean : ''}</div></td>
+            <td><div class="si-nome">${p.emoji ? p.emoji + ' ' : ''}${p.nome}${p.grupo_similar ? ' <span class="si-selo-similar">⇄ tem similares</span>' : ''}</div><div class="si-sub">${p.ean ? 'EAN: ' + p.ean : ''}</div></td>
             <td class="si-marca">${p.marca || '—'}</td>
             <td class="si-estoque" style="white-space:nowrap">${estoqueHtml}${faltaBtn}</td>
             <td class="si-preco">${promocaoVigente(p)
@@ -430,9 +474,9 @@ const PDV = (() => {
     } else if (e.key === 'Enter') {
       e.preventDefault();
       if (searchHighlight >= 0 && searchResults[searchHighlight]) {
-        selecionarProduto(searchResults[searchHighlight]);
+        escolherDaLista(searchResults[searchHighlight]);
       } else if (searchResults.length === 1) {
-        selecionarProduto(searchResults[0]);
+        escolherDaLista(searchResults[0]);
       }
     } else if (e.key === 'F12') {
       e.preventDefault();
@@ -465,7 +509,10 @@ const PDV = (() => {
 
   function _abrirModalFaltaPDV(produto) {
     _faltaTipo = 'falta';
-    document.getElementById('pdv-results').style.display = 'none';
+    // A LISTA NAO FECHA. Anotar uma falta nao devia custar uma busca nova:
+    // no balcao o vendedor percorre varios itens parecidos de uma vez, e
+    // cada F12 jogava fora o resultado inteiro. O modal tem z-index 1000
+    // contra 50 da lista, entao ele ja aparecia por cima de qualquer jeito.
     const p = JSON.stringify(produto).replace(/"/g, '&quot;');
     Modal.open(`
       <div style="display:flex;flex-direction:column;gap:12px;min-width:340px">
@@ -528,7 +575,7 @@ const PDV = (() => {
         </div>
 
         <div style="display:flex;gap:8px;margin-top:4px">
-          <button class="btn btn-ghost" style="flex:1" onclick="Modal.close()">Cancelar</button>
+          <button class="btn btn-ghost" style="flex:1" onclick="PDV._fecharFaltaPDV()">Cancelar</button>
           <button class="btn btn-primary" style="flex:2" id="fpdv-salvar"
             onclick="PDV._confirmarFaltaPDV(${p})">
             📋 Registrar Falta
@@ -551,6 +598,25 @@ const PDV = (() => {
     if (salvar) salvar.textContent = _faltaTipo === 'encomenda' ? '📌 Registrar Encomenda' : '📋 Registrar Falta';
   }
 
+  // Devolve o teclado para a lista. Sem isto ela ficaria visivel e morta —
+  // as setas so funcionam com o foco no campo de busca.
+  //
+  // Sem `select()` de proposito: selecionar o texto faria a proxima tecla
+  // apagar a busca inteira, e a lista que se quer preservar sumiria junto.
+  function _voltarParaLista() {
+    setTimeout(() => {
+      document.getElementById('pdv-search')?.focus();
+      const itens = document.querySelectorAll('.search-item:not(.out-of-stock)');
+      itens.forEach((el, i) => el.classList.toggle('highlighted', i === searchHighlight));
+      if (searchHighlight >= 0) itens[searchHighlight]?.scrollIntoView({ block: 'nearest' });
+    }, 60);
+  }
+
+  function _fecharFaltaPDV() {
+    Modal.close();
+    _voltarParaLista();
+  }
+
   async function _confirmarFaltaPDV(produto) {
     const qty = parseFloat(document.getElementById('fpdv-qty')?.value) || 1;
     const wa = document.getElementById('fpdv-wa')?.value.trim() || '';
@@ -560,6 +626,7 @@ const PDV = (() => {
     const preco = parseFloat(document.getElementById('fpdv-preco')?.value);
     const tipo = _faltaTipo;
     Modal.close();
+    _voltarParaLista();
     try {
       await window.pdv.faltas.registrar({
         produto_id: produto.id || null,
@@ -690,7 +757,7 @@ const PDV = (() => {
   }
 
   // ─── Carrinho ─────────────────────────────────────────────────
-  function addToCartConfirmado(produto, quantidade, precoUnitario, eDevolucao = false) {
+  function addToCartConfirmado(produto, quantidade, precoUnitario, eDevolucao = false, origemSugestao = null) {
     const precoTabela = produto.preco_venda;
     const emPromo = !eDevolucao && promocaoVigente(produto);
     const precoPromo = emPromo ? Number(produto.preco_promocional) : null;
@@ -702,6 +769,9 @@ const PDV = (() => {
 
     const existing = cart.find(i => i.produto_id === produto.id);
     if (existing) {
+      // A origem é do PRIMEIRO lancamento e nao muda depois. Quem buscou o
+      // produto e so entao clicou na sugestao para somar uma unidade nao
+      // fez uma venda sugerida; sobrescrever aqui inflaria a medicao.
       const novaQty = existing.quantidade + quantidade;
       existing.quantidade = novaQty;
       existing.preco_unitario = precoUnitario;
@@ -711,6 +781,13 @@ const PDV = (() => {
     } else {
       cart.push({
         produto_id: produto.id,
+        // O servidor fala em uuid do Supabase; o id acima é o local. O
+        // Compre Junto precisa mandar o remoto, e resolver isso na hora de
+        // perguntar custaria uma ida ao banco por tecla.
+        produto_remote_id: produto.remote_id || null,
+        // `compre_junto` quando o vendedor clicou na sugestao. Null quando
+        // ele mesmo buscou — e null é a verdade, nao um valor que falta.
+        origem_sugestao: origemSugestao,
         produto_nome: produto.nome,
         produto_sku: produto.sku,
         emoji: produto.emoji || '📦',
@@ -828,13 +905,26 @@ const PDV = (() => {
   }
 
   function clearCart() {
-    if (cart.length === 0 && !modoEdicao) return;
+    // LIMPAR A TELA é mais do que esvaziar o carrinho: tira cliente,
+    // vendedor, desconto, observacao e entrega junto. A condicao antiga
+    // olhava so o carrinho, entao com o carrinho vazio e um cliente
+    // selecionado — ou um desconto digitado — a tecla F8 nao fazia nada e
+    // parecia quebrada. Nao havia o que limpar segundo o codigo; havia
+    // segundo o operador.
+    const descontoDigitado = Number(document.getElementById('pdv-desconto')?.value || 0) !== 0;
+    const temAlgoALimpar = cart.length > 0 || modoEdicao || selectedClient || vendedorAtual
+      || dadosEntrega || pedidoObservacao || descontoDigitado;
+    if (!temAlgoALimpar) return;
     cart = [];
+    // Dispensar é "nesta venda, nao". Na proxima a sugestao volta.
+    _dispensadas = new Set();
     selectedClient = null;
     vendedorAtual = null;
     dadosEntrega = null;
     modoEdicao = null;
     payMethod = 'dinheiro';
+    payParcelas = 1;
+    payComposicao = [];
     valorPago = 0;
     pedidoObservacao = '';
     _atualizarBotaoObservacao();
@@ -857,7 +947,8 @@ const PDV = (() => {
       id: 'espera_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7),
       numero, label,
       cart: JSON.parse(JSON.stringify(cart)),
-      selectedClient, vendedorAtual, dadosEntrega, payMethod, valorPago, modoEdicao,
+      selectedClient, vendedorAtual, dadosEntrega, payMethod, payParcelas, payComposicao,
+      valorPago, modoEdicao,
       observacao: pedidoObservacao,
       desconto: getDesconto(),
       criadoEm: new Date().toISOString(),
@@ -911,6 +1002,10 @@ const PDV = (() => {
     vendedorAtual = v.vendedorAtual || null;
     dadosEntrega = v.dadosEntrega || null;
     payMethod = v.payMethod || 'dinheiro';
+    // Venda em espera guardada antes deste campo volta como a vista, que é o
+    // que ela era: o PDV nao tinha como registrar outra coisa.
+    payParcelas = v.payParcelas || 1;
+    payComposicao = Array.isArray(v.payComposicao) ? v.payComposicao : [];
     valorPago = v.valorPago || 0;
     modoEdicao = v.modoEdicao || null;
     pedidoObservacao = v.observacao || '';
@@ -1049,8 +1144,253 @@ ${podeDesconto ? `
     Toast.show('Item atualizado', 'success');
   }
 
-  // ─── Sugestões ────────────────────────────────────────────────
+  // ─── Produtos similares ───────────────────────────────────────
+  //
+  // O gestor agrupa no cadastro os produtos que sao o MESMO item de marcas
+  // diferentes (`produtos.grupo_similar`). Quando o vendedor escolhe um deles
+  // PELA LISTA DA BUSCA, o PDV mostra as marcas antes de lancar: "disjuntor
+  // mono 32A" sem marca nao é um produto, é uma prateleira.
+  //
+  // LEITOR E SKU NAO PASSAM POR AQUI. Quem bipou o codigo de barras ou digitou
+  // o SKU ja disse qual marca quer; parar o caixa nesse caso so atrasaria.
+  // Como aqui a busca é um campo so (diferente do web, que tem entrada
+  // separada), a distincao é feita pelo TERMO: se ele é exatamente o EAN ou o
+  // SKU do produto, a marca ja foi identificada.
+  //
+  // O modal NUNCA segura a venda. Grupo de um produto so, consulta vazia ou
+  // erro: segue direto com o que o vendedor escolheu.
+  let _similares = null;   // { opcoes, idx } enquanto o modal esta aberto
+
+  function _termoIdentificaMarca(produto, termo) {
+    const t = String(termo || '').trim().toLowerCase();
+    if (!t) return false;
+    const ean = String(produto.ean || '').trim().toLowerCase();
+    const sku = String(produto.sku || '').trim().toLowerCase();
+    return (!!ean && t === ean) || (!!sku && t === sku);
+  }
+
+  async function escolherDaLista(produto) {
+    if (!produto) return;
+    const termo = document.getElementById('pdv-search')?.value || '';
+    if (!produto.grupo_similar || _termoIdentificaMarca(produto, termo)) {
+      selecionarProduto(produto);
+      return;
+    }
+
+    let opcoes = [];
+    try {
+      opcoes = await window.pdv.produtos.similares(produto.grupo_similar) || [];
+    } catch (err) {
+      console.warn('[SIMILARES] falha ao consultar:', err.message);
+      selecionarProduto(produto);
+      return;
+    }
+    // Menos de dois é "nao ha escolha a fazer".
+    if (opcoes.length < 2) { selecionarProduto(produto); return; }
+    if (!opcoes.some(o => o.id === produto.id)) opcoes.unshift(produto);
+
+    document.getElementById('pdv-results').style.display = 'none';
+    _similares = { opcoes, idx: Math.max(0, opcoes.findIndex(o => o.id === produto.id)) };
+    _abrirModalSimilares();
+  }
+
+  function _abrirModalSimilares() {
+    if (!_similares) return;
+    Modal.open(`
+<div style="font-size:11px;color:var(--text3);margin-bottom:10px">
+  ↑ ↓ para escolher · <b>Enter</b> confirma · <b>1-9</b> escolhe direto · <b>Esc</b> volta para a busca
+</div>
+<div id="sim-lista" style="max-height:52vh;overflow:auto">${_linhasSimilares()}</div>`,
+      'Produtos similares — confira a marca');
+    document.addEventListener('keydown', _onSimilaresKey, true);
+    setTimeout(() => _rolarParaSimilarAtivo(), 30);
+  }
+
+  function _linhasSimilares() {
+    return _similares.opcoes.map((p, i) => {
+      const ativo = i === _similares.idx;
+      const estoque = Number(p.estoque || 0);
+      const preco = promocaoVigente(p) && _formaEhAvista(payMethod)
+        ? Number(p.preco_promocional) : Number(p.preco_venda || 0);
+      const thumb = p.foto_url
+        ? `<img src="${p.foto_url}" class="sim-foto" alt=""
+             onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+           <div class="sim-foto sim-foto-fb" style="display:none">${p.emoji || '📦'}</div>`
+        : `<div class="sim-foto sim-foto-fb">${p.emoji || '📦'}</div>`;
+      return `<div class="sim-linha${ativo ? ' ativa' : ''}" id="sim-${i}"
+        onmouseenter="PDV._realcarSimilar(${i})" onclick="PDV._confirmarSimilar(${i})">
+        <div class="sim-num">${i < 9 ? i + 1 : '·'}</div>
+        ${thumb}
+        <div class="sim-info">
+          <div class="sim-marca">${p.marca || 'sem marca'}</div>
+          <div class="sim-nome">${p.nome}</div>
+          <div class="sim-sku">${p.sku || '—'}</div>
+        </div>
+        <div class="sim-direita">
+          <div class="sim-preco">R$ ${fmtMoney(preco)}</div>
+          <div class="${estoque > 0 ? 'sim-estoque' : 'sim-sem-estoque'}">
+            ${estoque > 0 ? `${estoque} ${p.unidade || 'UN'}` : 'Sem estoque'}
+          </div>
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  function _realcarSimilar(i) {
+    if (!_similares || i === _similares.idx) return;
+    _similares.idx = i;
+    const lista = document.getElementById('sim-lista');
+    if (lista) lista.innerHTML = _linhasSimilares();
+  }
+
+  function _rolarParaSimilarAtivo() {
+    document.getElementById(`sim-${_similares?.idx ?? 0}`)
+      ?.scrollIntoView({ block: 'nearest' });
+  }
+
+  function _confirmarSimilar(i) {
+    const escolhido = _similares?.opcoes[i];
+    _fecharSimilares();
+    if (escolhido) selecionarProduto(escolhido);
+  }
+
+  function _fecharSimilares() {
+    document.removeEventListener('keydown', _onSimilaresKey, true);
+    _similares = null;
+    Modal.close();
+  }
+
+  function _onSimilaresKey(e) {
+    if (!_similares) return;
+    const { opcoes, idx } = _similares;
+    if (e.key === 'ArrowDown') {
+      e.preventDefault(); e.stopPropagation();
+      _realcarSimilar(Math.min(idx + 1, opcoes.length - 1)); _rolarParaSimilarAtivo();
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault(); e.stopPropagation();
+      _realcarSimilar(Math.max(idx - 1, 0)); _rolarParaSimilarAtivo();
+    } else if (e.key === 'Enter') {
+      e.preventDefault(); e.stopPropagation();
+      _confirmarSimilar(idx);
+    } else if (/^[1-9]$/.test(e.key) && opcoes[Number(e.key) - 1]) {
+      e.preventDefault(); e.stopPropagation();
+      _confirmarSimilar(Number(e.key) - 1);
+    } else if (e.key === 'Escape') {
+      e.preventDefault(); e.stopPropagation();
+      _fecharSimilares();
+      setTimeout(() => document.getElementById('pdv-search')?.focus(), 30);
+    }
+  }
+
+  // ─── Compre Junto ─────────────────────────────────────────────
+  //
+  // O que os clientes costumam levar junto, calculado no servidor sobre o
+  // historico da loja INTEIRA, mais o que o gestor fixou e menos o que ele
+  // ocultou no cadastro. O painel local antigo via so as vendas deste
+  // terminal.
+  //
+  // SO IDS VOLTAM DO SERVIDOR. Nome, preco, promocao e estoque saem do
+  // catalogo local, com a mesma regra do resto do carrinho — senao a mesma
+  // tela teria duas fontes de preco.
+  //
+  // RESERVA, e nao sumico: sem internet, com erro ou estouro de prazo, cai no
+  // painel local em vez de desaparecer. O vendedor nao fica sem sugestao
+  // quando a internet oscila. Resposta boa e VAZIA é outra coisa — significa
+  // "nao ha o que sugerir", e aí o painel sai da tela mesmo.
+  let _dispensadas = new Set();   // zeradas a cada venda nova
+  let _compreJuntoToken = 0;
+
   async function renderSugestoes() {
+    const wrap = document.getElementById('pdv-sugestoes-wrap');
+    if (!wrap) return;
+    // Devolucao nao entra: quem esta devolvendo nao esta comprando.
+    const base = cart.filter(i => !i.devolucao);
+    if (base.length === 0) { wrap.style.display = 'none'; return; }
+
+    const token = ++_compreJuntoToken;
+    const remoteIds = [...new Set(base.map(i => i.produto_remote_id).filter(Boolean))];
+    const sugestoes = remoteIds.length
+      ? await window.pdv.compreJunto.buscar(remoteIds, 10)
+      : null;
+    // Carrinho mudou enquanto a resposta vinha: a desta chamada ja nao vale.
+    if (token !== _compreJuntoToken) return;
+
+    if (sugestoes === null) { await _renderSugestoesLocais(); return; }
+    const cards = await _montarCardsCompreJunto(sugestoes, base);
+    if (cards.length === 0) { wrap.style.display = 'none'; return; }
+
+    wrap.style.display = 'block';
+    wrap.innerHTML = `
+      <div class="cj-cabecalho">
+        <span class="cj-titulo">💡 Ofereça também</span>
+        <span class="cj-sub">o que os clientes costumam levar junto com estes itens</span>
+      </div>
+      <div class="cj-faixa">${cards.join('')}</div>`;
+  }
+
+  async function _montarCardsCompreJunto(sugestoes, base) {
+    const visiveis = sugestoes.filter(s => !_dispensadas.has(s.produto_id));
+    if (visiveis.length === 0) return [];
+
+    const produtos = await window.pdv.produtos.porRemoteIds(visiveis.map(s => s.produto_id));
+    const porRemote = new Map(produtos.map(p => [p.remote_id, p]));
+    const nomeBase = new Map(base.map(i => [i.produto_remote_id, i.produto_nome]));
+    // Ja no carrinho nao é sugestao: é o que o vendedor acabou de lancar.
+    const noCarrinho = new Set(base.map(i => i.produto_remote_id));
+
+    const lista = [];
+    for (const s of visiveis) {
+      if (noCarrinho.has(s.produto_id)) continue;
+      const p = porRemote.get(s.produto_id);
+      if (!p) continue;   // inativo, fora do PDV ou ainda nao sincronizado
+      lista.push({ ...p, vezes: s.vezes, fixo: s.fixo, baseNome: nomeBase.get(s.base_id) || '' });
+    }
+    // Com estoque primeiro: oferecer o que nao tem para entregar so frustra o
+    // cliente. Sem estoque continua visivel, no fim, porque pode haver
+    // encomenda ou o cadastro estar atrasado.
+    lista.sort((a, b) => Number(b.estoque > 0) - Number(a.estoque > 0));
+
+    return lista.slice(0, 6).map(s => {
+      const estoque = Number(s.estoque || 0);
+      const preco = promocaoVigente(s) && _formaEhAvista(payMethod)
+        ? Number(s.preco_promocional) : Number(s.preco_venda || 0);
+      const motivo = s.fixo ? '★ indicado' : `junto em ${s.vezes} vendas`;
+      const thumb = s.foto_url
+        ? `<img src="${s.foto_url}" class="cj-foto" alt="" loading="lazy"
+             onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+           <div class="cj-foto cj-foto-fb" style="display:none">${s.emoji || '📦'}</div>`
+        : `<div class="cj-foto cj-foto-fb">${s.emoji || '📦'}</div>`;
+      return `<div class="cj-card${estoque > 0 ? '' : ' cj-sem-estoque'}">
+        ${thumb}
+        <div class="cj-corpo" title="Adicionar 1 ${s.unidade || 'UN'} à venda"
+             onclick="PDV.adicionarSugestao('${s.id}')">
+          <div class="cj-nome">${s.nome}</div>
+          <div class="cj-linha2">
+            ${s.marca ? `<span class="cj-marca">${s.marca}</span>` : ''}
+            <span class="cj-preco">R$ ${fmtMoney(preco)}</span>
+            <span class="${estoque > 0 ? 'cj-estoque' : 'cj-estoque-zero'}">
+              ${estoque > 0 ? `· ${estoque} ${s.unidade || 'UN'}` : '· sem estoque'}
+            </span>
+          </div>
+          <div class="cj-motivo">${motivo}${s.baseNome ? ` · ${s.baseNome}` : ''}</div>
+        </div>
+        <button class="cj-x" title="Dispensar nesta venda"
+          onclick="event.stopPropagation();PDV._dispensarSugestao('${s.remote_id}')">×</button>
+      </div>`;
+    });
+  }
+
+  function _dispensarSugestao(remoteId) {
+    _dispensadas.add(remoteId);
+    renderSugestoes();
+  }
+
+  // ─── Sugestões ────────────────────────────────────────────────
+  // RESERVA. Vale quando o servidor nao respondeu — sem internet, erro ou
+  // prazo estourado. Ve so as vendas DESTE terminal, mas tem duas coisas que
+  // o Compre Junto nao tem: o historico do cliente selecionado e o "mais
+  // vendidos" quando nao ha associacao nenhuma.
+  async function _renderSugestoesLocais() {
     const wrap = document.getElementById('pdv-sugestoes-wrap');
     if (!wrap) return;
     if (cart.length === 0) { wrap.style.display = 'none'; return; }
@@ -1101,10 +1441,14 @@ ${podeDesconto ? `
       </div>`;
   }
 
-  async function adicionarSugestao(produtoId) {
+  // Um clique, uma unidade. Nao abre o painel de quantidade: a sugestao so
+  // vale a pena se custar menos que buscar o produto na mao.
+  async function adicionarSugestao(produtoId, origem = 'compre_junto') {
     const produto = await window.pdv.produtos.getById(produtoId);
     if (!produto) return;
-    addToCart(produto, 1);
+    const emPromo = promocaoVigente(produto) && _formaEhAvista(payMethod);
+    const preco = emPromo ? Number(produto.preco_promocional) : produto.preco_venda;
+    addToCartConfirmado(produto, 1, preco, false, origem);
   }
 
   // ─── Promoção ─────────────────────────────────────────────────
@@ -1298,11 +1642,162 @@ ${podeDesconto ? `
     <span style="font-size:20px">${o.icon}</span><span>${o.label}</span>
   </button>`).join('')}
 </div>
-<div id="modal-pay-extra" style="margin-bottom:12px">${payMethod === 'dinheiro' ? _trocoHtml(total) : ''}</div>
+<div id="modal-pay-extra" style="margin-bottom:12px">${_extraHtml(payMethod, total)}</div>
 <div class="modal-actions">
   <button class="btn btn-ghost" onclick="Modal.close()">ESC · Cancelar</button>
   <button class="btn btn-primary btn-lg" onclick="PDV._confirmarPagamento()">↵ Enter · Confirmar</button>
 </div>`, dadosEntrega ? 'Pagamento — Etapa 2 de 3' : 'Pagamento — F9');
+  }
+
+  // ATE QUANTAS VEZES A LISTA OFERECE.
+  //
+  // Nao é o limite da loja: o limite de verdade é `parcelas_max` no cadastro
+  // da forma, que vive no servidor e o terminal ainda nao sincroniza. Deixar
+  // 12 aqui nao autoriza nada -- ver o comentario de `_parcelasHtml`.
+  const PARCELAS_MAX = 12;
+
+  // EM QUANTAS VEZES — e quanto fica cada uma.
+  //
+  // ESTE CAMPO REGISTRA O QUE A MAQUININHA FEZ. Ele nao decide o que ela
+  // oferece nem autoriza parcelamento nenhum: o operador acabou de ver a
+  // tela da maquininha e sabe o numero certo. Por isso a lista é generosa e
+  // nao consulta cadastro -- um cadastro desatualizado no terminal impediria
+  // de registrar uma venda que JA aconteceu, e aí o custo voltaria a ser
+  // calculado como se fosse a vista, que é exatamente o defeito que este
+  // campo existe para corrigir.
+  //
+  // O valor por parcela é informativo. Quem cobra juro, e quanto, é a
+  // adquirente; o custo de cada degrau mora no cadastro da loja.
+  function _parcelasHtml(total) {
+    const botoes = [];
+    for (let n = 1; n <= PARCELAS_MAX; n++) {
+      botoes.push(`
+  <button class="pay-opt ${n === payParcelas ? 'active' : ''}" data-parcela="${n}"
+    onclick="PDV._setParcelas(${n},this)" style="padding:8px 4px;font-size:12px;line-height:1.3">
+    <span style="font-weight:700">${n}x</span>
+    <span style="font-size:10px;color:var(--text3)">${fmtMoney(total / n)}</span>
+  </button>`);
+    }
+    return `
+<div style="background:var(--bg3);border-radius:8px;padding:12px">
+  <label class="form-label">Em quantas vezes passou no cartão</label>
+  <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:6px;margin-top:6px">
+    ${botoes.join('')}
+  </div>
+  <div style="margin-top:8px;font-size:11px;color:var(--text3);text-align:center">
+    O valor de cada parcela é informativo — quem cobra é a maquininha.
+  </div>
+</div>`;
+  }
+
+  function _setParcelas(n, btn) {
+    payParcelas = n;
+    document.querySelectorAll('[data-parcela]').forEach(b => b.classList.remove('active'));
+    btn?.classList.add('active');
+  }
+
+  // O campo extra de cada forma, num lugar so: a montagem do modal e a troca
+  // de forma tinham a mesma condicao escrita duas vezes, e acrescentar o
+  // credito deixaria as duas livres para divergir.
+  function _extraHtml(method, total) {
+    if (method === 'dinheiro') return _trocoHtml(total);
+    if (method === 'credito') return _parcelasHtml(total);
+    if (method === 'misto') return _mistoHtml(total);
+    return '';
+  }
+
+  // ── A VENDA DIVIDIDA ───────────────────────────────────────────
+  //
+  // O botao Misto existia e NAO PERGUNTAVA NADA: gravava a venda com a forma
+  // "misto" e seguia. Venda assim nao entra em gaveta nenhuma nem na
+  // maquininha, porque o sistema nao sabe quanto foi de cada coisa -- tres
+  // delas em producao, R$ 50,44, sem divisao em lugar nenhum, nem no SQLite
+  // do terminal nem no servidor. Era pior que nao ter o botao.
+  //
+  // A SOMA É CONFERIDA EM CENTAVOS INTEIROS. R$ 0,1 + R$ 0,2 em ponto
+  // flutuante nao da R$ 0,3, e uma venda que "nao fecha por um centavo"
+  // trava o balcao com cliente na frente. Mesma regra de `pagamentoVenda`,
+  // que confere de novo na gravacao: esta tela adianta o erro, nao o
+  // substitui.
+
+  const ROTULO_FORMA = {
+    dinheiro: 'Dinheiro', pix: 'PIX', credito: 'Crédito',
+    debito: 'Débito', carteira: 'Carteira',
+  };
+
+  const cent = v => Math.round(Number(v || 0) * 100);
+
+  function _mistoFalta(total) {
+    return cent(total) - payComposicao.reduce((s, p) => s + cent(p.valor), 0);
+  }
+
+  function _mistoHtml(total) {
+    const falta = _mistoFalta(total);
+    const linhas = payComposicao.map((p, i) => `
+  <div style="display:flex;align-items:center;gap:8px;padding:6px 10px;background:var(--bg2);border-radius:6px">
+    <span style="flex:1;font-size:13px">${ROTULO_FORMA[p.forma] || p.forma}${
+      p.parcelas > 1 ? ` <span style="color:var(--text3)">· ${p.parcelas}x</span>` : ''}</span>
+    <span style="font-weight:700;font-size:13px">R$ ${fmtMoney(p.valor)}</span>
+    <button class="btn btn-ghost" style="padding:2px 8px;font-size:11px"
+      onclick="PDV._mistoRemove(${i})">remover</button>
+  </div>`).join('');
+
+    const opcoes = Object.entries(ROTULO_FORMA)
+      .map(([k, r]) => `<option value="${k}">${r}</option>`).join('');
+    const parcelas = [];
+    for (let n = 1; n <= PARCELAS_MAX; n++) parcelas.push(`<option value="${n}">${n}x</option>`);
+
+    return `
+<div style="background:var(--bg3);border-radius:8px;padding:12px">
+  <label class="form-label">Como o cliente dividiu</label>
+  ${linhas ? `<div style="display:flex;flex-direction:column;gap:6px;margin:8px 0">${linhas}</div>` : ''}
+
+  <div style="display:grid;grid-template-columns:1.2fr 1fr auto auto;gap:6px;margin-top:8px">
+    <select class="input" id="misto-forma" onchange="PDV._mistoFormaMudou()">${opcoes}</select>
+    <input class="input" id="misto-valor" type="number" step="0.01" min="0.01"
+      placeholder="0,00" value="${falta > 0 ? (falta / 100).toFixed(2) : ''}"
+      onkeydown="if(event.key==='Enter'){event.preventDefault();PDV._mistoAdd();}">
+    <select class="input" id="misto-parcelas" style="display:none">${parcelas}</select>
+    <button class="btn btn-primary" style="padding:8px 14px" onclick="PDV._mistoAdd()">Somar</button>
+  </div>
+
+  <div style="margin-top:10px;text-align:center;font-family:'Syne',sans-serif;font-weight:700;font-size:15px;color:${
+    falta === 0 ? 'var(--green)' : (falta > 0 ? 'var(--text3)' : 'var(--red, #d33)')}">
+    ${falta === 0
+      ? 'Fecha exatamente.'
+      : (falta > 0
+          ? `Falta R$ ${fmtMoney(falta / 100)}`
+          : `Passou R$ ${fmtMoney(-falta / 100)}`)}
+  </div>
+</div>`;
+  }
+
+  function _mistoFormaMudou() {
+    const forma = document.getElementById('misto-forma')?.value;
+    const sel = document.getElementById('misto-parcelas');
+    if (sel) sel.style.display = forma === 'credito' ? '' : 'none';
+  }
+
+  function _mistoAdd() {
+    const forma = document.getElementById('misto-forma')?.value;
+    const valor = Number(document.getElementById('misto-valor')?.value || 0);
+    const parcelas = forma === 'credito'
+      ? Number(document.getElementById('misto-parcelas')?.value || 1) : 1;
+
+    if (!forma || cent(valor) <= 0) {
+      Toast.show('Informe um valor maior que zero', 'warning');
+      return;
+    }
+    payComposicao.push({ forma, valor: cent(valor) / 100, parcelas });
+    const extra = document.getElementById('modal-pay-extra');
+    if (extra) extra.innerHTML = _mistoHtml(getTotal());
+    setTimeout(() => document.getElementById('misto-valor')?.focus(), 30);
+  }
+
+  function _mistoRemove(i) {
+    payComposicao.splice(i, 1);
+    const extra = document.getElementById('modal-pay-extra');
+    if (extra) extra.innerHTML = _mistoHtml(getTotal());
   }
 
   function _trocoHtml(total) {
@@ -1338,8 +1833,13 @@ ${podeDesconto ? `
     }
     document.querySelectorAll('.pay-opt').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
+    // Trocar de forma zera a parcela e a divisao: 3x escolhido no credito
+    // nao pode sobreviver a uma troca para debito e ir parar na venda, e
+    // partes somadas no Misto nao podem sobrar numa venda de forma unica.
+    payParcelas = 1;
+    payComposicao = [];
     const extra = document.getElementById('modal-pay-extra');
-    if (extra) extra.innerHTML = method === 'dinheiro' ? _trocoHtml(getTotal()) : '';
+    if (extra) extra.innerHTML = _extraHtml(method, getTotal());
     // Focar campo de valor para dinheiro; manter foco fora de input para outros métodos
     if (method === 'dinheiro') {
       setTimeout(() => document.getElementById('modal-valor-pago')?.focus(), 30);
@@ -1358,6 +1858,25 @@ ${podeDesconto ? `
   // Etapa 2: após confirmar pagamento, checar saúde e pedir código do vendedor
   async function _confirmarPagamento() {
     const total = getTotal();
+
+    // A VENDA DIVIDIDA SO PASSA SE FECHAR. Deixar passar sem fechar gravaria
+    // outra vez uma venda "misto" sem divisao -- o defeito que esta tela
+    // existe para acabar. A conferencia é em centavos; `validarComposicao`
+    // confere de novo na gravacao, e esta aqui so antecipa a recusa para
+    // antes de o operador perder a tela.
+    if (payMethod === 'misto') {
+      if (payComposicao.length === 0) {
+        Toast.show('Some as partes: quanto foi em cada forma', 'warning');
+        return;
+      }
+      const falta = _mistoFalta(total);
+      if (falta !== 0) {
+        Toast.show(falta > 0
+          ? `Ainda falta R$ ${fmtMoney(falta / 100)} para fechar a venda`
+          : `As partes passam R$ ${fmtMoney(-falta / 100)} do total`, 'warning');
+        return;
+      }
+    }
 
     // Verificar autorização se venda em prejuízo
     const saudeAtual = SaudeVenda.getUltimoResultado();
@@ -1699,7 +2218,36 @@ ${podeDesconto ? `
   }
 
   // Etapa 4: finalizar de verdade
+  // FASE 0.6D.1 — TRAVA DE FINALIZAÇÃO.
+  //
+  // Três entradas chamam esta função: o `onkeydown` do input do código
+  // (~:1667), o botão "✓ Finalizar" (~:1674) e o atalho global de teclado
+  // (~:2361). O listener global é de BOLHA e o handler do input não chama
+  // `stopPropagation` — então UM único Enter, com o vendedor já validado,
+  // percorre os dois e invoca esta função DUAS vezes, no mesmo despacho.
+  //
+  // Como ela tem `await` na primeira linha, antes do `Modal.close()`, a
+  // segunda entrava com o carrinho ainda intacto: duas vendas locais, dois
+  // UUIDs, dois números, estoque baixado duas vezes.
+  //
+  // Desabilitar o botão não resolve — o Enter não passa pelo botão. A trava
+  // fica na função, que é o funil por onde as três entradas passam.
+  //
+  // O que ela NÃO é: idempotência. Reenvio depois de restart é protegido por
+  // outra coisa — o `id` explícito em `montarInsert` (0.6C.6A) e o portão de
+  // arbitragem (0.6C.6A.1).
+  const _travaFinalizacao = ExecucaoUnica.criarExecucaoUnica();
+
   async function _finalizarComVendedor() {
+    const { entrou, promise } = _travaFinalizacao(() => _finalizarComVendedorReal());
+    if (!entrou) {
+      console.warn('[PDV] Finalização ignorada — já existe uma em andamento');
+      return;
+    }
+    return promise;
+  }
+
+  async function _finalizarComVendedorReal() {
     const codigo = document.getElementById('modal-vendedor-codigo')?.value?.trim();
     const exigirVendedor = await window.pdv.config.get('config.exigir_vendedor') !== false;
 
@@ -1743,6 +2291,18 @@ ${podeDesconto ? `
       desconto,
       total,
       forma_pagamento: eDevolucao ? 'devolucao' : payMethod,
+      // Em quantas vezes passou. So o credito oferece a escolha; o resto é 1,
+      // e devolucao nao é pagamento. `comporDaVendaLocal` le este campo e
+      // `validarPagamento` recusa parcela em dinheiro, entao o 1 explicito
+      // aqui é a resposta certa e nao um valor de enchimento.
+      parcelas: (!eDevolucao && payMethod === 'credito') ? payParcelas : 1,
+      // As partes da venda dividida. So viaja no Misto, e so com partes
+      // somadas -- `registrar` usa esta lista quando ela existe e cai no
+      // adaptador de forma unica quando nao. Os ids nascem na gravacao, no
+      // SQLite, que é onde a identidade idempotente de cada pagamento mora.
+      pagamentos: (!eDevolucao && payMethod === 'misto' && payComposicao.length)
+        ? payComposicao.map((p, i) => ({ ...p, sequencia: i + 1 }))
+        : undefined,
       valor_pago: eDevolucao ? 0 : valorPago,
       troco: eDevolucao ? valorDevolver : (payMethod === 'dinheiro' ? Math.max(0, valorPago - total) : 0),
       usa_credito: payMethod === 'carteira',
@@ -1757,6 +2317,7 @@ ${podeDesconto ? `
         preco_unitario: i.preco_unitario,
         desconto: i.desconto,
         total: i.total,
+        origem_sugestao: i.origem_sugestao || null,
       }))
     };
 
@@ -1975,8 +2536,10 @@ ${podeDesconto ? `
         observacao: venda.observacao || null,
         created_at: venda.created_at || new Date().toISOString(),
       };
-      const ip = await window.pdv.config.get('config.print_server_ip');
-      if (ip) {
+      // A mesma regra dos outros documentos, decidida no main. Ler o IP
+      // aqui era a terceira cópia da escolha — e a que ignorava a
+      // configuração do operador.
+      if (await window.pdv.print.destino() === 'servidor') {
         const res = await window.pdv.print.servidor(dados);
         if (res?.erro) Toast.show('Impressão: ' + res.erro, 'warning');
       } else {
@@ -2314,6 +2877,13 @@ ${podeDesconto ? `
         return;
       }
 
+      // ── ESC no modal de falta: fecha e devolve o teclado a lista ──
+      if (e.key === 'Escape' && modalAberto && document.getElementById('fpdv-qty')) {
+        e.preventDefault();
+        _fecharFaltaPDV();
+        return;
+      }
+
       // ── ESC no comprovante: fecha e volta para busca ──────────
       if (e.key === 'Escape' && modalAberto) {
         const temComprovante = document.querySelector('.modal-actions .btn-primary[onclick="Modal.close()"]');
@@ -2371,6 +2941,11 @@ ${podeDesconto ? `
     dadosEntrega = null;
     vendedorAtual = null;
     payMethod = venda.forma_pagamento || 'dinheiro';
+    // A venda que volta para edicao nao traz parcela: o servidor nao a
+    // devolve neste caminho. Reabrir em 1 e deixar o operador reinformar é
+    // melhor que herdar um numero que pode nao ser o daquela venda.
+    payParcelas = 1;
+    payComposicao = [];
     valorPago = 0;
     // Edição de venda não altera observação (a tela de edição não manda
     // esse campo pro servidor) — evita mostrar no botão uma nota antiga
@@ -2543,12 +3118,15 @@ ${podeDesconto ? `
   }
 
   return { render, init, onSearch, onSearchKey, _abrirModalFaltaPDV, _confirmarFaltaPDV, _setTipoFalta,
+    _fecharFaltaPDV,
     selecionarProduto, fecharQtyPanel, qpKeyDown, confirmarQtyPreco,
     addToCart, changeQty, removeItem, clearCart, _confirmarLimparCarrinho, adicionarSugestao,
+    escolherDaLista, _confirmarSimilar, _fecharSimilares, _dispensarSugestao, _realcarSimilar,
     abrirEditarItem, _aplicarDescontoItem, _salvarEdicaoItem,
     toggleEntregar, _selecionarTurno, entrarModoEdicao, cancelarEdicao,
     setPayment, calcTroco, finalizarVenda, abrirPagamento, updateTotals,
-    _selectPay, _calcTrocoModal, _confirmarPagamento,
+    _selectPay, _setParcelas, _calcTrocoModal, _confirmarPagamento,
+    _mistoAdd, _mistoRemove, _mistoFormaMudou,
     _abrirModalEntrega, _buscarCep, _voltarParaPagamento, _confirmarEntrega, _imprimirEntregaModal,
     _abrirModalVendedor, _validarVendedor, _finalizarComVendedor, _vendedorAtualValido,
     openClientSearch, searchClientes, selectClient, clearClient,

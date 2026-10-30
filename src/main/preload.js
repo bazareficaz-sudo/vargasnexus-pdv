@@ -20,6 +20,16 @@ contextBridge.exposeInMainWorld('pdv', {
   },
 
   // Sugestões de produtos
+  // A negociação do orçamento: condições, saúde por condição e avisos.
+  // Calculada no processo principal — a tela só exibe.
+  orcamento_negociacao: {
+    calcular: (dados) => ipcRenderer.invoke('orcamento:negociar', dados),
+  },
+
+  // Compre Junto: so ids voltam do servidor; o catalogo local completa.
+  compreJunto: {
+    buscar: (ids, limite) => ipcRenderer.invoke('compreJunto:buscar', ids, limite),
+  },
   sugestoes: {
     porCarrinho:  (ids) => ipcRenderer.invoke('sugestoes:porCarrinho', ids),
     porCliente:   (clienteId, ids) => ipcRenderer.invoke('sugestoes:porCliente', clienteId, ids),
@@ -32,6 +42,10 @@ contextBridge.exposeInMainWorld('pdv', {
     buscarGestao: (query) => ipcRenderer.invoke('produtos:buscarGestao', query),
     getById: (id) => ipcRenderer.invoke('produtos:getById', id),
     getByEan: (ean) => ipcRenderer.invoke('produtos:getByEan', ean),
+    // As outras marcas do mesmo item, do SQLite — por isso funciona offline.
+    similares: (grupo) => ipcRenderer.invoke('produtos:similares', grupo),
+    // O Compre Junto devolve so ids; o catalogo local completa o resto.
+    porRemoteIds: (ids) => ipcRenderer.invoke('produtos:porRemoteIds', ids),
     total: () => ipcRenderer.invoke('produtos:total'),
     salvar: (p) => ipcRenderer.invoke('produtos:salvar', p),
     atualizar: (id, dados) => ipcRenderer.invoke('produtos:atualizar', id, dados),
@@ -101,6 +115,14 @@ contextBridge.exposeInMainWorld('pdv', {
   },
 
   // Faltas
+  // Caixa — abrir, registrar saída e fechar. Só online, por desenho.
+  caixa: {
+    estado: ()  => ipcRenderer.invoke('caixa:estado'),
+    saida:  (p) => ipcRenderer.invoke('caixa:saida', p),
+    abrir:  (p) => ipcRenderer.invoke('caixa:abrir', p),
+    fechar: (p) => ipcRenderer.invoke('caixa:fechar', p),
+  },
+
   faltas: {
     registrar: (f) => ipcRenderer.invoke('faltas:registrar', f),
     listar: (filtros) => ipcRenderer.invoke('faltas:listar', filtros),
@@ -153,6 +175,9 @@ contextBridge.exposeInMainWorld('pdv', {
     serverStop:    ()       => ipcRenderer.invoke('print:server:stop'),
     serverStatus:  ()       => ipcRenderer.invoke('print:server:status'),
     listar:        ()       => ipcRenderer.invoke('print:listar'),
+    // Para onde vai a impressão: uma pergunta só, respondida no main.
+    destino:       ()       => ipcRenderer.invoke('print:destino'),
+    mensagemCupom: ()       => ipcRenderer.invoke('print:mensagem-cupom'),
     ping:          (url)   => ipcRenderer.invoke('print:ping', url),
     orcamento:     (orc)   => ipcRenderer.invoke('print:orcamento', orc),
   },

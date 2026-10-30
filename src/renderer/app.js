@@ -27,6 +27,14 @@ const App = (() => {
     if (navCarteira) navCarteira.style.display = podePermissao('receber_contas_clientes') ? 'flex' : 'none';
     const navMarketplace = document.getElementById('nav-marketplace');
     if (navMarketplace) navMarketplace.style.display = podePermissao('ver_marketplace') ? 'flex' : 'none';
+    // O Caixa aparece para quem tem QUALQUER uma das permissões de gaveta: o
+    // servidor ainda confere cada operação, então esconder aqui é cortesia e
+    // não autorização. Quem abre mas não fecha vê a tela com um botão só.
+    const navCaixa = document.getElementById('nav-caixa');
+    if (navCaixa) {
+      const operaCaixa = podePermissao('abrir_caixa') || podePermissao('fechar_caixa');
+      navCaixa.style.display = operaCaixa ? 'flex' : 'none';
+    }
     _initApp();
     // Entra direto na Frente de Caixa — o launcher (tela de módulos) fica
     // disponível pelo botão ⬡ na barra de título, não é mais o ponto de
@@ -77,7 +85,8 @@ const App = (() => {
       orcamentos: 'Orçamentos',
       estoque: 'Estoque', faltas: 'Faltas & Encomendas',
       carteira: 'Carteira de Clientes', entregas: 'Entregas',
-      config: 'Configurações', marketplace: 'Marketplace'
+      config: 'Configurações', marketplace: 'Marketplace',
+      caixa: 'Caixa'
     };
     document.getElementById('titlebar-page').textContent = titles[page] || '';
 
@@ -86,7 +95,7 @@ const App = (() => {
     const pages = { pdv: PDV, produtos: Produtos, clientes: Clientes,
                     vendas: Vendas, orcamentos: Orcamentos, estoque: Estoque, faltas: Faltas,
                     carteira: Carteira, entregas: Entregas, config: Config,
-                    marketplace: Marketplace };
+                    marketplace: Marketplace, caixa: Caixa };
     const p = pages[page];
     if (p) {
       content.innerHTML = p.render();

@@ -1073,7 +1073,8 @@ ${orc.observacao?`<div style="background:var(--bg3);border-radius:8px;padding:10
   </span>`:''}
   <button class="btn btn-ghost" style="color:#25D366"
     onclick="${orc.cliente_telefone ? `WA.abrirModal('Enviar orçamento via WhatsApp','${(orc.cliente_telefone||'').replace(/'/g,"\\'")}','orcamento','${orc.id}')` : `WA.abrirModalCapturaCliente('orcamento','${orc.id}','${(orc.cliente_nome||'').replace(/'/g,"\\'")}')` }">${WA_ICON} WhatsApp</button>
-  <button class="btn btn-ghost" onclick="Orcamentos._imprimirOrcamento('${orc.id}')">🖨️ Imprimir</button>
+  <button class="btn btn-primary" onclick="Orcamentos.abrirNegociacao('${orc.id}')">💬 Negociar e imprimir</button>
+  <button class="btn btn-ghost" onclick="Orcamentos._imprimirOrcamento('${orc.id}')">🖨️ Imprimir direto</button>
   <button class="btn btn-ghost" onclick="Modal.close()">Fechar</button>
 </div>`, `Orçamento #${orc.numero}`);
   }
@@ -1210,8 +1211,173 @@ ${orc.observacao?`<div style="background:var(--bg3);border-radius:8px;padding:10
     if (!orc) orc = await _carregarAlheio(id);
     if (!orc) return;
     try {
-      await window.pdv.print.orcamento(orc);
+      // As condições vão junto. Sem elas o papel sai como antes — itens,
+      // total e nada que ajude o cliente a decidir.
+      const negociacao = await _negociar(orc);
+      await window.pdv.print.orcamento({ ...orc, negociacao });
     } catch (e) { Toast.show('Erro ao imprimir: ' + e.message, 'error'); }
+  }
+
+  // ─── Negociação ──────────────────────────────────────────────────
+  //
+  // O cálculo mora no processo principal. Aqui só se exibe o que ele
+  // devolve: duas cópias da regra divergem, e aí a tela passa a mentir
+  // sobre o que vai sair impresso.
+  //
+  // Guarda o desconto manual por orçamento enquanto a tela está aberta.
+  // Não persiste de propósito: é rascunho de negociação, e salvar sem o
+  // vendedor mandar mudaria o documento pelas costas dele.
+  const _descontoManual = new Map();
+
+  async function _negociar(orc) {
+    if (!orc || !Array.isArray(orc.itens) || orc.itens.length === 0) return null;
+    try {
+      return await window.pdv.orcamento_negociacao.calcular({
+        itens: orc.itens,
+        descontoManualPct: _descontoManual.get(orc.id) || 0,
+      });
+    } catch (e) {
+      console.warn('[NEGOCIACAO]', e.message);
+      // Falhar aqui não pode impedir de imprimir: o papel antigo ainda
+      // serve, e um orçamento sem condições é melhor que nenhum.
+      return null;
+    }
+  }
+
+  async function abrirNegociacao(id) {
+    const local = await window.pdv.orcamentos.getById(id);
+    let orc = AcoesOrcamento.possuiItensLocais(local) ? local : null;
+    if (!orc) orc = await _carregarAlheio(id);
+    if (!orc) return;
+    _orcNegociando = orc;
+    Modal.open('<div id="neg-corpo">Calculando…</div>', `Negociar orçamento #${orc.numero}`);
+    await _pintarNegociacao();
+  }
+
+  let _orcNegociando = null;
+
+  async function _pintarNegociacao() {
+    const orc = _orcNegociando;
+    const el = document.getElementById('neg-corpo');
+    if (!orc || !el) return;
+    const n = await _negociar(orc);
+    if (!n) { el.innerHTML = '<p style="padding:8px">Não foi possível calcular as condições.</p>'; return; }
+
+    const manual = _descontoManual.get(orc.id) || 0;
+    const fm = (v) => Number(v || 0).toFixed(2).replace('.', ',');
+    const semaforo = (s) => {
+      if (!s || !s.faixa) return '';
+      const cor = s.faixa.cor || '#64748b';
+      // MARKUP, que é a regua do balcao e a que as faixas usam. A margem vai
+      // junto entre parenteses: sao a mesma venda em duas escalas, e misturar
+      // as duas sem dizer qual é qual ja confundiu gente demais aqui.
+      return `<span class="neg-faixa" style="color:${cor}">${s.faixa.emoji || ''} ${s.faixa.nome}`
+        + ` · markup ${fm(s.markup)}% <span class="neg-margem">(margem ${fm(s.margem)}%)</span></span>`;
+    };
+
+    el.innerHTML = `
+<style>
+.neg-wrap{display:flex;flex-direction:column;gap:10px;min-width:380px}
+.neg-total{display:flex;justify-content:space-between;align-items:baseline;
+  font-size:14px;padding-bottom:8px;border-bottom:1px solid var(--border)}
+.neg-total strong{font-size:20px}
+.neg-cond{border:1px solid var(--border2);border-radius:10px;padding:10px 12px}
+.neg-cond-off{opacity:.6;display:flex;flex-direction:column;gap:2px}
+.neg-cond-topo{display:flex;justify-content:space-between;align-items:baseline;gap:10px}
+.neg-cond-topo strong{font-size:18px}
+.neg-rotulo{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--text2)}
+.neg-linha2{display:flex;justify-content:space-between;gap:10px;margin-top:4px;font-size:11px}
+.neg-faixa{font-weight:600}
+.neg-taxa{color:var(--text3)}
+.neg-manual{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.neg-manual label{font-size:12px;color:var(--text2)}
+.neg-manual input{width:90px}
+.neg-dica{font-size:11px;color:var(--text3);line-height:1.5}
+.neg-alerta{font-size:12px;padding:8px 10px;border-radius:8px;line-height:1.5}
+.neg-alerta-info{background:rgba(59,130,246,.1);color:var(--accent)}
+.neg-alerta-perigo{background:rgba(251,191,36,.12);color:var(--orange);font-weight:500}
+</style>
+<div class="neg-wrap">
+  ${n.semCusto ? `<div class="neg-alerta neg-alerta-info">
+    Há item sem custo cadastrado — a margem abaixo está inflada e a faixa não
+    foi usada para limitar o parcelamento.</div>` : ''}
+
+  ${n.aviso ? `<div class="neg-alerta neg-alerta-perigo">⚠ ${n.aviso}</div>` : ''}
+
+  <div class="neg-total">
+    <span>Total ${n.aplicaEstrategia ? '(preço de tabela)' : ''}</span>
+    <strong>R$ ${fm(n.totalExibido)}</strong>
+  </div>
+
+  ${n.condicoes.parcelasMax > 1 ? `
+  <div class="neg-cond">
+    <div class="neg-cond-topo">
+      <span class="neg-rotulo">No cartão</span>
+      <strong>${n.condicoes.parcelasMax}x de R$ ${fm(n.totalExibido / n.condicoes.parcelasMax)}</strong>
+    </div>
+    <div class="neg-linha2">
+      ${semaforo(n.saude.parcelado)}
+      <span class="neg-taxa">taxa ${fm(n.saude.parcelado?.taxaPagPct)}%</span>
+    </div>
+  </div>` : `
+  <div class="neg-cond neg-cond-off">
+    <span class="neg-rotulo">Sem parcelamento</span>
+    <span class="neg-linha2">a margem desta proposta não comporta</span>
+  </div>`}
+
+  ${n.condicoes.descontoAvistaPct > 0 ? `
+  <div class="neg-cond">
+    <div class="neg-cond-topo">
+      <span class="neg-rotulo">${(n.condicoes.avistaFormas || []).join(' ou ')}</span>
+      <strong>R$ ${fm(n.totalAvista)}</strong>
+    </div>
+    <div class="neg-linha2">
+      ${semaforo(n.saude.avista)}
+      <span class="neg-taxa">−${fm(n.condicoes.descontoAvistaPct)}% · cliente economiza
+        R$ ${fm(n.totalExibido - n.totalAvista)}</span>
+    </div>
+  </div>` : ''}
+
+  <div class="neg-manual">
+    <label>Desconto manual à vista (%)</label>
+    <input id="neg-desc" class="input" type="number" min="0" max="99" step="0.5"
+      value="${manual || ''}" placeholder="${n.vitrine.temPromo ? fm(n.vitrine.descontoPct) : '0'}"
+      onkeydown="if(event.key==='Enter')Orcamentos._aplicarDescontoNegociacao()">
+    <button class="btn btn-ghost btn-sm" onclick="Orcamentos._aplicarDescontoNegociacao()">Aplicar</button>
+    ${manual ? `<button class="btn btn-ghost btn-sm" onclick="Orcamentos._limparDescontoNegociacao()">Usar a promoção</button>` : ''}
+  </div>
+  <div class="neg-dica">
+    ${n.saude.base.faixa ? `A faixa <strong>${n.saude.base.faixa.nome}</strong> permite até
+      <strong>${fm(n.saude.base.descontoMaxPct)}%</strong> de desconto.` : ''}
+    ${n.vitrine.temPromo ? ` Em branco, vale a promoção dos itens (${fm(n.vitrine.descontoPct)}%).` : ''}
+  </div>
+
+  <div class="modal-actions">
+    <button class="btn btn-ghost" onclick="Modal.close()">Fechar</button>
+    <button class="btn btn-primary" onclick="Orcamentos._imprimirDaNegociacao()">🖨️ Imprimir proposta</button>
+  </div>
+</div>`;
+  }
+
+  function _aplicarDescontoNegociacao() {
+    const v = parseFloat(document.getElementById('neg-desc')?.value);
+    if (!_orcNegociando) return;
+    // Vazio ou zero volta ao padrão (a promoção), em vez de gravar 0% —
+    // 0% seria "sem desconto nenhum", que é outra coisa.
+    if (!v || v <= 0) _descontoManual.delete(_orcNegociando.id);
+    else _descontoManual.set(_orcNegociando.id, Math.min(99, v));
+    _pintarNegociacao();
+  }
+
+  function _limparDescontoNegociacao() {
+    if (_orcNegociando) _descontoManual.delete(_orcNegociando.id);
+    _pintarNegociacao();
+  }
+
+  async function _imprimirDaNegociacao() {
+    if (!_orcNegociando) return;
+    Modal.close();
+    await _imprimirOrcamento(_orcNegociando.id);
   }
 
   // ─── Helpers ─────────────────────────────────────────────────────
@@ -1220,6 +1386,8 @@ ${orc.observacao?`<div style="background:var(--bg3);border-radius:8px;padding:10
 
   return {
     render, init, load, onPeriodoChange,
+    abrirNegociacao, _aplicarDescontoNegociacao, _limparDescontoNegociacao,
+    _imprimirDaNegociacao,
     abrirNovo, abrirEdicao, fecharNovo, salvar,
     verDetalhes, converterEmVenda, cancelar,
     _onSearch, _onSearchKey, _selecionarProduto,

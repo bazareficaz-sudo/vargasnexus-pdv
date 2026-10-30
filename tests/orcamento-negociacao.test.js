@@ -1,0 +1,599 @@
+const { test, describe } = require('node:test');
+const assert = require('node:assert/strict');
+
+const C = require('../src/main/condicoesOrcamento');
+const S = require('../src/main/saudeOrcamento');
+
+// A NEGOCIACAO DO ORCAMENTO, NO BALCAO.
+//
+// Medido em producao: 72 orcamentos em 12 meses, 69 ainda "aberto", ticket
+// medio R$ 246,43, 8 com parcelamento preenchido. O vendedor imprime e
+// entrega um papel que so tem itens e total; o cliente compara com uma loja
+// que escreveu "3x sem juros" no dela.
+//
+// Estes testes travam as contas que viram texto no papel. Sao puros: nao
+// precisam de banco, de tela nem de Electron.
+
+// As taxas REAIS do Bazar Eficaz, lidas de saude_config em 15/10/2026.
+// Numeros inventados aqui fariam os testes concordarem com nada.
+const CFG = {
+  taxa_pix_pct: 0.49,
+  taxa_dinheiro_pct: 0,
+  taxa_debito_pct: 1.11,
+  taxa_credito_vista_pct: 3.04,
+  taxa_credito_parc_pct: 2.48,
+  imposto_pct: 5,
+  custo_operacional_pct: 0,
+  comissao_vendedor_pct: 0,
+  custo_embalagem: 0,
+  frete_subsidiado_pct: 0,
+};
+
+// As faixas REAIS do Bazar Eficaz.
+const FAIXAS = [
+  { nome: 'Excelente', margem_min: 70, margem_max: null, desconto_max_pct: 10, permite_parcelamento: true, max_parcelas: 6 },
+  { nome: 'Boa', margem_min: 50, margem_max: 69, desconto_max_pct: 5, permite_parcelamento: true, max_parcelas: 3 },
+  { nome: 'Atenção', margem_min: 30, margem_max: 49, desconto_max_pct: 2, permite_parcelamento: false, max_parcelas: 1 },
+  { nome: 'Crítica', margem_min: 5, margem_max: 29, desconto_max_pct: 0, permite_parcelamento: false, max_parcelas: 1 },
+  { nome: 'Prejuízo', margem_min: null, margem_max: 4.99, desconto_max_pct: 0, permite_parcelamento: false, max_parcelas: 1, bloqueia_venda: true },
+];
+
+const item = (preco, custo, qtd = 1) => ({ preco_unitario: preco, custo, quantidade: qtd });
+
+describe('o que o cartao parcelado custa de verdade', () => {
+  test('credito e `a vista + (n-1) x parcelado`', () => {
+    // A leitura ingenua ("parcelado custa 2,48%") subestima pela metade.
+    assert.equal(S.taxaPorForma('credito', 1, CFG), 3.04);
+    assert.equal(S.taxaPorForma('credito', 3, CFG), 8.00);
+    assert.equal(S.taxaPorForma('credito', 4, CFG), 10.48);
+  });
+
+  test('4x no cartao custa quase o mesmo que 10% a vista', () => {
+    // É o argumento que o vendedor pode usar sem perder nada: a loja esta
+    // praticamente indiferente entre as duas condicoes.
+    const cartao4x = S.taxaPorForma('credito', 4, CFG);
+    const pix = S.taxaPorForma('pix', 1, CFG);
+    assert.ok(Math.abs((cartao4x - pix) - 10) < 0.1,
+      `diferenca foi ${(cartao4x - pix).toFixed(2)}pp, esperava ~10pp`);
+  });
+
+  test('dinheiro nao custa nada e Pix quase nada', () => {
+    assert.equal(S.taxaPorForma('dinheiro', 1, CFG), 0);
+    assert.equal(S.taxaPorForma('pix', 1, CFG), 0.49);
+  });
+
+  test('forma desconhecida cai em dinheiro, nao em NaN', () => {
+    assert.equal(S.taxaPorForma('cheque', 1, CFG), 0);
+  });
+});
+
+describe('a faixa que a margem alcanca', () => {
+  test('margem alta cai em Excelente', () => {
+    assert.equal(S.encontrarFaixa(75, FAIXAS).nome, 'Excelente');
+  });
+
+  test('OS VAOS ENTRE AS FAIXAS nao jogam a margem no Prejuizo', () => {
+    // Em producao as faixas deixam vao: Boa vai ate 69 e Excelente comeca em
+    // 70. Com a regra de janela (>= min && < max), 69,5% — uma margem otima —
+    // nao casava com nenhuma e caia no fallback, que e a ULTIMA faixa:
+    // Prejuizo. E Prejuizo tem bloqueia_venda: true.
+    //
+    // Os quatro vaos reais: 4,99-5, 29-30, 49-50 e 69-70.
+    for (const m of [69.5, 69, 49.5, 49, 29.5]) {
+      const f = S.encontrarFaixa(m, FAIXAS);
+      assert.notEqual(f.nome, 'Prejuízo', `margem ${m}% nao pode ser Prejuizo`);
+    }
+  });
+
+  test('e cada margem cai no degrau certo', () => {
+    assert.equal(S.encontrarFaixa(69.5, FAIXAS).nome, 'Boa');
+    assert.equal(S.encontrarFaixa(70, FAIXAS).nome, 'Excelente');
+    assert.equal(S.encontrarFaixa(50, FAIXAS).nome, 'Boa');
+    assert.equal(S.encontrarFaixa(49.5, FAIXAS).nome, 'Atenção');
+    assert.equal(S.encontrarFaixa(30, FAIXAS).nome, 'Atenção');
+  });
+  test('margem negativa cai em Prejuizo, que bloqueia', () => {
+    const f = S.encontrarFaixa(-20, FAIXAS);
+    assert.equal(f.nome, 'Prejuízo');
+    assert.equal(f.bloqueia_venda, true);
+  });
+
+  test('sem faixas configuradas, usa as de fabrica', () => {
+    assert.ok(S.encontrarFaixa(40, []));
+    assert.ok(S.encontrarFaixa(40, null));
+  });
+});
+
+describe('a margem muda com a condicao de pagamento', () => {
+  // Um orcamento de R$ 100 com custo R$ 30.
+  const itens = [item(100, 30)];
+
+  test('a vista no Pix sobra mais que parcelado no cartao', () => {
+    const pix = S.avaliar(itens, 0, 'pix', 1, CFG, FAIXAS);
+    const cartao = S.avaliar(itens, 0, 'credito', 4, CFG, FAIXAS);
+    assert.ok(pix.margem > cartao.margem,
+      `pix ${pix.margem}% deveria ser maior que cartao 4x ${cartao.margem}%`);
+    // A diferenca é exatamente a taxa: 10,48% − 0,49%.
+    assert.ok(Math.abs((pix.margem - cartao.margem) - 9.99) < 0.02);
+  });
+
+  test('o desconto entra em reais, nao em percentual', () => {
+    // Confundir os dois daria 10% onde se quis R$ 10 — ou o contrario.
+    const a = S.avaliar(itens, 10, 'pix', 1, CFG, FAIXAS);
+    assert.equal(a.totalComDesc, 90);
+  });
+
+  test('desconto maior que o total nao gera total negativo', () => {
+    const a = S.avaliar(itens, 500, 'pix', 1, CFG, FAIXAS);
+    assert.equal(a.totalComDesc, 0);
+    assert.equal(a.margem, 0);
+  });
+
+  test('o imposto entra na conta', () => {
+    // 5% de imposto sobre R$ 100: sem ele a margem sairia 5pp melhor.
+    const comImposto = S.avaliar(itens, 0, 'dinheiro', 1, CFG, FAIXAS);
+    const sem = S.avaliar(itens, 0, 'dinheiro', 1, { ...CFG, imposto_pct: 0 }, FAIXAS);
+    assert.ok(Math.abs((sem.margem - comImposto.margem) - 5) < 0.01);
+  });
+
+  test('carrinho vazio nao divide por zero', () => {
+    const a = S.avaliar([], 0, 'pix', 1, CFG, FAIXAS);
+    assert.equal(a.margem, 0);
+    assert.equal(a.totalBruto, 0);
+  });
+});
+
+describe('sem custo cadastrado, a faixa NAO opina', () => {
+  test('a avaliacao avisa', () => {
+    const a = S.avaliar([item(100, 0)], 0, 'pix', 1, CFG, FAIXAS);
+    assert.equal(a.semCusto, true);
+    // A margem sai inflada: sem custo, tudo parece lucro.
+    assert.ok(a.margem > 90, `margem foi ${a.margem}`);
+  });
+
+  test('e o teto de parcelas vira null', () => {
+    // Faixa inflada liberaria parcelamento que a venda nao sustenta.
+    const a = S.avaliar([item(100, 0)], 0, 'pix', 1, CFG, FAIXAS);
+    assert.equal(S.tetoDeParcelasDaFaixa(a), null);
+  });
+
+  test('com custo, o teto vem da faixa', () => {
+    // R$ 100 com custo R$ 60: markup liquido ~57% -> faixa "Boa" -> 3x.
+    const a = S.avaliar([item(100, 60)], 0, 'pix', 1, CFG, FAIXAS);
+    assert.equal(a.faixa.nome, 'Boa');
+    assert.equal(S.tetoDeParcelasDaFaixa(a), 3);
+  });
+
+  test('faixa que proibe parcelamento devolve 1, nao null', () => {
+    // 1 é "so a vista", decidido. null seria "nao sei", e aí o teto da
+    // empresa valeria sozinho — o oposto do que a faixa manda.
+    const a = S.avaliar([item(100, 68)], 0, 'pix', 1, CFG, FAIXAS);
+    assert.equal(a.faixa.nome, 'Atenção');
+    assert.equal(S.tetoDeParcelasDaFaixa(a), 1);
+  });
+});
+
+describe('promocao virando desconto a vista', () => {
+  test('a media é PONDERADA pelo valor, nao pelos percentuais', () => {
+    // 10% num item de R$ 1.000 e 50% num de R$ 10 nao é um desconto de 30%.
+    const v = C.calcularVitrinePromo([
+      { quantidade: 1, precoCheio: 1000, precoPraticado: 900 },
+      { quantidade: 1, precoCheio: 10, precoPraticado: 5 },
+    ]);
+    assert.equal(v.totalCheio, 1010);
+    assert.equal(v.totalPraticado, 905);
+    assert.ok(Math.abs(v.descontoPct - 10.4) < 0.01, `deu ${v.descontoPct}`);
+  });
+
+  test('a conta FECHA: a vista sobre o cheio cai no praticado', () => {
+    // É a propriedade que sustenta a estrategia inteira. Se nao fechasse, o
+    // papel prometeria um preco que a venda nao cobraria.
+    const itens = [
+      { quantidade: 2, precoCheio: 22, precoPraticado: 19.8 },
+      { quantidade: 4, precoCheio: 1.4, precoPraticado: 1.26 },
+    ];
+    const v = C.calcularVitrinePromo(itens);
+    const aVista = C.totalAvista(v.totalCheio, { descontoAvistaPct: v.descontoPct });
+    assert.ok(Math.abs(aVista - v.totalPraticado) < 0.02,
+      `a vista ${aVista} vs praticado ${v.totalPraticado}`);
+  });
+
+  test('preco cheio MENOR que o praticado nao vira desconto negativo', () => {
+    // Tabela desatualizada ou negociacao para cima. Sem o `max`, apareceria
+    // "-15% de desconto" na tela.
+    const v = C.calcularVitrinePromo([{ quantidade: 1, precoCheio: 80, precoPraticado: 100 }]);
+    assert.equal(v.descontoPct, 0);
+    assert.equal(v.temPromo, false);
+  });
+
+  test('sem promocao nenhuma, temPromo é falso', () => {
+    const v = C.calcularVitrinePromo([{ quantidade: 3, precoCheio: 10, precoPraticado: 10 }]);
+    assert.equal(v.temPromo, false);
+    assert.equal(v.descontoPct, 0);
+  });
+
+  test('lista vazia nao quebra', () => {
+    const v = C.calcularVitrinePromo([]);
+    assert.equal(v.totalCheio, 0);
+    assert.equal(v.temPromo, false);
+  });
+});
+
+describe('o aviso do desconto manual', () => {
+  test('manual MENOR que a promocao piora o preco — avisa', () => {
+    const aviso = C.avisoDescontoManual(5, 10);
+    assert.ok(aviso, 'deveria avisar');
+    assert.match(aviso, /PIOR/);
+    assert.match(aviso, /10%/);
+    assert.match(aviso, /5%/);
+  });
+
+  test('manual maior ou igual nao avisa', () => {
+    assert.equal(C.avisoDescontoManual(10, 10), null);
+    assert.equal(C.avisoDescontoManual(15, 10), null);
+  });
+
+  test('sem promocao, ou sem manual, nao ha o que avisar', () => {
+    assert.equal(C.avisoDescontoManual(5, 0), null);
+    assert.equal(C.avisoDescontoManual(0, 10), null);
+    assert.equal(C.avisoDescontoManual(null, null), null);
+  });
+});
+
+describe('as frases que saem no papel e no zap', () => {
+  const cond = {
+    descontoAvistaPct: 10,
+    avistaFormas: ['pix', 'dinheiro'],
+    parcelasMax: 4,
+    parcelasSemJuros: true,
+    observacao: null,
+  };
+
+  test('a linha do a vista diz o valor e a economia', () => {
+    const linhas = C.linhasCondicoes(246.43, cond);
+    assert.match(linhas[0], /Pix ou dinheiro/);
+    assert.match(linhas[0], /221,79/);
+    assert.match(linhas[0], /economiza/);
+  });
+
+  test('a linha do parcelamento diz o valor da parcela', () => {
+    const linhas = C.linhasCondicoes(246.43, cond);
+    assert.match(linhas[1], /4x de/);
+    assert.match(linhas[1], /61,61/);
+    assert.match(linhas[1], /sem juros/);
+  });
+
+  test('1x NAO vira linha de parcelamento', () => {
+    // "Ou em ate 1x" nao é condicao, é ruido.
+    const linhas = C.linhasCondicoes(80, { ...cond, parcelasMax: 1 });
+    assert.equal(linhas.filter(l => /x de/.test(l)).length, 0);
+  });
+
+  test('sem desconto a vista, so o parcelamento', () => {
+    const linhas = C.linhasCondicoes(200, { ...cond, descontoAvistaPct: 0 });
+    assert.equal(linhas.length, 1);
+    assert.match(linhas[0], /4x/);
+  });
+
+  test('a observacao entra como ultima linha', () => {
+    const linhas = C.linhasCondicoes(200, { ...cond, observacao: '  Entrega em 3 dias  ' });
+    assert.equal(linhas[linhas.length - 1], 'Entrega em 3 dias');
+  });
+
+  test('temCondicoes distingue proposta de papel vazio', () => {
+    assert.equal(C.temCondicoes(cond), true);
+    assert.equal(C.temCondicoes({ descontoAvistaPct: 0, parcelasMax: 1, observacao: '   ' }), false);
+  });
+});
+
+describe('parcelas: a regra da parcela minima', () => {
+  const cfg = { parcelaMinima: 50, teto: 6 };
+
+  test('os casos do lojista', () => {
+    assert.equal(C.parcelasSugeridas(80, cfg), 1);
+    assert.equal(C.parcelasSugeridas(100, cfg), 2);
+    assert.equal(C.parcelasSugeridas(150, cfg), 3);
+  });
+
+  test('a parcela nunca cai abaixo da minima', () => {
+    for (const t of [50, 99, 149.99, 150, 275, 1000]) {
+      const n = C.parcelasSugeridas(t, cfg);
+      if (n > 1) assert.ok(t / n >= 50, `R$ ${t} em ${n}x`);
+    }
+  });
+
+  test('o teto da faixa aperta, nunca afrouxa', () => {
+    assert.equal(C.parcelasSugeridas(1000, { ...cfg, tetoFaixa: 3 }), 3);
+    assert.equal(C.parcelasSugeridas(1000, { ...cfg, tetoFaixa: 12 }), 6);
+  });
+
+  test('ponta a ponta: orcamento real com faixa real', () => {
+    // R$ 1.000 com custo R$ 680 -> markup liquido ~39% -> faixa "Atenção"
+    // -> parcelamento proibido, mesmo com teto 6 e total que daria 20x.
+    const a = S.avaliar([item(1000, 680)], 0, 'pix', 1, CFG, FAIXAS);
+    assert.equal(a.faixa.nome, 'Atenção');
+    assert.equal(C.parcelasSugeridas(1000, {
+      ...cfg, tetoFaixa: S.tetoDeParcelasDaFaixa(a),
+    }), 1);
+  });
+
+  test('e o mesmo orcamento com markup bom parcela em 3', () => {
+    const a = S.avaliar([item(1000, 600)], 0, 'pix', 1, CFG, FAIXAS);
+    assert.equal(a.faixa.nome, 'Boa');
+    assert.equal(C.parcelasSugeridas(1000, {
+      ...cfg, tetoFaixa: S.tetoDeParcelasDaFaixa(a),
+    }), 3);
+  });
+});
+
+describe('a mensagem do WhatsApp', () => {
+  const dados = {
+    numero: 1247,
+    empresaNome: 'Bazar Eficaz',
+    clienteNome: 'Maria',
+    itens: [{ produto_nome: 'ADAPTADOR 50MM', quantidade: 2, preco_unitario: 22, total: 44 }],
+    total: 44,
+    validade: '2026-10-22',
+    condicoes: { descontoAvistaPct: 10, avistaFormas: ['pix'], parcelasMax: 1, parcelasSemJuros: true },
+  };
+
+  test('traz numero, itens, total e condicoes', () => {
+    const m = C.montarMensagemOrcamento(dados);
+    assert.match(m, /\*Orçamento #1247\* — Bazar Eficaz/);
+    assert.match(m, /Para: Maria/);
+    assert.match(m, /2x ADAPTADOR 50MM/);
+    assert.match(m, /\*Total: R\$\s*44,00\*/);
+    assert.match(m, /Condições de pagamento/);
+    assert.match(m, /Válido até 22\/10\/2026/);
+  });
+
+  test('acima de 20 itens resume em vez de virar parede de texto', () => {
+    const muitos = Array.from({ length: 25 }, (_, i) => ({
+      produto_nome: `ITEM ${i}`, quantidade: 1, preco_unitario: 1, total: 1,
+    }));
+    const m = C.montarMensagemOrcamento({ ...dados, itens: muitos });
+    assert.match(m, /e mais 5 item\(ns\)/);
+    assert.ok(!m.includes('ITEM 22'), 'nao deveria listar o 23o item');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// A NEGOCIACAO MONTADA: catalogo + condicoes + saude
+// ─────────────────────────────────────────────────────────────────────────
+const N = require('../src/main/negociacaoOrcamento');
+
+const POLITICA = {
+  config: {
+    ...CFG,
+    orcamento_promo_vira_desconto: true,
+    orcamento_promo_formas: ['pix', 'dinheiro'],
+    orcamento_parcela_minima: 50,
+    orcamento_parcelas_max: 6,
+    orcamento_parcelas_sem_juros: true,
+  },
+  faixas: FAIXAS,
+};
+
+// Caixa d'agua: tabela R$ 300, promocao R$ 270, custo R$ 60.
+const CATALOGO = [{
+  id: 'p1', preco_venda: 300, preco_custo: 60,
+  preco_promocional: 270, promocao_ativa: true,
+}];
+const negociar = (extra = {}, catalogo = CATALOGO) => N.calcular({
+  itens: [{ produto_id: 'p1', produto_nome: 'CAIXA DAGUA', quantidade: 1, preco_unitario: 270 }],
+  descontoManualPct: 0,
+  politica: POLITICA,
+  buscarProdutos: () => catalogo,
+  ...extra,
+});
+
+describe('a negociacao de ponta a ponta', () => {
+  test('o item sai pelo CHEIO e a promocao vira condicao', () => {
+    const r = negociar();
+    assert.equal(r.totalExibido, 300);
+    assert.equal(r.condicoes.descontoAvistaPct, 10);
+    assert.equal(r.aplicaEstrategia, true);
+  });
+
+  test('A CONTA FECHA: o a vista cai no preco praticado', () => {
+    // Se nao fechasse, o papel prometeria um preco que a venda nao cobraria.
+    const r = negociar();
+    assert.equal(r.totalAvista, r.vitrine.totalPraticado);
+    assert.equal(r.totalAvista, 270);
+  });
+
+  test('e as duas condicoes tem margens diferentes', () => {
+    // É o ponto da tela: o vendedor ve quanto custa cada condicao ANTES de
+    // prometer. Parcelar em 6x custa ~13 pontos de margem.
+    const r = negociar();
+    assert.ok(r.saude.avista.margem > r.saude.parcelado.margem);
+    assert.ok(r.saude.avista.margem - r.saude.parcelado.margem > 10,
+      `diferenca foi ${(r.saude.avista.margem - r.saude.parcelado.margem).toFixed(2)}pp`);
+  });
+
+  test('promocao FORA DA JANELA de datas nao conta', () => {
+    // Um desconto de fim de semana nao pode virar desconto a vista eterno.
+    const vencida = [{ ...CATALOGO[0], promocao_fim: '2020-01-01' }];
+    const r = negociar({}, vencida);
+    assert.equal(r.aplicaEstrategia, false);
+    assert.equal(r.totalExibido, 270);
+    assert.equal(r.condicoes.descontoAvistaPct, 0);
+  });
+
+  test('estrategia desligada: o item sai pelo preco praticado', () => {
+    const r = N.calcular({
+      itens: [{ produto_id: 'p1', produto_nome: 'X', quantidade: 1, preco_unitario: 270 }],
+      politica: { ...POLITICA, config: { ...POLITICA.config, orcamento_promo_vira_desconto: false } },
+      buscarProdutos: () => CATALOGO,
+    });
+    assert.equal(r.aplicaEstrategia, false);
+    assert.equal(r.totalExibido, 270);
+  });
+});
+
+describe('o desconto manual DESCONSIDERA a promocao', () => {
+  test('manual substitui, nao soma', () => {
+    // Regra do lojista. Somar daria 25% onde se quis 15%.
+    const r = negociar({ descontoManualPct: 15 });
+    assert.equal(r.condicoes.descontoAvistaPct, 15);
+    assert.equal(r.totalAvista, 255);
+  });
+
+  test('manual MENOR que a promocao dispara o aviso', () => {
+    // 5% sobre um cheio de R$ 300 da R$ 285 — pior que os R$ 270 do balcao.
+    const r = negociar({ descontoManualPct: 5 });
+    assert.ok(r.aviso, 'deveria avisar');
+    assert.match(r.aviso, /PIOR/);
+    assert.ok(r.totalAvista > r.vitrine.totalPraticado,
+      `a vista ${r.totalAvista} deveria ser maior que o praticado ${r.vitrine.totalPraticado}`);
+  });
+
+  test('manual maior que a promocao nao avisa', () => {
+    assert.equal(negociar({ descontoManualPct: 20 }).aviso, null);
+  });
+});
+
+describe('a faixa aperta o parcelamento', () => {
+  test('markup excelente libera o teto da empresa', () => {
+    const r = negociar();
+    assert.equal(r.saude.base.faixa.nome, 'Excelente');
+    assert.equal(r.condicoes.parcelasMax, 6);
+  });
+
+  test('markup na faixa "Atencao" derruba para so a vista', () => {
+    // Mesmo preco, custo alto: o markup cai e o parcelamento sai.
+    const caro = [{ ...CATALOGO[0], preco_custo: 185 }];
+    const r = negociar({}, caro);
+    assert.equal(r.saude.base.faixa.nome, 'Atenção');
+    assert.equal(r.condicoes.parcelasMax, null);
+    assert.equal(r.saude.parcelado, null);
+  });
+});
+
+describe('produto sem custo nao inventa margem', () => {
+  test('avisa semCusto e a faixa nao decide o parcelamento', () => {
+    const semCusto = [{ ...CATALOGO[0], preco_custo: 0 }];
+    const r = negociar({}, semCusto);
+    assert.equal(r.semCusto, true);
+    // Sem o custo a margem sairia ~94% e "Excelente" liberaria 6x por um
+    // motivo que nao existe. A faixa se cala, fica so o teto da empresa.
+    assert.equal(r.condicoes.parcelasMax, 6);
+  });
+
+  test('produto fora do catalogo local nao quebra', () => {
+    // Orcamento antigo cujo produto foi apagado, ou item avulso.
+    const r = negociar({}, []);
+    assert.equal(r.semCusto, true);
+    assert.equal(r.totalExibido, 270);
+    assert.ok(Array.isArray(r.linhas));
+  });
+
+  test('lista de itens vazia devolve estrutura vazia, nao erro', () => {
+    const r = N.calcular({ itens: [], politica: POLITICA, buscarProdutos: () => [] });
+    assert.equal(r.totalExibido, 0);
+    assert.deepEqual(r.linhas, []);
+  });
+
+  test('sem politica nenhuma ainda responde', () => {
+    // Terminal recem-instalado, antes do primeiro sync.
+    const r = N.calcular({
+      itens: [{ produto_id: 'p1', produto_nome: 'X', quantidade: 1, preco_unitario: 270 }],
+      buscarProdutos: () => CATALOGO,
+    });
+    assert.equal(r.aplicaEstrategia, false);
+    assert.ok(r.saude.base.faixa, 'deveria cair nas faixas de fabrica');
+  });
+});
+
+describe('o valor a vista é um PRECO, nao uma conta de percentual', () => {
+  test('bate ao centavo com o total promocional', () => {
+    // Achado numa previa com produtos reais do catalogo: 1.465,00 cheio,
+    // 6,96% ponderado, e 1465 × (1 − 0,0696) = 1.363,04 — quatro centavos
+    // acima dos 1.363,00 que a venda cobraria. O papel prometeria um preco
+    // que a loja nao pratica, por diferenca pequena demais para alguem
+    // desconfiar antes do caixa.
+    const cat = [
+      { id: 'a', preco_venda: 832.00, preco_promocional: 780.00, preco_custo: 520.00, promocao_ativa: true },
+      { id: 'b', preco_venda: 589.00, preco_promocional: 539.00, preco_custo: 388.90, promocao_ativa: true },
+      { id: 'c', preco_venda: 22.00, preco_custo: 9.00 },
+    ];
+    const r = N.calcular({
+      itens: [
+        { produto_id: 'a', produto_nome: 'KIT VASO', quantidade: 1, preco_unitario: 780 },
+        { produto_id: 'b', produto_nome: 'PORTA', quantidade: 1, preco_unitario: 539 },
+        { produto_id: 'c', produto_nome: 'ADAPTADOR', quantidade: 2, preco_unitario: 22 },
+      ],
+      politica: POLITICA, buscarProdutos: () => cat,
+    });
+    assert.equal(r.totalExibido, 1465);
+    assert.equal(r.totalAvista, 1363, 'o a vista tem de ser o total promocional, ao centavo');
+    assert.equal(r.totalAvista, r.vitrine.totalPraticado);
+  });
+
+  test('com desconto MANUAL, o percentual é que manda', () => {
+    // Ali o percentual é a decisao do vendedor, e o valor sai dele.
+    const r = negociar({ descontoManualPct: 20 });
+    assert.equal(r.totalAvista, 240);   // 300 × 0,80
+  });
+
+  test('sem estrategia ligada, nao inventa valor a vista', () => {
+    const r = N.calcular({
+      itens: [{ produto_id: 'p1', produto_nome: 'X', quantidade: 1, preco_unitario: 270 }],
+      politica: { ...POLITICA, config: { ...POLITICA.config, orcamento_promo_vira_desconto: false } },
+      buscarProdutos: () => CATALOGO,
+    });
+    assert.equal(r.totalAvista, r.totalExibido);
+  });
+});
+
+describe('a regua é MARKUP, nao margem', () => {
+  // O balcao raciocina em markup — e a tela de venda do PDV ja mostrava
+  // markup, so que com o rotulo "margem". As faixas (70/50/30/5) so fazem
+  // sentido nessa escala. Medido no catalogo de 12.576 produtos com custo:
+  //
+  //   lidas como MARGEM   61% cai em "Atencao" e nao parcela
+  //   lidas como MARKUP   92% fica em Excelente/Boa e parcela
+  //
+  // Mediana do markup liquido: 68,8%, bem no limite entre as duas melhores.
+
+  test('devolve as DUAS contas, e sao diferentes', () => {
+    // Margem continua: é o numero que o contador usa. Sumir com ela seria
+    // trocar um problema por outro.
+    const a = S.avaliar([item(100, 50)], 0, 'dinheiro', 1,
+      { ...CFG, imposto_pct: 0 }, FAIXAS);
+    assert.equal(a.markup, 100);   // (100-50)/50
+    assert.equal(a.margem, 50);    // (100-50)/100
+  });
+
+  test('a FAIXA é escolhida pelo markup', () => {
+    // Custo 50 em R$ 100: markup 100% (Excelente), margem 50% (seria "Boa").
+    // Se a faixa viesse da margem, este orcamento perderia metade do
+    // parcelamento a que tem direito.
+    const a = S.avaliar([item(100, 50)], 0, 'dinheiro', 1,
+      { ...CFG, imposto_pct: 0 }, FAIXAS);
+    assert.equal(a.faixa.nome, 'Excelente');
+  });
+
+  test('o imposto e a taxa entram ANTES da conta', () => {
+    // Markup bruto do KIT VASO: (780-520)/520 = 50%. Com 5% de imposto e a
+    // taxa do Pix, o liquido cai para ~41,8% — e muda de faixa. A diferenca
+    // entre o bruto e o liquido é o que decide se parcela.
+    const bruto = S.avaliar([item(780, 520)], 0, 'dinheiro', 1,
+      { ...CFG, imposto_pct: 0 }, FAIXAS);
+    const liquido = S.avaliar([item(780, 520)], 0, 'pix', 1, CFG, FAIXAS);
+    assert.equal(bruto.markup, 50);
+    assert.ok(liquido.markup < 42 && liquido.markup > 41,
+      `markup liquido deu ${liquido.markup}`);
+    assert.equal(bruto.faixa.nome, 'Boa');
+    assert.equal(liquido.faixa.nome, 'Atenção');
+  });
+
+  test('sem custo o markup é 0, nao Infinity', () => {
+    // Infinity cairia sempre na melhor faixa e liberaria tudo. Zero cai na
+    // pior, e `semCusto` avisa quem le para nao confiar no semaforo.
+    const a = S.avaliar([item(100, 0)], 0, 'pix', 1, CFG, FAIXAS);
+    assert.equal(a.markup, 0);
+    assert.equal(a.semCusto, true);
+    assert.ok(Number.isFinite(a.markup));
+  });
+});

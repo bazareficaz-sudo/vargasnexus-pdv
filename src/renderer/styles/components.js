@@ -2307,6 +2307,30 @@ const Config = {
       <div style="font-size:11px;color:var(--text3);margin-bottom:10px">
         Permite que terminais em <b>outras redes</b> imprimam neste CAIXA via internet. Gratuito, sem conta necessária.
       </div>
+      <!--
+        O CAIXA tinha de abrir as Configurações e clicar em "Ativar Tunnel"
+        TODO DIA, porque o Quick Tunnel ganha uma URL nova a cada reinício.
+        Enquanto ninguém clicava, os outros terminais imprimiam em lugar
+        nenhum — e ninguém no balcão tinha como saber disso.
+      -->
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <div>
+          <div style="font-size:12px;font-weight:500">Ativar o tunnel sozinho ao abrir o PDV</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:2px">
+            Dispensa o clique diário. A URL nova é publicada para os outros terminais.
+          </div>
+        </div>
+        <label style="position:relative;display:inline-block;width:44px;height:24px;flex-shrink:0">
+          <input type="checkbox" id="cfg-tunnel-auto" style="opacity:0;width:0;height:0"
+            onchange="Config._onTunnelAutoToggle(this.checked)">
+          <span id="cfg-toggle-tunnel-auto"
+            style="position:absolute;cursor:pointer;inset:0;background:var(--bg3);border:1px solid var(--border2);border-radius:24px;transition:.2s">
+            <span id="cfg-toggle-tunnel-auto-knob"
+              style="position:absolute;height:18px;width:18px;left:2px;top:2px;background:var(--text3);border-radius:50%;transition:.2s"></span>
+          </span>
+        </label>
+      </div>
+
       <div id="tunnel-status-box" style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
         <span id="tunnel-led" style="width:10px;height:10px;border-radius:50%;background:var(--text3);flex-shrink:0"></span>
         <span id="tunnel-msg" style="font-size:12px;color:var(--text2)">Tunnel inativo</span>
@@ -2326,6 +2350,22 @@ const Config = {
 
     <!-- IP do CAIXA (visível quando NÃO é servidor) -->
     <div id="cfg-print-client-section">
+      <!--
+        O balcão relatou: o cupom de venda chegava no CAIXA e o orçamento
+        não. Eram três decisões diferentes espalhadas pelo código, e a do
+        orçamento era "sempre local". Agora é uma escolha, e ela está aqui.
+      -->
+      <div class="form-group">
+        <label class="form-label">Para onde vão as impressões</label>
+        <select class="input" id="cfg-destino-impressao">
+          <option value="servidor">Enviar para o CAIXA (servidor de impressão)</option>
+          <option value="local">Imprimir na impressora deste terminal ou da rede</option>
+        </select>
+        <div style="font-size:11px;color:var(--text3);margin-top:4px">
+          Vale para cupom de venda, orçamento e comprovante de entrega — os três juntos.
+          Se o envio ao CAIXA falhar, imprime aqui para o cliente não ficar sem papel.
+        </div>
+      </div>
       <div class="form-group">
         <label class="form-label">IP ou URL do servidor de impressão (CAIXA)</label>
         <input class="input" id="cfg-print-ip" placeholder="Ex: 192.168.1.10:3001 ou https://xxx.trycloudflare.com">
@@ -2352,6 +2392,49 @@ const Config = {
     </div>
 
     <button class="btn btn-primary btn-sm" style="margin-top:14px" onclick="Config.salvarImpressao()">Salvar configuração de impressão</button>
+  </div>
+
+  <!--
+    CARD PROPRIO, SEMPRE VISIVEL.
+    Nasceu dentro do bloco do servidor de impressao, que so aparece quando o
+    terminal e o CAIXA. No YOGA o campo simplesmente nao existia na tela.
+    Mensagem de cupom nao e configuracao de rede: card separado.
+  -->
+  <div class="card" style="margin-bottom:16px">
+    <div style="font-size:13px;font-weight:600;margin-bottom:4px">🧾 Mensagem do cupom</div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:14px">
+      O texto que sai no fim do cupom de venda.
+    </div>
+
+    <div id="cfg-cupom-aviso" style="display:none;font-size:11px;margin-bottom:12px;padding:8px 10px;border-radius:8px;background:rgba(251,191,36,.1);color:var(--orange)"></div>
+
+    <div class="form-group">
+      <label class="form-label">Mensagem da empresa</label>
+      <div id="cfg-cupom-empresa" style="white-space:pre-line;font-size:12px;padding:10px;background:var(--bg3);border:1px solid var(--border2);border-radius:8px;color:var(--text2);min-height:40px"></div>
+      <div style="font-size:11px;color:var(--text3);margin-top:4px">
+        Vem do sistema web, em Configurações → Impressão. Vale para todos os terminais
+        e também para o comprovante em PDF — para mudar, mude lá.
+      </div>
+    </div>
+
+    <div class="form-group" style="margin-top:14px">
+      <label class="form-label">Sobrepor só neste terminal (opcional)</label>
+      <textarea class="input" id="cfg-cupom-mensagem" rows="3" maxlength="300"
+        style="resize:vertical;font-family:inherit"
+        placeholder="Em branco: usa a mensagem da empresa"></textarea>
+      <div style="font-size:11px;color:var(--text3);margin-top:4px">
+        Em branco quer dizer "não configurei aqui", e aí vale a da empresa. Para
+        imprimir cupom <b>sem</b> rodapé, apague a mensagem no sistema web — é um
+        lugar só para desligar.
+      </div>
+    </div>
+
+    <div class="form-group" style="margin-top:14px">
+      <label class="form-label">O que vai sair no papel</label>
+      <div id="cfg-cupom-efetivo" style="white-space:pre-line;font-size:12px;padding:10px;background:var(--bg3);border:1px solid var(--border2);border-radius:8px;min-height:40px"></div>
+    </div>
+
+    <button class="btn btn-primary btn-sm" style="margin-top:4px" onclick="Config.salvarCupom()">Salvar mensagem</button>
   </div>
 
   <div class="card" style="margin-bottom:16px">
@@ -2481,10 +2564,26 @@ const Config = {
     const cupomLayout = await window.pdv.config.get('config.cupom_layout') || 'padrao';
     const selLayout = document.getElementById('cfg-cupom-layout');
     if (selLayout) selLayout.value = cupomLayout;
+    // Mensagem do cupom. A da empresa chega pelo sync; a local é sobreposição
+    // e pode estar em branco, que significa "não configurei aqui".
+    const txtMsg = document.getElementById('cfg-cupom-mensagem');
+    if (txtMsg) txtMsg.value = await window.pdv.config.get('config.cupom_mensagem') ?? '';
     this._setToggle('cfg-print-server', 'cfg-toggle-print', 'cfg-toggle-print-knob', printAtivo);
     this._setToggle('cfg-print-auto', 'cfg-toggle-print-auto', 'cfg-toggle-print-auto-knob', printAuto);
     if (f('cfg-print-porta')) f('cfg-print-porta').value = printPorta;
     if (f('cfg-print-ip'))    f('cfg-print-ip').value    = printIp;
+    // Sem escolha salva, mostra o que já valia: terminal com IP de CAIXA
+    // preenchido já mandava para lá. A tela não pode sugerir uma coisa e o
+    // sistema fazer outra.
+    const destinoSalvo = await window.pdv.config.get('config.destino_impressao');
+    const selDest = f('cfg-destino-impressao');
+    if (selDest) selDest.value = (destinoSalvo === 'local' || destinoSalvo === 'servidor')
+      ? destinoSalvo : (printIp ? 'servidor' : 'local');
+    // Ligado por padrão: quem configurou o terminal como CAIXA quer o
+    // tunnel de pé, senão os outros não imprimem.
+    const tunnelAuto = await window.pdv.config.get('config.tunnel_auto') !== false;
+    this._setToggle('cfg-tunnel-auto', 'cfg-toggle-tunnel-auto', 'cfg-toggle-tunnel-auto-knob', tunnelAuto);
+    await this._pintarCupom();
     if (printAtivo) {
       if (f('cfg-print-server-section')) f('cfg-print-server-section').style.display = '';
       if (f('cfg-print-client-section')) f('cfg-print-client-section').style.display = 'none';
@@ -2823,6 +2922,10 @@ const Config = {
     await window.pdv.config.set('config.print_server_ativo', ativo);
     await window.pdv.config.set('config.print_server_porta', porta);
     await window.pdv.config.set('config.print_server_ip', ip);
+    const destino = document.getElementById('cfg-destino-impressao')?.value;
+    if (destino === 'local' || destino === 'servidor') {
+      await window.pdv.config.set('config.destino_impressao', destino);
+    }
     await window.pdv.config.set('config.impressora_nome', impressora);
     await window.pdv.config.set('config.imprimir_automatico', auto);
     await window.pdv.config.set('config.cupom_layout', layout);
@@ -2835,6 +2938,68 @@ const Config = {
       await window.pdv.print.serverStop();
     }
     Toast.show('Configuração de impressão salva!', 'success');
+  },
+
+  // A TELA NAO RECALCULA A REGRA: pergunta ao processo principal qual
+  // mensagem vai sair, pela mesma funcao que monta o papel. Reimplementar a
+  // ordem aqui so garantiria que um dia a tela e o cupom discordassem.
+  async _pintarCupom() {
+    const empresa = await window.pdv.config.get('config.cupom_mensagem_empresa');
+    const efetiva = await window.pdv.print.mensagemCupom();
+
+    const elEmp = document.getElementById('cfg-cupom-empresa');
+    if (elEmp) {
+      // Tres estados diferentes, e nenhum deles é o outro: nunca chegou do
+      // servidor, chegou vazia (a empresa desligou o rodape), ou tem texto.
+      if (typeof empresa !== 'string') {
+        elEmp.textContent = 'Ainda nao recebida do servidor — sincronize.';
+        elEmp.style.fontStyle = 'italic';
+      } else if (empresa.trim() === '') {
+        elEmp.textContent = 'A empresa escolheu cupom sem rodape.';
+        elEmp.style.fontStyle = 'italic';
+      } else {
+        elEmp.textContent = empresa;
+        elEmp.style.fontStyle = '';
+      }
+    }
+
+    const elEf = document.getElementById('cfg-cupom-efetivo');
+    if (elEf) {
+      const texto = String(efetiva ?? '').trim();
+      elEf.textContent = texto || 'Cupom sem rodape.';
+      elEf.style.fontStyle = texto ? '' : 'italic';
+    }
+
+    // Quem envia o cupom para o CAIXA nao imprime com a propria configuracao:
+    // quem monta o papel é a outra maquina. Dizer isso aqui evita o operador
+    // digitar uma frase que nunca vai sair.
+    const aviso = document.getElementById('cfg-cupom-aviso');
+    if (aviso) {
+      const ehServidor = document.getElementById('cfg-print-server')?.checked || false;
+      const temIp = !!(document.getElementById('cfg-print-ip')?.value || '').trim();
+      const enviaFora = !ehServidor && temIp;
+      aviso.style.display = enviaFora ? '' : 'none';
+      aviso.textContent = enviaFora
+        ? '⚠ Este terminal envia o cupom para o CAIXA, que é quem monta o papel. '
+          + 'A sobreposicao local so vale quando este terminal imprime sozinho — '
+          + 'a mensagem da empresa vale nos dois casos.'
+        : '';
+    }
+  },
+
+  async salvarCupom() {
+    const mensagem = document.getElementById('cfg-cupom-mensagem')?.value ?? '';
+    await window.pdv.config.set('config.cupom_mensagem', mensagem.slice(0, 300));
+    await this._pintarCupom();
+    Toast.show('Mensagem do cupom salva!', 'success');
+  },
+
+  async _onTunnelAutoToggle(ativo) {
+    this._setToggle('cfg-tunnel-auto', 'cfg-toggle-tunnel-auto', 'cfg-toggle-tunnel-auto-knob', ativo);
+    await window.pdv.config.set('config.tunnel_auto', ativo);
+    Toast.show(ativo
+      ? 'O tunnel vai subir sozinho ao abrir o PDV'
+      : 'O tunnel passa a exigir ativação manual', ativo ? 'success' : 'info');
   },
 
   _atualizarUiTunnel(status) {

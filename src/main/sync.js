@@ -13,8 +13,28 @@ const Store = require('electron-store');
 const store = new Store();
 const db = require('./database');
 const api = require('./api');
+const { criarExecucaoUnica } = require('../renderer/lib/execucaoUnica');
+const protocoloVenda = require('./protocoloVenda');
 
+// FASE 0.6D.1 — duas travas, porque são duas seções críticas diferentes.
+//
+//   travaFila     — a rodada leve disparada a cada venda (main.js:390 e :416).
+//   travaDrenagem — `processarFilaSync`, que é chamada TAMBÉM pelo `syncNow`
+//                   periódico.
+//
+// O defeito: `syncFila` LIA `isSyncing` (linha ~1064) e nunca a marcava —
+// só `syncNow` escreve nessa flag. Duas rodadas de `syncFila`, ou uma
+// rodada junto com um `syncNow`, liam a MESMA lista de `getPendentes()` e
+// chamavam `_sincronizarVendaCreate` para a mesma venda. O guarda de lá
+// (`if (venda.remote_id) return`) não protege nesse caso: nenhuma das duas
+// gravou o `remote_id` ainda.
+//
+// Isto é concorrência local, não idempotência. O reenvio depois de restart
+// continua protegido por outra coisa: o `id` explícito em `montarInsert`
+// (0.6C.6A) e o portão de arbitragem (0.6C.6A.1).
 let syncInterval = null;
+const travaFila = criarExecucaoUnica();
+const travaDrenagem = criarExecucaoUnica();
 let isSyncing = false;
 let isOnline = false;
 let mainWindowRef = null;
@@ -89,8 +109,28 @@ async function syncNow(win) {
     // 1. Upload: enviar alterações locais antes de sobrescrever com download
     await syncUpProdutos();
     await recuperarClientesPendentes();
-    await processarFilaSync();
+
+    // RECUPERAR ANTES DE PROCESSAR, e esta ordem importa.
+    //
+    // `recuperarVendasPendentes` devolve à fila as vendas que saíram dela sem
+    // subir — a que esperou por rota desligada, a que pegou a internet fora no
+    // momento errado. Ela rodava DEPOIS de `processarFilaSync`, então a venda
+    // recuperada só era enviada no ciclo seguinte.
+    //
+    // Na prática: duas sincronizações para subir uma venda, e com o automático
+    // a cada 5 minutos, dez minutos de espera. Ninguém notava, porque na
+    // segunda rodada funcionava.
+    //
+    // Medido em 16/10/2026, no Balcão 02: a flag `orcamentos` foi ligada às
+    // 15h, o operador sincronizou, e a venda continuou parada — `pdv_operacoes`
+    // mostrava a última tentativa de conversão às 12:34, antes da correção. A
+    // sincronização tinha reenfileirado, e só isso.
+    //
+    // Invertendo, a venda recuperada sobe no MESMO ciclo. Não há risco de
+    // envio duplo: a consulta de `recuperarVendasPendentes` exclui quem já tem
+    // entrada não processada na fila.
     await recuperarVendasPendentes();
+    await processarFilaSync();
     await processarReparoEstoque();
 
     // 2. Baixar dados do servidor (servidor → local) — agora o Base44 já tem os dados locais
@@ -104,6 +144,8 @@ async function syncNow(win) {
     await syncDownConfigTermometro();
     await syncDownEnderecos();
     await syncDownUrlImpressao();
+    await syncDownConfigCupom();
+    await syncDownPoliticaSaude();
     await syncDownFaltas();
     await syncDownOrcamentos();
     await syncDownCancelamentosOrcamentos();
@@ -144,6 +186,9 @@ function mapProduto(p) {
     unidade:     p.unidade     || 'UN',
     categoria:   p.categoria   || null,
     marca:       p.marca       || null,
+    // Rotulo que junta o mesmo item de marcas diferentes. Desce no caminho
+    // legado (`select(*)`) e, na rota autenticada, so com `?campos=v2`.
+    grupo_similar: p.grupo_similar ?? null,
     foto_url:    p.foto_url    || null,
     ativo:          p.ativo !== false,
     disponivel_pdv: p.disponivel_pdv !== false,
@@ -214,6 +259,13 @@ async function syncDownProdutos() {
   const forcarBackfillPromo = !store.get('sync.produtos_promo_backfill_v1');
   if (forcarBackfillPromo) ultimaSync = null;
 
+  // Mesma coisa para `grupo_similar`, pela mesma razao: produto agrupado
+  // antes de a coluna existir nunca teria o `updated_at` tocado de novo, e
+  // ficaria sem grupo para sempre — o modal de similares simplesmente nao
+  // abriria, sem erro nenhum a investigar.
+  const forcarBackfillGrupo = !store.get('sync.produtos_grupo_similar_backfill_v1');
+  if (forcarBackfillGrupo) ultimaSync = null;
+
   // Rede de segurança: se o catálogo local ficou muito menor que o remoto
   // (limpeza de dados legados, corrupção, etc.), o sync incremental nunca
   // resgataria os produtos que sumiram localmente — o updated_at deles no
@@ -243,6 +295,7 @@ async function syncDownProdutos() {
 
   store.set('sync.ultima_sync_produtos', inicioSync);
   if (forcarBackfillPromo) store.set('sync.produtos_promo_backfill_v1', true);
+  if (forcarBackfillGrupo) store.set('sync.produtos_grupo_similar_backfill_v1', true);
   const modo = ultimaSync ? 'incremental' : 'completo';
   console.log(`[SYNC] Produtos: ${totalSalvos} sincronizados (${modo})`);
 
@@ -458,6 +511,51 @@ async function syncDownUrlImpressao() {
   }
 }
 
+// A mensagem do rodape do cupom, vinda da empresa.
+//
+// Ao contrario da URL de impressao, o terminal-caixa TAMBEM precisa disto:
+// quem imprime e ele, entao e o store dele que o cupom le. Se o CAIXA ficasse
+// de fora, a configuracao da empresa nao chegaria justamente na maquina que
+// monta o papel.
+//
+// Guarda em chave propria. `config.cupom_mensagem` continua sendo a
+// sobreposicao deste terminal e nao e tocada aqui — sobrescrever o que o
+// operador digitou seria decidir por ele, em silencio.
+// A POLÍTICA COMERCIAL: faixas de margem, taxas e as regras de desconto.
+//
+// Guarda inteira, do jeito que veio. Recortar campos aqui criaria uma
+// terceira definição de política — já bastam as duas que existiam, e a
+// divergência entre elas é o que este sync existe para acabar.
+//
+// Só grava quando veio alguma coisa: política velha é melhor que política
+// nenhuma, e nenhuma faria o terminal cair nas faixas de fábrica, que não
+// são as da loja.
+async function syncDownPoliticaSaude() {
+  try {
+    const p = await api.buscarPoliticaSaude();
+    if (!p || (!p.config && p.faixas.length === 0)) return;
+    store.set('saude_politica', { ...p, recebido_em: new Date().toISOString() });
+    console.log(`[SYNC] Política comercial: ${p.faixas.length} faixa(s)`);
+  } catch (err) {
+    console.warn('[SYNC] Política comercial: erro (nao critico):', err.message);
+  }
+}
+
+async function syncDownConfigCupom() {
+  try {
+    const msg = await api.buscarMensagemCupomDaEmpresa();
+    // `undefined` = nao deu para perguntar (sem identidade, rede fora, rota
+    // antiga). Mantem o que esta guardado. `null` = a empresa nao tem linha.
+    if (msg === undefined) return;
+    if (msg !== store.get('config.cupom_mensagem_empresa')) {
+      store.set('config.cupom_mensagem_empresa', msg);
+      console.log('[SYNC] Mensagem do cupom atualizada pela empresa');
+    }
+  } catch (err) {
+    console.warn('[SYNC] Mensagem do cupom: erro (nao critico):', err.message);
+  }
+}
+
 async function syncDownConfigTermometro() {
   try {
     const cfg = await api.sincronizarConfigTermometro();
@@ -590,11 +688,128 @@ async function _arbitrarAntesDeSubir(venda) {
 // também ser chamado pelo retry manual (Vendas > 🔄 Retentar) — aquele
 // caminho precisa do erro de verdade, não pode ficar escondido atrás de
 // "tentativas esgotadas, desisto silenciosamente" como a fila faz.
-async function _sincronizarVendaCreate(vendaId) {
-  const venda = db.vendas.getById(vendaId);
+// FASE 0.6D.3B — o servidor decide a flag. A tentativa inicial pode
+// negociar, mas qualquer retry é permanentemente V1.
+// FASE 0.6D.3 — o caminho v1: UMA chamada, e só ela.
+//
+// Nenhum insert de `venda_itens`, nenhum laço de estoque, nenhuma
+// `api.registrarVenda`. O servidor faz tudo numa transação. Coberto pelos
+// testes negativos em venda-v1-protocolo e negociacao-protocolo.
+function _montarNovoPayloadV1(venda) {
+  const { montarPayloadVendaV1 } = require('./payloadVendaV1');
+  const usuario = store.get('auth.usuario') || {};
+  return montarPayloadVendaV1(venda, {
+    empresaId: usuario.empresa_estoque_id || usuario.empresa_id || venda.empresa_id,
+    empresaFiscalId: usuario.empresa_fiscal_id,
+    depositoId: usuario.deposito_id || venda.deposito_id,
+    terminalId: store.get('config.terminal_id'),
+    operadorNome: usuario.nome,
+    // A COMPOSICAO VIAJA SEMPRE QUE EXISTE, e quem decide se vale e o
+    // SERVIDOR, pela liberacao daquele terminal -- nunca por nada lido deste
+    // lado. Ver `composicaoNoPayload` no servidor.
+    //
+    // Nao e ligar o v2 sem decisao: e parar de esconder o dado. A parcela e a
+    // divisao do pagamento sao capturadas na tela e gravadas no SQLite local
+    // desde a 4C.4 -- e nunca saiam daqui, porque este objeto nao tinha o
+    // campo. O efeito medido em producao em 30/10: venda de R$ 1.000 em 6x
+    // lancava R$ 30,40 de taxa (aliquota de 1x) no lugar de R$ 154,40, e venda
+    // mista nao entrava no caixa de jeito nenhum.
+    //
+    // Com a flag desligada no servidor, a rota estripa `pagamentos` e devolve
+    // `schema_version` a 1 -- o payload fica identico ao de antes. Rollout por
+    // terminal continua sendo uma linha no banco, sem build novo.
+    pagamentosV2: true,
+  });
+}
+
+async function _sincronizarVendaV1(venda, podeNegociar = false) {
+  // Nunca remontar pelos joins ou pelo operador atual: o snapshot foi
+  // persistido atomicamente com o binding, antes do primeiro request.
+  const payload = protocoloVenda.lerPayloadPersistido(venda);
+
+  const terminal = require('./terminal');
+  // Erros lançados também preservam o binding gravado antes desta chamada.
+  const bruta = await terminal.chamarProtegida('/api/pdv/vendas/sincronizar-v1', {
+    idempotency_key: venda.id,
+    payload,
+  });
+
+  if (podeNegociar && protocoloVenda.recusaPreWrite(bruta)) {
+    // Só a primeira tentativa desta execução pode concluir a negociação.
+    // Se outra execução já promoveu o binding, não há autorização de legado.
+    const alterada = db.db().prepare(
+      "UPDATE vendas SET sync_protocolo = 'legado' WHERE id = ? AND sync_protocolo = 'negociando_v1'"
+    ).run(venda.id);
+    if (alterada.changes !== 1) throw new Error('Negociação de venda já encerrada; repetir pelo protocolo persistido');
+    venda.sync_protocolo = 'legado';
+    return { seguirLegado: true };
+  }
+  if (podeNegociar) {
+    const alterada = db.db().prepare(
+      "UPDATE vendas SET sync_protocolo = 'v1' WHERE id = ? AND sync_protocolo = 'negociando_v1'"
+    ).run(venda.id);
+    if (alterada.changes !== 1) throw new Error('Binding V1 alterado durante sincronização');
+  }
+
+  // Corpo de erro pode carregar um conflito tipado, mas nunca comprova
+  // sucesso. 5xx com texto parecido com sucesso continua ambíguo.
+  const resposta = bruta?.ok === true ? bruta.dados
+    : protocoloVenda.ESTADOS_TERMINAIS.includes(bruta?.corpo?.estado) ? bruta.corpo
+    : { motivo: bruta?.motivo, erro: bruta?.erro };
+  const d = protocoloVenda.interpretarResposta(resposta);
+
+  if (d.desfecho === 'synced') {
+    db.db().prepare('UPDATE vendas SET remote_id = ?, sync_status = ?, synced_at = ? WHERE id = ?')
+      .run(venda.id, 'synced', new Date().toISOString(), venda.id);
+    console.log(`[V1] Venda ${venda.id}: ${d.estado}`);
+    return venda.id;
+  }
+
+  if (d.desfecho === 'conflito') {
+    db.vendas.marcarConflitoConversao(venda.id, {
+      tipo: d.estado, venda_local_id: venda.id,
+      orcamento_id: venda.orcamento_id ?? null,
+      detalhe: { estado: d.estado, motivo: d.motivo },
+    });
+    console.warn(`[V1] Venda ${venda.id} em conflito terminal (${d.estado}): ${d.motivo}. `
+      + 'A criação exige reconciliação e a venda NÃO será reenviada automaticamente.');
+    return null;
+  }
+
+  // pendente
+  throw new Error(`Venda ${venda.id} sem confirmação do v1 (${d.motivo}) — continua pendente`);
+}
+
+// A fila, o retry manual e a recuperação compartilham a mesma exclusão por
+// UUID. A trava da drenagem sozinha não cobre o retry manual.
+const vendasEmSincronizacao = new Map();
+function _sincronizarVendaCreate(vendaId) {
+  if (vendasEmSincronizacao.has(vendaId)) return vendasEmSincronizacao.get(vendaId);
+  const promise = Promise.resolve().then(() => _sincronizarVendaCreateExclusiva(vendaId));
+  vendasEmSincronizacao.set(vendaId, promise);
+  const liberar = () => vendasEmSincronizacao.delete(vendaId);
+  promise.then(liberar, liberar);
+  return promise;
+}
+
+async function _sincronizarVendaCreateExclusiva(vendaId) {
+  let venda = db.vendas.getById(vendaId);
   if (!venda) throw new Error('Venda não encontrada localmente');
   if (venda.status === 'cancelada') return null;
   if (venda.remote_id) return venda.remote_id;
+
+  const retryV1 = ['v1', 'negociando_v1'].includes(venda.sync_protocolo);
+  if (retryV1) {
+    // Versões antigas não gravavam snapshot: não inventar um payload para
+    // uma operação que pode já ter sido executada. Falhar antes de rede.
+    const original = protocoloVenda.lerPayloadPersistido(venda);
+    if (original.orcamento_id) {
+      venda.orcamento_id = venda.orcamento_id || original.orcamento_id;
+      venda.orcamento_remote_id = original.orcamento_id;
+    } else if (venda.orcamento_id) {
+      throw new Error('Origem do orçamento diverge do snapshot V1; requer reconciliação');
+    }
+  }
 
   // FASE 0.6C.6A.1 — O PORTÃO.
   //
@@ -610,7 +825,7 @@ async function _sincronizarVendaCreate(vendaId) {
   if (portao.acao !== 'enviar') return null;
 
   // Se há cliente local sem remote_id, tentar sincronizar agora antes da venda
-  if (venda.cliente_id && !venda.cliente_remote_id) {
+  if (!retryV1 && venda.cliente_id && !venda.cliente_remote_id) {
     const cli = db.db().prepare('SELECT * FROM clientes WHERE id = ?').get(venda.cliente_id);
     if (cli && !cli.remote_id) {
       try {
@@ -629,6 +844,46 @@ async function _sincronizarVendaCreate(vendaId) {
     } else if (cli?.remote_id) {
       venda.cliente_remote_id = cli.remote_id;
     }
+  }
+
+  // Releitura depois dos awaits: uma edição local anterior ao binding não
+  // pode deixar esta tentativa enviando um snapshot antigo da venda.
+  venda = db.vendas.getById(vendaId);
+  if (!venda) throw new Error('Venda não encontrada localmente');
+  if (venda.status === 'cancelada') return null;
+  if (venda.remote_id) return venda.remote_id;
+
+  const protocolo = protocoloVenda.escolherProtocolo(venda);
+  if (protocolo === 'negociando_v1') {
+    const montado = _montarNovoPayloadV1(venda);
+    if (!montado.ok) {
+      db.vendas.marcarConflitoConversao(venda.id, {
+        tipo: 'payload_invalido_v1', venda_local_id: venda.id,
+        detalhe: { erro: montado.erro },
+      });
+      return null;
+    }
+    const snapshot = JSON.stringify(montado.payload);
+    const alterada = db.db().prepare(
+      "UPDATE vendas SET sync_protocolo = 'negociando_v1', sync_payload_v1 = ? WHERE id = ? AND sync_protocolo IS NULL AND sync_payload_v1 IS NULL"
+    ).run(snapshot, venda.id);
+    if (alterada.changes !== 1) throw new Error('Protocolo alterado antes da negociação; repetir');
+    venda.sync_protocolo = 'negociando_v1';
+    venda.sync_payload_v1 = snapshot;
+    const resultado = await _sincronizarVendaV1(venda, true);
+    if (!resultado?.seguirLegado) return resultado;
+  } else if (protocolo === 'v1') {
+    // Um negociando_v1 recuperado de disco pode ter sido enviado. Promover
+    // antes do request garante que nem a recusa de uma nova tentativa libera
+    // legado. O gate de edição cobre ambos os valores.
+    if (venda.sync_protocolo === 'negociando_v1') {
+      const alterada = db.db().prepare(
+        "UPDATE vendas SET sync_protocolo = 'v1' WHERE id = ? AND sync_protocolo = 'negociando_v1'"
+      ).run(venda.id);
+      if (alterada.changes !== 1) throw new Error('Binding V1 alterado antes do retry');
+      venda.sync_protocolo = 'v1';
+    }
+    return await _sincronizarVendaV1(venda);
   }
 
   let res;
@@ -693,7 +948,16 @@ async function retentarVendaManual(vendaId) {
 }
 
 // ─── Upload: Local → Servidor (fila pendente) ─────────────────────
+//
+// Porta de entrada única da drenagem. Quem chega durante uma drenagem em
+// andamento se junta a ela em vez de abrir uma segunda — `syncNow` e
+// `syncFila` disputam exatamente esta função.
 async function processarFilaSync() {
+  const { promise } = travaDrenagem(() => _drenarFila());
+  return promise;
+}
+
+async function _drenarFila() {
   const pendentes = db.sync.getPendentes();
   if (pendentes.length === 0) return;
 
@@ -955,26 +1219,9 @@ async function recuperarVendasPendentes() {
   if (vendasPendentes.length === 0) return;
 
   console.log(`[SYNC] Recuperando ${vendasPendentes.length} vendas sem sync...`);
-  const now = new Date().toISOString();
-  const { v4: uuidv4 } = require('uuid');
-
   for (const { id } of vendasPendentes) {
     try {
-      const venda = db.vendas.getById(id);
-      if (!venda) continue;
-      const res = await api.registrarVenda(venda);
-      if (res?.id) {
-        db.db().prepare('UPDATE vendas SET remote_id = ?, sync_status = ?, synced_at = ? WHERE id = ?')
-          .run(res.id, 'synced', now, id);
-        console.log(`[SYNC] Venda #${venda.numero} recuperada → Base44 ${res.id}`);
-      }
-      for (const f of res?.falhasEstoque || []) {
-        db.estoqueReparo.registrar({
-          vendaId: id, produtoRemoteId: f.produto_id, produtoNome: f.produto_nome,
-          delta: f.delta, contexto: f.contexto, etapa: f.etapa, motivo: f.motivo,
-          saldoJaBaixado: f.saldoJaBaixado,
-        });
-      }
+      await _sincronizarVendaCreate(id);
     } catch (err) {
       console.error(`[SYNC] Falha ao recuperar venda ${id}:`, err.message);
     }
@@ -1039,7 +1286,17 @@ async function syncUpProdutos() {
 }
 
 // ─── Sync leve: só envia a fila pendente (usado após cada venda) ──
+//
+// Semântica da segunda chamada: recebe a MESMA promise da rodada em
+// andamento. `main.js` dispara em fire-and-forget e ignora o retorno, mas
+// quem aguardar continua recebendo o resultado real — um "já_em_execucao"
+// não diria quando a fila terminou.
 async function syncFila(win) {
+  const { promise } = travaFila(() => _syncFila(win));
+  return promise;
+}
+
+async function _syncFila(win) {
   if (isSyncing) return; // sync completo já em andamento, não duplicar
   mainWindowRef = win || mainWindowRef;
 

@@ -1,6 +1,6 @@
 {
   "name": "pdv-vargas",
-  "version": "1.10.6",
+  "version": "1.12.2",
   "description": "VargasNexus PDV — Terminal de Vendas Offline-First",
   "main": "src/main/main.js",
   "scripts": {
@@ -15,7 +15,7 @@
   "build": {
     "appId": "com.vargas.pdv",
     "productName": "VargasNexus PDV",
-    "copyright": "Copyright © 2025 Sistema Vargas",
+    "copyright": "Copyright Â© 2025 Sistema Vargas",
     "win": {
       "target": [
         {

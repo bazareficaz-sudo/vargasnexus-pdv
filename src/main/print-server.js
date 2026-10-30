@@ -16,6 +16,14 @@ let server = null;
 const fila = [];
 let imprimindo = false;
 
+// A mensagem do rodape é digitada pelo operador e entra direto no HTML do
+// cupom. Sem escapar, um `<` perdido quebraria o layout impresso.
+function escaparHtml(txt) {
+  return String(txt)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 // ─── Geração do HTML do cupom ────────────────────────────────────────────────
 
 // Configurações por layout
@@ -28,6 +36,27 @@ const LAYOUTS = {
   grande:   { largura: '72mm', fonteBase: '12pt', fonteSm: '10pt', fonteLg: '16pt', fonteTotal: '15pt', margem: '4mm 3mm' },
 };
 
+// QUEM MANDA NA MENSAGEM DO RODAPE, EM ORDEM.
+//
+// 1. `config.cupom_mensagem` — a sobreposicao DESTE terminal, quando tem
+//    texto. Campo em branco e "nao configurei aqui", nao "quero cupom sem
+//    rodape": existe UM lugar para desligar o rodape, e e o da empresa.
+//    Duas formas de desligar a mesma coisa so produzem duvida depois.
+// 2. `config.cupom_mensagem_empresa` — o que o sync trouxe do servidor. E a
+//    mesma linha que alimenta o comprovante em PDF, entao papel e PDF saem
+//    iguais. String vazia AQUI desliga o rodape, porque e decisao da empresa.
+// 3. o texto de sempre, para quem nunca configurou em lugar nenhum.
+//
+// A empresa vem antes do padrao e depois do local de proposito: o valor
+// central e o normal, a excecao e local e tem que ser deliberada.
+function mensagemDoCupom() {
+  const local = store.get('config.cupom_mensagem');
+  if (typeof local === 'string' && local.trim() !== '') return local;
+  const empresa = store.get('config.cupom_mensagem_empresa');
+  if (typeof empresa === 'string') return empresa;
+  return 'Obrigado pela preferencia!';
+}
+
 function gerarHtmlCupom(dados) {
   const { numero, empresa_nome, vendedor_nome, cliente_nome, itens = [],
           subtotal = 0, desconto = 0, total = 0, forma_pagamento = '',
@@ -35,6 +64,16 @@ function gerarHtmlCupom(dados) {
 
   const layoutNome = store.get('config.cupom_layout') || 'padrao';
   const L = LAYOUTS[layoutNome] || LAYOUTS.padrao;
+
+  // Mensagem de rodape configuravel (Configuracoes > Impressao).
+  //
+  // Fica no store do terminal, do lado de `cupom_layout`. Se um dia for
+  // centralizada por empresa, muda so a origem desta linha — o cupom ja le
+  // de um lugar so.
+  //
+  // Sem configuracao, vale o texto de sempre: quem nunca abriu a tela nao
+  // perde o rodape que ja tinha.
+  const mensagem = String(mensagemDoCupom()).trim();
 
   const fmt = (v) => Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const data = created_at ? new Date(created_at).toLocaleString('pt-BR') : new Date().toLocaleString('pt-BR');
@@ -109,8 +148,8 @@ function gerarHtmlCupom(dados) {
 
   ${observacao ? `<hr class="sep"><div class="sm">📝 ${observacao}</div>` : ''}
 
-  <hr class="sep">
-  <div class="center sm" style="margin-top:4px">Obrigado pela preferencia!</div>
+  ${mensagem ? `<hr class="sep">
+  <div class="center sm" style="margin-top:4px;white-space:pre-line">${escaparHtml(mensagem)}</div>` : ''}
 </body>
 </html>`;
 }
@@ -418,7 +457,7 @@ function gerarHtmlOrcamento(dados) {
   const { numero, empresa_nome = '', vendedor_nome = '', cliente_nome = '',
           cliente_telefone = '', forma_pagamento = '', validade_dias = 7,
           subtotal = 0, desconto = 0, total = 0, observacao = '',
-          itens = [], created_at } = dados;
+          itens = [], created_at, negociacao = null } = dados;
 
   const fmt   = v => Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const data  = created_at ? new Date(created_at).toLocaleDateString('pt-BR') : new Date().toLocaleDateString('pt-BR');
@@ -432,16 +471,33 @@ function gerarHtmlOrcamento(dados) {
   const formaTxt = formaMap[forma_pagamento] || forma_pagamento || '—';
   const descItens = itens.reduce((s, i) => s + (Number(i.desconto) || 0), 0);
 
+  // Quando a negociacao esta junto, o item sai pelo preco CHEIO e a promocao
+  // reaparece no bloco de condicoes. A marca aponta de onde vem o desconto
+  // sem repetir numero — numero repetido convida o cliente a refazer a conta
+  // e a achar um erro que nao existe.
+  const porProduto = new Map((negociacao?.itens || []).map(i => [i.produto_id, i]));
+
   const linhasItens = itens.map(i => {
     const qtd  = Number(i.quantidade || 0);
-    const unit = Number(i.preco_unitario || 0);
-    const tot  = Number(i.total || 0);
+    const neg = porProduto.get(i.produto_id);
+    const exibido = (negociacao?.aplicaEstrategia && neg) ? Number(neg.precoCheio) : Number(i.preco_unitario || 0);
+    const unit = exibido;
+    // O total da linha acompanha o unitario. Mostrar "1 × R$ 300,00" com total
+    // de R$ 270,00 na linha de baixo é o tipo de incoerencia que o cliente
+    // acha em dois segundos e usa para desconfiar do resto do papel.
+    //
+    // Desconto por item nao entra quando a estrategia aplica — mesma escolha
+    // do web em `totalItemExibido`: o desconto do item ja esta refletido no
+    // preco praticado, e some dentro do desconto a vista.
+    const tot  = (negociacao?.aplicaEstrategia && neg) ? exibido * qtd : Number(i.total || 0);
     return `
       <tr><td colspan="2" class="prod-nome">${i.produto_nome || ''}</td></tr>
       <tr>
         <td class="prod-calc">${qtd} × R$ ${fmt(unit)}${Number(i.desconto) > 0 ? `<br><span class="desc-tag">desconto: − R$ ${fmt(i.desconto)}</span>` : ''}</td>
         <td class="right prod-total">R$ ${fmt(tot)}</td>
-      </tr>`;
+      </tr>
+      ${(negociacao?.aplicaEstrategia && neg?.temPromo) ? `
+      <tr><td colspan="2" class="prod-avista">★ à vista R$ ${fmt(neg.precoPraticado * qtd)} — economiza R$ ${fmt(tot - neg.precoPraticado * qtd)}</td></tr>` : ''}`;
   }).join('');
 
   return `<!DOCTYPE html>
@@ -471,6 +527,20 @@ function gerarHtmlOrcamento(dados) {
   .desc-tag   { color: #c0392b; font-size: 10pt; }
   .label-row td { font-size: 11pt; padding-top: 3px; }
   .total-row td { font-size: 18pt; font-weight: bold; padding-top: 10px; }
+  /* A negociação. Corpo grande de propósito: é o que o cliente leva para
+     comparar, e o que ele compara é o número, não o nome da loja. */
+  .promo-mark  { font-size: 11pt; }
+  .prod-avista { font-size: 10.5pt; font-weight: bold; padding-top: 1px; }
+  .cond-box   { border: 2px solid #000; border-radius: 4px;
+                padding: 8px 10px; margin-top: 10px; }
+  .cond-titulo{ text-align: center; font-size: 11pt; font-weight: bold;
+                letter-spacing: 1px; margin-bottom: 6px; }
+  .cond-item  { margin-top: 8px; }
+  .cond-item:first-of-type { margin-top: 0; }
+  .cond-rotulo{ font-size: 11pt; font-weight: bold; letter-spacing: .5px; }
+  .cond-valor { font-size: 19pt; font-weight: bold; line-height: 1.15; }
+  .cond-obs   { font-size: 10pt; }
+  .cond-sep   { border: none; border-top: 1px dashed #000; margin: 8px 0; }
 </style>
 </head>
 <body>
@@ -493,21 +563,46 @@ function gerarHtmlOrcamento(dados) {
     ${descItens > 0 ? `<tr class="label-row"><td>Desconto nos itens</td><td class="right desc-tag">− R$ ${fmt(descItens)}</td></tr>` : ''}
     ${Number(desconto) > 0 ? `<tr class="label-row"><td>Desconto geral</td><td class="right desc-tag">− R$ ${fmt(desconto)}</td></tr>` : ''}
     ` : ''}
-    <tr class="total-row"><td>TOTAL</td><td class="right">R$ ${fmt(total)}</td></tr>
+    <tr class="total-row"><td>TOTAL</td><td class="right">R$ ${fmt(negociacao ? negociacao.totalExibido : total)}</td></tr>
   </table>
 
   <hr class="sep">
 
+  ${negociacao && negociacao.linhas.length > 0 ? `
+  <div class="cond-box">
+    <div class="cond-titulo">COMO VOCÊ PODE PAGAR</div>
+
+    ${negociacao.condicoes.parcelasMax > 1 ? `
+    <div class="cond-item">
+      <div class="cond-rotulo">NO CARTÃO</div>
+      <div class="cond-valor">${negociacao.condicoes.parcelasMax}x de
+        R$ ${fmt(negociacao.totalExibido / negociacao.condicoes.parcelasMax)}</div>
+      <div class="cond-obs">${negociacao.condicoes.parcelasSemJuros ? 'sem juros · ' : ''}total R$ ${fmt(negociacao.totalExibido)}</div>
+    </div>` : ''}
+
+    ${negociacao.condicoes.descontoAvistaPct > 0 ? `
+    ${negociacao.condicoes.parcelasMax > 1 ? '<hr class="cond-sep">' : ''}
+    <div class="cond-item">
+      <div class="cond-rotulo">${(negociacao.condicoes.avistaFormas || [])
+        .map(f => ({pix:'PIX',dinheiro:'DINHEIRO',debito:'DÉBITO',transferencia:'TRANSFERÊNCIA'}[f] || String(f).toUpperCase()))
+        .join(' OU ')}</div>
+      <div class="cond-valor">R$ ${fmt(negociacao.totalAvista)}</div>
+      <div class="cond-obs">você economiza R$ ${fmt(negociacao.totalExibido - negociacao.totalAvista)}</div>
+    </div>` : ''}
+  </div>` : `
   <div class="sm" style="margin-top:2px">
-    <strong>Forma de pagamento:</strong> ${formaTxt}<br>
-    <strong>Validade da proposta:</strong> até ${venc}
+    <strong>Forma de pagamento:</strong> ${formaTxt}
+  </div>`}
+
+  <div class="center sm" style="margin-top:8px">
+    <strong>Esta proposta vale até ${venc}</strong>
   </div>
 
   ${observacao ? `<hr class="sep"><div class="sm">📝 ${observacao}</div>` : ''}
 
   <hr class="sep">
   <div class="center sm" style="margin-top:6px">Sujeito a alteração de preços sem aviso prévio.</div>
-  <div class="center bold" style="margin-top:6px">Obrigado pela preferência!</div>
+  <div class="center bold" style="margin-top:6px;white-space:pre-line;font-size:13pt">${escaparHtml(String(mensagemDoCupom()).trim())}</div>
 </body>
 </html>`;
 }
@@ -518,6 +613,7 @@ module.exports = {
   enviarParaServidor,
   listarImpressoras,
   gerarHtmlCupom,
+  mensagemDoCupom,
   gerarHtmlCupomEntrega,
   gerarHtmlOrcamento,
 };

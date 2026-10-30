@@ -113,3 +113,46 @@ só sobe de versão, então um terminal já atualizado não é puxado de volta.
 Fale antes. O rebase da linha de pagamentos sobre o seu trabalho é problema
 de quem mantém aquela linha, não seu — mas só funciona se der para saber o
 que mudou.
+
+## DUAS LINHAGENS VIVAS — 13/10/2026
+
+A partir desta data existem duas linhas, de propósito:
+
+| linha | onde roda | o que tem |
+|---|---|---|
+| **1.10.12** | YOGA | cliente transacional V1 (0.6D.3B) **+** as funcionalidades |
+| **1.11.x** | os cinco terminais da loja | **só** as funcionalidades |
+
+As funcionalidades são as mesmas nas duas: Compre Junto, Produtos Similares,
+F12 sem fechar a lista, F8, rodapé do cupom vindo do servidor.
+
+### Por que separadas
+
+O cliente V1 **sempre negocia**: toda venda nova grava `negociando_v1` e o
+snapshot antes de enviar, qualquer que seja a flag. Erro de rede não é recusa
+comprovada, então uma venda feita **offline** é promovida a `v1` em definitivo
+e, com a flag desligada, fica presa para sempre.
+
+Foi exatamente assim que **29 vendas ficaram retidas por duas horas em
+09/10/2026**. Ver `docs/ROTEIRO-PILOTO-1.10.7.md`.
+
+Levar Compre Junto e Similares à loja não exige nada disso. Separar as duas
+coisas significa que, se algo aparecer na segunda-feira, dá para saber qual
+das duas causou.
+
+### As regras
+
+1. **Não instalar 1.10.x no lugar de 1.11.x, nem o contrário.** Um terminal da
+   loja que receba a 1.10.12 ganha o cliente V1 com a flag desligada. O YOGA
+   que receba a 1.11.0 **perde** o V1 homologado.
+2. **Continua proibido publicar Release no GitHub.** Aqui a razão dobra: o
+   `electron-updater` só sobe de versão, então uma Release da 1.11.0
+   arrastaria o YOGA para fora do V1 sem ninguém pedir.
+3. `tests/linha-da-loja-sem-v1.test.js` trava a separação na linha 1.11.x. Se
+   o V1 voltar para lá num merge, ele falha e diz por quê. Esse arquivo só sai
+   junto com a decisão de unificar — não antes, e não calado.
+
+### Quando unificar
+
+Quando o V1 estiver ligado nos cinco terminais da loja, as duas linhas viram
+uma só e a numeração segue de onde a maior parou.
