@@ -1440,6 +1440,10 @@ const Vendas = {
                  : !cancelada ? `<button class="btn btn-ghost btn-sm" style="color:var(--green);font-size:10px" onclick="Vendas.emitirNFCe('${id}')" title="Emitir NFC-e">🧾 NFC-e</button>` : ''}
                ${!cancelada ? `<button class="btn btn-ghost btn-sm" style="color:#25D366" title="Enviar por WhatsApp" onclick="${v.cliente_telefone ? `WA.abrirModal('Enviar cupom via WhatsApp','${(v.cliente_telefone||'').replace(/'/g,"\\'")}','venda','${id}',WA._vendas['${id}'])` : `WA.abrirModalCapturaCliente('venda','${id}','${(v.cliente_nome||'').replace(/'/g,"\\'")}',WA._vendas['${id}'])` }">${WA_ICON}</button>` : ''}
                ${!cancelada ? `<button class="btn btn-danger btn-sm" onclick="Vendas.cancelar('${id}')">Cancelar</button>` : ''}`}
+          ${!cancelada && podePermissao('fechar_caixa')
+            ? `<button class="btn btn-ghost btn-sm" style="color:var(--accent);white-space:nowrap"
+                 title="O cartão não passou, o cliente pagou de outro jeito"
+                 onclick="Vendas.trocarForma('${id}', '${(v.forma_pagamento || '').replace(/'/g, "")}')">⇄ Trocar forma</button>` : ''}
           ${!cancelada && Vendas._centavos(v.total) > 0 && podePermissao('fechar_caixa')
             ? `<button class="btn btn-ghost btn-sm" style="color:var(--green);white-space:nowrap"
                  title="O cliente pagou o valor redondo e a loja abriu mão dos centavos"
@@ -1508,6 +1512,80 @@ const Vendas = {
     if (!r || !r.ok) return Toast.show((r && r.erro) || 'Não foi possível arredondar.', 'error');
     Modal.close();
     Toast.show(r.aviso || 'Arredondamento registrado.', 'success');
+  },
+
+  /**
+   * Trocar a forma de pagamento de uma venda ja fechada.
+   *
+   * O `id` sorteado aqui e o da CORRECAO, nao o da venda: a mesma venda pode
+   * ser corrigida mais de uma vez -- cartao vira dinheiro e, se o cliente achar
+   * o outro cartao, volta. Chave pela venda faria a segunda virar um
+   * "ja corrigida" silencioso.
+   */
+  trocarForma(id, formaAtual) {
+    const correcaoId = this._uuid();
+    const opcoes = ['dinheiro', 'pix', 'debito', 'credito']
+      .map(f => `<option value="${f}" ${f === formaAtual ? 'disabled' : ''}>${f}</option>`).join('');
+    Modal.open(`
+<div style="margin-bottom:14px;font-size:15px">
+  Esta venda está como <strong>${formaAtual || '—'}</strong>.
+  Os produtos não mudam — só para onde o dinheiro foi.
+</div>
+<div class="form-group">
+  <label>Como o cliente pagou de verdade</label>
+  <select class="input" id="troca-forma" onchange="Vendas._trocaMostrarParcelas()">
+    <option value="">Escolha…</option>
+    ${opcoes}
+  </select>
+</div>
+<div class="form-group" id="troca-parcelas-box" style="display:none">
+  <label>Em quantas vezes</label>
+  <input class="input" id="troca-parcelas" type="number" min="1" value="1">
+</div>
+<div class="form-group">
+  <label>Motivo <span style="color:var(--text3)">(obrigatório)</span></label>
+  <input class="input" id="troca-motivo" placeholder="Ex.: cartão não passou, pagou em dinheiro">
+</div>
+<div class="modal-actions">
+  <button class="btn btn-ghost" onclick="Modal.close()">Cancelar</button>
+  <button class="btn btn-primary" id="troca-ok"
+    onclick="Vendas._confirmarTroca('${id}','${correcaoId}','${formaAtual || ''}')">Corrigir</button>
+</div>`, 'Trocar a forma de pagamento', `Venda #${id.slice(0, 8)}`);
+  },
+
+  _trocaMostrarParcelas() {
+    const box = document.getElementById('troca-parcelas-box');
+    if (box) box.style.display = document.getElementById('troca-forma').value === 'credito' ? '' : 'none';
+  },
+
+  async _confirmarTroca(vendaId, correcaoId, formaAtual) {
+    const formaNova = document.getElementById('troca-forma')?.value || '';
+    const motivo = (document.getElementById('troca-motivo')?.value || '').trim();
+    const parcelas = Number(document.getElementById('troca-parcelas')?.value || 1);
+
+    if (!formaNova) return Toast.show('Escolha como o cliente pagou.', 'error');
+    if (!motivo) return Toast.show('Escreva o motivo da correção.', 'error');
+
+    const btn = document.getElementById('troca-ok');
+    if (btn) { btn.disabled = true; btn.textContent = 'Corrigindo…'; }
+    const r = await window.pdv.caixa.corrigirPagamento({
+      id: correcaoId, vendaId, formaAtual, formaNova, parcelas, motivo,
+    });
+    if (btn) { btn.disabled = false; btn.textContent = 'Corrigir'; }
+
+    if (!r || !r.ok) return Toast.show((r && r.erro) || 'Não foi possível corrigir.', 'error');
+    Modal.close();
+    Toast.show(r.aviso || 'Forma de pagamento corrigida.', 'success');
+    await this.load();
+  },
+
+  _uuid() {
+    return crypto.randomUUID
+      ? crypto.randomUUID()
+      : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+        const r = Math.random() * 16 | 0;
+        return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+      });
   },
 
   async nfceLote() {

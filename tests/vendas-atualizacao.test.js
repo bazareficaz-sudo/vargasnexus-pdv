@@ -172,6 +172,41 @@ describe('o botao de arredondar', () => {
   });
 });
 
+describe('o botao de trocar a forma de pagamento', () => {
+  test('existe e pede a permissao do caixa', () => {
+    assert.match(VENDAS, /trocarForma/);
+    assert.match(VENDAS, /Trocar forma/);
+  });
+
+  test('o id sorteado e o da CORRECAO, nao o da venda', () => {
+    // A mesma venda pode ser corrigida mais de uma vez: cartao vira dinheiro
+    // e, se o cliente achar o outro cartao, volta. Chave pela venda faria a
+    // segunda correcao virar um "ja corrigida" silencioso.
+    assert.match(VENDAS, /const correcaoId = this\._uuid\(\)/);
+    const remoto = fs.readFileSync(
+      path.resolve(__dirname, '..', 'src/main/caixaRemoto.js'), 'utf8');
+    assert.match(remoto, /caixa\.correcao:\$\{p\.id\}/);
+  });
+
+  test('o motivo e exigido antes de sair do terminal', () => {
+    assert.match(VENDAS, /Escreva o motivo da correção/);
+  });
+
+  test('a forma atual aparece desabilitada na lista', () => {
+    // Trocar uma forma por ela mesma nao e correcao: e um par de lancamentos
+    // que se anulam, sujando o extrato sem mudar nada.
+    assert.match(VENDAS, /f === formaAtual \? 'disabled' : ''/);
+  });
+
+  test('parcelas so aparecem no credito', () => {
+    assert.match(VENDAS, /troca-forma'\)\.value === 'credito'/);
+  });
+
+  test('a tela avisa que os produtos nao mudam', () => {
+    assert.match(VENDAS, /produtos não mudam/);
+  });
+});
+
 describe('o que a tela passou a mostrar', () => {
   test('a coluna do vendedor', () => {
     assert.match(VENDAS, /<th>Vendedor<\/th>/);

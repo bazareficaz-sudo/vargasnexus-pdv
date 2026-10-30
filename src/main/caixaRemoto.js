@@ -191,4 +191,36 @@ async function arredondar(p = {}) {
   return { ok: true, ...r.dados };
 }
 
-module.exports = { estado, registrarSaida, abrir, fechar, arredondar, uuidDe, traduzir, operador };
+/**
+ * Trocar a forma de pagamento de uma venda ja fechada.
+ *
+ * O cartao nao passou e o cliente vai pagar em dinheiro. A venda ja foi
+ * lancada, entao isto nao e edicao: o servidor estorna o que entrou errado e
+ * lanca o certo, numa transacao so, com motivo escrito.
+ *
+ * `id` vem da TELA e e o da CORRECAO, nao o da venda: a mesma venda pode ser
+ * corrigida mais de uma vez -- cartao vira dinheiro e, se o cliente achar o
+ * outro cartao, volta. Chave pela venda tornaria a segunda correcao um
+ * "ja corrigida" silencioso.
+ */
+async function corrigirPagamento(p = {}) {
+  const op = operador();
+  if (!op) return { ok: false, motivo: 'sem_operador', erro: 'Faça login antes de mexer no caixa.' };
+  if (!p.id || !p.vendaId) return { ok: false, motivo: 'sem_id', erro: 'Tentativa sem identificador.' };
+
+  const r = await terminal.chamarProtegida('/api/pdv/caixa/correcao', {
+    idempotency_key: `caixa.correcao:${p.id}`,
+    id: p.id,
+    venda_id: p.vendaId,
+    operador_id: op.id,
+    forma_atual: p.formaAtual || null,
+    forma_nova: p.formaNova,
+    parcelas: Number(p.parcelas || 1),
+    motivo: p.motivo || null,
+  });
+  if (!r.ok) return traduzir(r);
+  return { ok: true, ...r.dados };
+}
+
+module.exports = { estado, registrarSaida, abrir, fechar, arredondar, corrigirPagamento,
+                   uuidDe, traduzir, operador };
