@@ -115,6 +115,14 @@ contextBridge.exposeInMainWorld('pdv', {
   },
 
   // Faltas
+  // Caixa — abrir, registrar saída e fechar. Só online, por desenho.
+  caixa: {
+    estado: ()  => ipcRenderer.invoke('caixa:estado'),
+    saida:  (p) => ipcRenderer.invoke('caixa:saida', p),
+    abrir:  (p) => ipcRenderer.invoke('caixa:abrir', p),
+    fechar: (p) => ipcRenderer.invoke('caixa:fechar', p),
+  },
+
   faltas: {
     registrar: (f) => ipcRenderer.invoke('faltas:registrar', f),
     listar: (filtros) => ipcRenderer.invoke('faltas:listar', filtros),

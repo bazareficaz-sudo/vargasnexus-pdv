@@ -712,6 +712,16 @@ ipcMain.handle('faltas:listar', (_, filtros) => db.faltas.listar(filtros));
 ipcMain.handle('faltas:atualizarStatus', (_, id, status) => db.faltas.atualizarStatus(id, status));
 ipcMain.handle('faltas:contarPendentes', () => db.faltas.contarPendentes());
 
+// Caixa — a gaveta, pelo terminal.
+//
+// SÓ ONLINE e sem fila: `caixaRemoto` fala com o servidor e devolve a recusa
+// traduzida. Nada aqui encosta no caminho da venda, que continua offline.
+const caixaRemoto = require('./caixaRemoto');
+ipcMain.handle('caixa:estado', () => caixaRemoto.estado());
+ipcMain.handle('caixa:saida', (_, p) => caixaRemoto.registrarSaida(p));
+ipcMain.handle('caixa:abrir', (_, p) => caixaRemoto.abrir(p));
+ipcMain.handle('caixa:fechar', (_, p) => caixaRemoto.fechar(p));
+
 // IA
 ipcMain.handle('ia:fiscal', async (_, nome, categoria, unidade) => ia.sugerirFiscal(nome, categoria, unidade));
 ipcMain.handle('ia:descricao', async (_, nome, categoria, marca, unidade) => ia.gerarDescricao(nome, categoria, marca, unidade));

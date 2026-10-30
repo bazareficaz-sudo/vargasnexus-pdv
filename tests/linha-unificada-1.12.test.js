@@ -116,6 +116,11 @@ describe('e a loja nao perdeu nada do que ja tinha', () => {
     ['mensagem da empresa', 'cupom_mensagem_empresa'],
     ['origem da sugestao', 'origem_sugestao'],
     ['catalogo campos=v2', "campos: 'v2'"],
+    // O caixa no terminal entrou DEPOIS da unificacao, e entra aqui pelo mesmo
+    // motivo que o resto: um merge futuro nao pode largar a tela pelo caminho.
+    ['caixa: a tela', 'Caixa.formSaida'],
+    ['caixa: o telefone', 'caixaRemoto'],
+    ['caixa: a ponte', "caixa:saida"],
   ]) {
     test(recurso, () => {
       assert.ok(temNoFonte(marcador), `marcador ausente: ${marcador}`);
