@@ -1137,7 +1137,7 @@ async function sincronizarContasReceber() {
 }
 
 async function pagarContaReceber(contaId, formaPagamento, observacao) {
-  const { data: conta } = await supabase.from('contas_receber').select('valor_original, empresa_id, cliente_id, status').eq('id', contaId).single();
+  const { data: conta } = await supabase.from('contas_receber').select('valor_original, valor_recebido, empresa_id, cliente_id, status').eq('id', contaId).single();
   if (!conta) throw new Error('Conta a receber não encontrada');
   // A lista local do caixa (Carteira de Clientes) só atualiza no sync — se
   // esta conta já foi recebida no servidor (por outro terminal, ou pelo
@@ -1147,13 +1147,23 @@ async function pagarContaReceber(contaId, formaPagamento, observacao) {
   // estava corretamente 'recebido') — foi o que dobrou o "pago" de pelo
   // menos 3 clientes no extrato do site.
   if (conta.status === 'recebido') return { ok: true, jaEstavaPago: true };
+  // Quitar é receber O QUE FALTA, não o valor da conta. Conta que já teve
+  // pagamento parcial gravava aqui o valor original inteiro em
+  // `recebimentos`: a conta ficava certa (valor_recebido = original), mas o
+  // extrato do cliente somava o parcial duas vezes (medido em 08/11/2026 em
+  // cinco clientes: extrato com saldo bem menor que o aberto). O caixa já
+  // cobra o que falta (a lista local mostra `valor_aberto`); o registro tem de dizer o
+  // mesmo.
+  const restante = Math.round((Number(conta.valor_original || 0) - Number(conta.valor_recebido || 0)) * 100) / 100;
   const { error } = await supabase.from('contas_receber').update({ valor_recebido: conta.valor_original, status: 'recebido', forma_prevista: formaPagamento || 'dinheiro', observacao: observacao || null }).eq('id', contaId);
   if (error) throw new Error(error.message);
-  await supabase.from('recebimentos').insert({
-    empresa_id: conta.empresa_id, conta_id: contaId, cliente_id: conta.cliente_id,
-    valor: conta.valor_original, valor_liquido: conta.valor_original,
-    forma_pagamento: formaPagamento || 'dinheiro', observacao: observacao || null,
-  });
+  if (restante > 0) {
+    await supabase.from('recebimentos').insert({
+      empresa_id: conta.empresa_id, conta_id: contaId, cliente_id: conta.cliente_id,
+      valor: restante, valor_liquido: restante,
+      forma_pagamento: formaPagamento || 'dinheiro', observacao: observacao || null,
+    });
+  }
   return { ok: true };
 }
 

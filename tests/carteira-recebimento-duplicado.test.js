@@ -125,3 +125,34 @@ describe('pagarContaReceberParcial — mesma trava', () => {
     assert.equal(estado.contas_receber[0].valor_recebido, 50);
   });
 });
+
+// Medido em 08/11/2026: 5 clientes com quitação gravada pelo valor cheio da
+// conta depois de um pagamento parcial.
+describe('pagarContaReceber — quitação depois de parcial grava só o que faltava', () => {
+  test('conta parcial: recebimento é o restante, conta fecha no original', async () => {
+    const { api, estado, chamadas } = instalarSupabaseFalso({
+      contas_receber: [{ id: 'c4', valor_original: 154.51, valor_recebido: 131.5, status: 'parcial', empresa_id: 'e1', cliente_id: 'cli1' }],
+      recebimentos: [],
+    });
+
+    const r = await api.pagarContaReceber('c4', 'dinheiro', null);
+
+    assert.equal(r.ok, true);
+    assert.equal(chamadas.inserts.length, 1);
+    assert.equal(chamadas.inserts[0].dados.valor, 23.01);
+    assert.equal(chamadas.inserts[0].dados.valor_liquido, 23.01);
+    assert.equal(estado.contas_receber[0].valor_recebido, 154.51);
+    assert.equal(estado.contas_receber[0].status, 'recebido');
+  });
+
+  test('conta aberta: recebimento é o valor inteiro, como antes', async () => {
+    const { api, chamadas } = instalarSupabaseFalso({
+      contas_receber: [{ id: 'c5', valor_original: 80, valor_recebido: 0, status: 'aberto', empresa_id: 'e1', cliente_id: 'cli1' }],
+      recebimentos: [],
+    });
+
+    await api.pagarContaReceber('c5', 'pix', null);
+
+    assert.equal(chamadas.inserts[0].dados.valor, 80);
+  });
+});
