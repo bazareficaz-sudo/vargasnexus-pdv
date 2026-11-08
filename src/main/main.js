@@ -1068,6 +1068,17 @@ ipcMain.handle('print:entrega', async (_, dados) => {
   }
   return printServer.imprimirLocal({ ...dados, _html: html });
 });
+ipcMain.handle('print:comprovante-carteira', async (_, dados) => {
+  const html = printServer.gerarHtmlComprovanteCarteira({
+    ...dados,
+    empresa_nome: store.get('auth.usuario.empresa_nome') || dados.empresa_nome || '',
+  });
+  if (destinoImpressao() === 'servidor') {
+    try { return await enviarParaServidorComRefresco({ ...dados, _html: html }); }
+    catch { /* cai no local */ }
+  }
+  return printServer.imprimirLocal({ ...dados, _html: html });
+});
 ipcMain.handle('print:servidor', async (_, dados) => {
   try {
     return await enviarParaServidorComRefresco(dados);
@@ -1120,6 +1131,32 @@ ipcMain.handle('carteira:resumo', () => db.creditosCliente.resumoGeral());
 ipcMain.handle('carteira:listar', (_, query) => db.creditosCliente.listarCarteira(query || ''));
 ipcMain.handle('carteira:ultimoPgto', (_, remoteId) => db.creditosCliente.ultimoPagamento(remoteId));
 ipcMain.handle('carteira:contasAbertas', (_, clienteRemoteId) => db.contasReceber.getContasAbertas(clienteRemoteId));
+// Receber pagamento de carteira (uma conta ou várias): ver api.receberCarteira.
+//
+// SEM INTERNET NÃO FINGE QUE DEU CERTO. Antes o caixa marcava as contas como
+// pagas só aqui e respondia "ok", e a baixa nunca chegava ao sistema. Agora a
+// resposta diz que nada foi registrado e devolve o `loteId`: a nova tentativa
+// usa o mesmo, e o banco não grava duas vezes se a primeira tiver entrado.
+ipcMain.handle('carteira:receber', async (_, pedido) => {
+  const loteId = (pedido && pedido.loteId) || require('uuid').v4();
+  try {
+    const r = await api.receberCarteira({ ...pedido, loteId });
+    if (r.ok) {
+      for (const i of r.itens) {
+        if (i.quitou) db.contasReceber.marcarPago(i.contaId, pedido.forma, pedido.observacao);
+        else if (i.restanteConta != null) {
+          db.contasReceber.atualizarValor(i.contaId, i.restanteConta,
+            `Pgto parcial R$ ${i.valor.toFixed(2)} (${pedido.forma || 'dinheiro'})`);
+        }
+      }
+    }
+    return { ...r, loteId };
+  } catch (err) {
+    console.warn('[CARTEIRA] Recebimento não registrado:', err.message);
+    return { ok: false, offline: true, loteId, motivo: err.message };
+  }
+});
+
 ipcMain.handle('carteira:pagar', async (_, contaId, forma, obs) => {
   db.contasReceber.marcarPago(contaId, forma, obs);
   try {
