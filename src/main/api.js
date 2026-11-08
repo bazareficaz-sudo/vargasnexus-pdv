@@ -1188,6 +1188,120 @@ async function pagarContaReceberParcial(contaId, valorPago, valorOriginal, forma
   return { ok: true };
 }
 
+// ─── Carteira: receber pelo mesmo caminho do sistema ─────────────────
+//
+// O "Receber tudo" repartia o valor entre as contas AQUI e gravava uma por
+// uma (pagarContaReceber / pagarContaReceberParcial): duas escritas por conta,
+// sem transação, sem nome do operador e com a lista local, que pode estar
+// velha. Sem internet o caixa marcava pago só no computador e dizia que deu
+// certo — a baixa nunca chegava ao sistema.
+//
+// Agora o recebimento inteiro vai numa chamada só para
+// `receber_contas_em_lote_v1`, a mesma do "Receber em massa" do sistema:
+// confere tudo antes de gravar, grava tudo ou nada, recusa valor acima da
+// conta e é idempotente pelo `lote_id` — reenviar o mesmo lote não grava de
+// novo. A repartição usa as contas LIDAS AGORA do servidor, não as do
+// computador.
+
+/** Data de hoje no fuso da loja, AAAA-MM-DD. */
+function _hojeNaLoja() {
+  return new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Sao_Paulo' });
+}
+
+const _centavos = (v) => Math.round(Number(v || 0) * 100) / 100;
+
+/**
+ * Reparte `valor` entre as contas, da mais antiga para a mais nova. Cada conta
+ * recebe no máximo o que falta nela. Devolve os itens e a sobra (o que passou
+ * do total em aberto — não é aplicado).
+ */
+function _repartirRecebimento(contas, valor) {
+  let restante = _centavos(valor);
+  const itens = [];
+  for (const c of contas) {
+    if (restante <= 0) break;
+    const aberto = _centavos(Number(c.valor_original || 0) - Number(c.valor_recebido || 0));
+    if (aberto <= 0) continue;
+    const pago = Math.min(restante, aberto);
+    itens.push({
+      contaId: c.id, doc: c.numero_doc || null, valor: pago,
+      quitou: pago >= aberto - 0.005, restanteConta: _centavos(aberto - pago),
+    });
+    restante = _centavos(restante - pago);
+  }
+  return { itens, sobra: restante };
+}
+
+function _resumoDoLote(base, itens) {
+  const total = _centavos(itens.reduce((s, i) => s + i.valor, 0));
+  return { ...base, ok: true, itens, total, abertoDepois: _centavos(base.abertoAntes - total) };
+}
+
+/**
+ * Recebe pagamento de carteira. `contaIds` limita a contas específicas (a
+ * conta individual); sem ele, reparte entre todas as abertas do cliente.
+ * `loteId` vem de quem chama e se repete numa nova tentativa.
+ *
+ * Erro de rede LANÇA (quem chama tenta de novo com o mesmo lote). Recusa do
+ * banco volta `{ ok: false, recusa }`.
+ */
+async function receberCarteira({ clienteId, valor, contaIds = null, forma, observacao, loteId }) {
+  if (!clienteId || !loteId) throw new Error('Recebimento sem cliente ou sem lote');
+  const usuario = store.get('auth.usuario') || {};
+  const operador = usuario.nome || null;
+
+  // NOVA TENTATIVA DE UM LOTE QUE TALVEZ JÁ TENHA ENTRADO: a primeira
+  // chamada pode ter gravado e a resposta se perdido. Repartir de novo sobre
+  // as contas atuais aplicaria o mesmo dinheiro a outras contas.
+  const { data: jaGravado, error: errLote } = await supabase.from('recebimentos')
+    .select('conta_id, valor_liquido, valor').eq('lote_id', loteId);
+  if (errLote) throw new Error(`Leitura do lote: ${errLote.message}`);
+
+  let q = supabase.from('contas_receber')
+    .select('id, numero_doc, valor_original, valor_recebido, data_vencimento, data_emissao, status')
+    .eq('cliente_id', clienteId).in('status', ['aberto', 'parcial', 'vencido'])
+    .order('data_vencimento', { ascending: true }).order('data_emissao', { ascending: true });
+  if (contaIds && contaIds.length) q = q.in('id', contaIds);
+  const { data: contas, error } = await q;
+  if (error) throw new Error(`Leitura das contas: ${error.message}`);
+
+  const lista = contas || [];
+  const base = {
+    loteId, forma, operador, emitidoEm: new Date().toISOString(),
+    abertoAntes: _centavos(lista.reduce((s, c) => s + Number(c.valor_original || 0) - Number(c.valor_recebido || 0), 0)),
+  };
+
+  if (jaGravado && jaGravado.length) {
+    const docs = new Map(lista.map(c => [c.id, c.numero_doc]));
+    const itens = jaGravado.map(r => ({
+      contaId: r.conta_id, doc: docs.get(r.conta_id) || null,
+      valor: _centavos(r.valor_liquido ?? r.valor), quitou: !docs.has(r.conta_id), restanteConta: null,
+    }));
+    // As contas lidas agora já têm este lote descontado: o "antes" é o de agora mais o lote.
+    const total = _centavos(itens.reduce((s, i) => s + i.valor, 0));
+    return { ...base, ok: true, jaRegistrado: true, itens, total, sobra: 0,
+      abertoAntes: _centavos(base.abertoAntes + total), abertoDepois: base.abertoAntes };
+  }
+
+  const { itens, sobra } = _repartirRecebimento(lista, valor);
+  if (!itens.length) return { ok: false, recusa: { estado: 'sem_contas', motivo: 'Nenhuma conta em aberto para este cliente.' } };
+
+  const hoje = _hojeNaLoja();
+  const { data: resp, error: errRpc } = await supabase.rpc('receber_contas_em_lote_v1', {
+    p_payload: {
+      lote_id: loteId,
+      contas: itens.map(i => ({
+        conta_id: i.contaId, valor: i.valor, forma_pagamento: forma || 'dinheiro',
+        observacao: observacao || null, operador_nome: operador, data_recebimento: hoje,
+      })),
+    },
+  });
+  if (errRpc) throw new Error(errRpc.message);
+  if (!resp || resp.estado !== 'aplicado') return { ok: false, recusa: resp || { estado: 'sem_resposta' } };
+
+  return { ..._resumoDoLote(base, itens), sobra };
+}
+
 async function getCreditosDoCliente(clienteRemoteId) {
   const { data, error } = await supabase.from('creditos_cliente').select('*').eq('cliente_id', clienteRemoteId).in('status', ['disponivel', 'parcial']).order('created_at');
   if (error) { console.warn('[Creditos]', error.message); return []; }
@@ -2126,6 +2240,8 @@ module.exports = {
   sincronizarContasReceber,
   pagarContaReceber,
   pagarContaReceberParcial,
+  receberCarteira,
+  _repartirRecebimento,
   getCreditosDoCliente,
   sincronizarCreditosCliente,
   receberCreditoCliente,

@@ -156,6 +156,7 @@ contextBridge.exposeInMainWorld('pdv', {
     pagar:         (id, forma, obs)                      => ipcRenderer.invoke('carteira:pagar', id, forma, obs),
     pagarParcial:  (id, valorPago, valorOrig, forma, obs) => ipcRenderer.invoke('carteira:pagarParcial', id, valorPago, valorOrig, forma, obs),
     usarCredito:   (contaId, contaValor, creditoId, creditoSaldo, obs) => ipcRenderer.invoke('carteira:usarCredito', contaId, contaValor, creditoId, creditoSaldo, obs),
+    receber:       (pedido)                              => ipcRenderer.invoke('carteira:receber', pedido),
   },
 
   // Entregas
@@ -171,6 +172,7 @@ contextBridge.exposeInMainWorld('pdv', {
     local:         (dados)  => ipcRenderer.invoke('print:local', dados),
     servidor:      (dados)  => ipcRenderer.invoke('print:servidor', dados),
     entrega:       (dados)  => ipcRenderer.invoke('print:entrega', dados),
+    comprovanteCarteira: (dados) => ipcRenderer.invoke('print:comprovante-carteira', dados),
     serverStart:   (porta)  => ipcRenderer.invoke('print:server:start', porta),
     serverStop:    ()       => ipcRenderer.invoke('print:server:stop'),
     serverStatus:  ()       => ipcRenderer.invoke('print:server:status'),

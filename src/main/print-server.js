@@ -296,6 +296,72 @@ function gerarHtmlCupomEntrega(dados) {
 </html>`;
 }
 
+// ─── Comprovante de pagamento de carteira ────────────────────────────────────
+//
+// O cliente sai com o papel na mão: quanto pagou, em quê, quais contas
+// quitou e quanto ficou devendo. Acaba o "eu paguei dia 5" sem prova de
+// nenhum dos lados — o código do lote no rodapé é o mesmo que fica gravado
+// no sistema.
+
+const ROTULO_FORMA = { dinheiro: 'Dinheiro', pix: 'PIX', debito: 'Débito', credito: 'Crédito', credito_loja: 'Crédito da loja' };
+
+function gerarHtmlComprovanteCarteira(dados) {
+  const {
+    empresa_nome = 'PDV VARGAS', cliente_nome, forma, operador, itens = [],
+    total = 0, abertoAntes = 0, abertoDepois = 0, loteId, emitidoEm,
+  } = dados;
+  const fmt = (v) => Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const quando = new Date(emitidoEm || Date.now()).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+
+  const linhas = itens.map(i => `
+    <tr>
+      <td>${escaparHtml(i.doc || 'Conta')}${i.quitou ? '' : `<br><span class="sm">parcial${i.restanteConta != null ? ` · resta R$ ${fmt(i.restanteConta)}` : ''}</span>`}</td>
+      <td class="right">R$ ${fmt(i.valor)}</td>
+    </tr>`).join('');
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+  @page { size: 72mm auto; margin: 4mm 3mm; }
+  * { box-sizing: border-box; }
+  body { font-family: 'Courier New', Courier, monospace; font-size: 9.5pt; color: #000; background: #fff; width: 72mm; margin: 0; padding: 0; }
+  .center { text-align: center; } .right { text-align: right; } .bold { font-weight: bold; }
+  .sm { font-size: 8pt; } .lg { font-size: 13pt; }
+  .sep { border: none; border-top: 1px dashed #000; margin: 6px 0; }
+  .sep2 { border: none; border-top: 2px solid #000; margin: 6px 0; }
+  table { width: 100%; border-collapse: collapse; } td { vertical-align: top; padding: 1px 0; }
+</style>
+</head>
+<body>
+  <div class="center bold lg">${escaparHtml(empresa_nome)}</div>
+  <div class="center bold" style="font-size:11pt;letter-spacing:1px;margin-top:2px">COMPROVANTE DE PAGAMENTO</div>
+  <div class="center sm">${quando}</div>
+  <hr class="sep2">
+  <div><span class="sm">CLIENTE</span><br><span class="bold">${escaparHtml(cliente_nome || '')}</span></div>
+  <div style="margin-top:4px"><span class="sm">FORMA</span><br>${escaparHtml(ROTULO_FORMA[forma] || forma || '')}</div>
+  ${operador ? `<div style="margin-top:4px"><span class="sm">RECEBIDO POR</span><br>${escaparHtml(operador)}</div>` : ''}
+  <hr class="sep">
+  <div class="sm bold">CONTAS PAGAS</div>
+  <table>${linhas}</table>
+  <hr class="sep2">
+  <table>
+    <tr><td class="bold lg">TOTAL PAGO</td><td class="right bold lg">R$ ${fmt(total)}</td></tr>
+  </table>
+  <hr class="sep">
+  <table>
+    <tr><td>Devia antes</td><td class="right">R$ ${fmt(abertoAntes)}</td></tr>
+    <tr><td class="bold">Saldo em aberto</td><td class="right bold">R$ ${fmt(abertoDepois)}</td></tr>
+  </table>
+  <hr class="sep">
+  ${loteId ? `<div class="center sm">Código ${escaparHtml(String(loteId).slice(0, 8).toUpperCase())}</div>` : ''}
+  <div class="center sm" style="margin-top:4px">Guarde este comprovante.</div>
+  <br><br>
+</body>
+</html>`;
+}
+
 // ─── Impressão local (via Electron) ─────────────────────────────────────────
 
 async function imprimirLocal(dados) {
@@ -615,5 +681,6 @@ module.exports = {
   gerarHtmlCupom,
   mensagemDoCupom,
   gerarHtmlCupomEntrega,
+  gerarHtmlComprovanteCarteira,
   gerarHtmlOrcamento,
 };

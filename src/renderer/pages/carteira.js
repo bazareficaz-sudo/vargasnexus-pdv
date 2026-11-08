@@ -4,6 +4,13 @@ const Carteira = (() => {
   let _query = '';
   let _ordenacao = 'maior_valor'; // maior_valor | nome | atraso | pendentes
   let _filtroSaldo = 'a_receber';  // a_receber | zerado | todos
+  // Recebimento em andamento. O lote se repete na nova tentativa depois de
+  // uma falha de conexão: se a primeira tiver entrado, o sistema não grava
+  // de novo (ver api.receberCarteira).
+  let _clienteAtual = null;
+  let _loteEmAndamento = null;
+  let _recebendo = false;
+  let _ultimoComprovante = null;
 
   const fmt = (v) => Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -297,6 +304,8 @@ const Carteira = (() => {
 
   // ─── Modal: Receber pagamento ────────────────────────────────────
   async function abrirReceber(cliente) {
+    _clienteAtual = cliente;
+    _loteEmAndamento = null;
     Modal.open(`
 <div style="margin-bottom:14px">
   <div style="font-weight:600;font-size:14px">${cliente.nome}</div>
@@ -339,34 +348,105 @@ const Carteira = (() => {
     const obs   = document.getElementById('receber-obs')?.value?.trim() || null;
 
     if (!valor || valor <= 0) { Toast.show('Informe um valor válido', 'warning'); return; }
+    await _receber({ clienteId: clienteRemoteId, clienteNome, valor, forma, observacao: obs });
+  }
 
+  // Um caminho só para "Receber tudo" e para a conta individual: o sistema
+  // reparte o valor entre as contas abertas (da mais antiga para a mais nova)
+  // e grava tudo de uma vez, com o nome de quem recebeu.
+  async function _receber({ clienteId, clienteNome, valor, forma, observacao, contaIds = null }) {
+    if (_recebendo) return;
+    _recebendo = true;
     try {
-      // Busca contas pendentes da mais antiga para mais nova e quita até o valor recebido
-      const contas = await window.pdv.carteira.contasAbertas(clienteRemoteId);
-      let restante = valor;
-
-      for (const ct of contas) {
-        if (restante <= 0) break;
-        if (ct.valor <= restante + 0.001) {
-          await window.pdv.carteira.pagar(ct.id, forma, obs);
-          restante = Math.round((restante - ct.valor) * 100) / 100;
-        } else {
-          // Valor recebido não cobre esta conta — pagamento parcial
-          await window.pdv.carteira.pagarParcial(ct.id, restante, ct.valor, forma, obs);
-          restante = 0;
-        }
+      const r = await window.pdv.carteira.receber({
+        clienteId, valor, forma, observacao, contaIds, loteId: _loteEmAndamento,
+      });
+      if (r.offline) {
+        _loteEmAndamento = r.loteId;
+        Toast.show('Sem conexão com o sistema: o recebimento NÃO foi registrado. Confira a internet e clique em confirmar de novo.', 'error');
+        return;
       }
-
+      if (!r.ok) {
+        _loteEmAndamento = null;
+        const motivo = r.recusa?.motivo || r.recusa?.estado || 'recusado pelo sistema';
+        Toast.show('Recebimento não registrado: ' + motivo + '. Sincronize a carteira e tente de novo.', 'error');
+        return;
+      }
+      _loteEmAndamento = null;
       Modal.close();
-      Toast.show(`✅ Recebimento de R$ ${fmt(valor)} de ${clienteNome} confirmado`, 'success');
+      if (r.sobra > 0) Toast.show(`R$ ${fmt(r.sobra)} passaram do total em aberto e não foram lançados.`, 'warning');
+      _mostrarComprovante({ ...r, cliente_nome: clienteNome, cliente: _clienteAtual });
       await _carregarTotais();
       await _carregarLista();
     } catch (e) {
       Toast.show('Erro ao registrar recebimento: ' + e.message, 'error');
+    } finally {
+      _recebendo = false;
+    }
+  }
+
+  // ─── Comprovante: o cliente sai sabendo quanto pagou e quanto ficou ─────
+  function _mostrarComprovante(r) {
+    _ultimoComprovante = r;
+    const linhas = r.itens.map(i => `
+      <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border)">
+        <span>${i.doc || 'Conta'}${i.quitou ? '' : ` <span style="font-size:11px;color:var(--yellow)">parcial${i.restanteConta != null ? ` · resta R$ ${fmt(i.restanteConta)}` : ''}</span>`}</span>
+        <span>R$ ${fmt(i.valor)}</span>
+      </div>`).join('');
+    const tel = r.cliente?.telefone ? String(r.cliente.telefone).replace(/\D/g, '') : '';
+    Modal.open(`
+<div style="text-align:center;margin-bottom:12px">
+  <div style="font-size:12px;color:var(--text3)">${r.cliente_nome}${r.jaRegistrado ? ' · já estava registrado' : ''}</div>
+  <div style="font-size:26px;font-weight:700;color:var(--green)">R$ ${fmt(r.total)}</div>
+  <div style="font-size:12px;color:var(--text3)">${r.itens.length} conta(s) · saldo em aberto agora: <b>R$ ${fmt(r.abertoDepois)}</b></div>
+</div>
+<div style="max-height:260px;overflow-y:auto;font-size:13px">${linhas}</div>
+<div class="modal-actions">
+  <button class="btn btn-ghost" onclick="Modal.close()">Fechar</button>
+  ${tel ? `<button class="btn btn-ghost" style="color:var(--green)" onclick="Carteira._enviarComprovanteWhatsApp()">📲 Enviar no WhatsApp</button>` : ''}
+  <button class="btn btn-primary" onclick="Carteira._imprimirComprovante()">🖨 Imprimir comprovante</button>
+</div>`, 'Pagamento registrado ✅');
+  }
+
+  async function _imprimirComprovante() {
+    const r = _ultimoComprovante;
+    if (!r) return;
+    try {
+      const res = await window.pdv.print.comprovanteCarteira({
+        cliente_nome: r.cliente_nome, forma: r.forma, operador: r.operador, itens: r.itens,
+        total: r.total, abertoAntes: r.abertoAntes, abertoDepois: r.abertoDepois,
+        loteId: r.loteId, emitidoEm: r.emitidoEm,
+      });
+      if (res && (res.success === false || res.ok === false || res.erro)) {
+        Toast.show('Não foi possível imprimir: ' + (res.failureReason || res.reason || res.erro || 'impressora'), 'error');
+      } else {
+        Toast.show('Comprovante enviado para a impressora', 'success');
+      }
+    } catch (e) {
+      Toast.show('Erro ao imprimir: ' + e.message, 'error');
+    }
+  }
+
+  async function _enviarComprovanteWhatsApp() {
+    const r = _ultimoComprovante;
+    const tel = r?.cliente?.telefone ? String(r.cliente.telefone).replace(/\D/g, '') : '';
+    if (!r || !tel) { Toast.show('Cliente sem telefone cadastrado', 'warning'); return; }
+    const empresaNome = (await window.pdv.config.get('empresa_nome')) || 'Vargas';
+    const rotulo = { dinheiro: 'Dinheiro', pix: 'PIX', debito: 'Débito', credito: 'Crédito' }[r.forma] || r.forma;
+    const quando = new Date(r.emitidoEm).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+    const linhas = r.itens.map(i => `• ${i.doc || 'Conta'} — R$ ${fmt(i.valor)}${i.quitou ? '' : ' (parcial)'}`).join('\n');
+    const mensagem = `🏪 *${empresaNome}*\n\n✅ *Comprovante de pagamento*\n${quando}\n\nOlá, *${r.cliente_nome}*! Recebemos *R$ ${fmt(r.total)}* (${rotulo}).\n\nContas pagas:\n${linhas}\n\n💰 Saldo em aberto: *R$ ${fmt(r.abertoDepois)}*\n\nCódigo ${String(r.loteId).slice(0, 8).toUpperCase()} — obrigado!`;
+    try {
+      await window.pdv.whatsapp.enviar('mensagem_direta', null, tel, { mensagem_texto: mensagem });
+      Toast.show('Comprovante enviado via WhatsApp ✅', 'success');
+    } catch (e) {
+      Toast.show('Erro ao enviar: ' + e.message, 'error');
     }
   }
 
   async function _receberConta(contaId, valor, cliente) {
+    _clienteAtual = cliente;
+    _loteEmAndamento = null;
     // Buscar créditos de loja disponíveis
     const creditos = await window.pdv.creditos.getAbertos(cliente.remote_id);
     const totalCredito = creditos.reduce((s, c) => s + (c.saldo_atual || 0), 0);
@@ -449,22 +529,12 @@ ${blocoCredito}
     const obs   = document.getElementById('receber-conta-obs')?.value?.trim() || null;
 
     if (!valorPago || valorPago <= 0) { Toast.show('Informe um valor válido', 'warning'); return; }
-
-    try {
-      const parcial = valorPago < valorTotal - 0.001;
-      if (parcial) {
-        await window.pdv.carteira.pagarParcial(contaId, valorPago, valorTotal, forma, obs);
-        Toast.show(`✅ R$ ${fmt(valorPago)} recebido — restam R$ ${fmt(valorTotal - valorPago)}`, 'success');
-      } else {
-        await window.pdv.carteira.pagar(contaId, forma, obs);
-        Toast.show(`✅ R$ ${fmt(valorTotal)} recebido`, 'success');
-      }
-      Modal.close();
-      await _carregarTotais();
-      await _carregarLista();
-    } catch (e) {
-      Toast.show('Erro: ' + e.message, 'error');
-    }
+    if (valorPago > valorTotal + 0.001) { Toast.show(`O valor passa do aberto nesta conta (R$ ${fmt(valorTotal)})`, 'warning'); return; }
+    if (!_clienteAtual) { Toast.show('Cliente não identificado — abra a conta de novo', 'error'); return; }
+    await _receber({
+      clienteId: _clienteAtual.remote_id, clienteNome: _clienteAtual.nome,
+      valor: valorPago, forma, observacao: obs, contaIds: [contaId],
+    });
   }
 
   async function _confirmarUsarCredito(contaId, contaValor, creditoId, creditoSaldo) {
@@ -528,5 +598,6 @@ ${blocoCredito}
   return { render, init, buscar, ordenar, filtrarSaldo, abrirContas, abrirReceber, sincronizar,
            enviarCobrancaWhatsApp,
            _confirmarReceber, _receberConta, _atualizarBotaoParcial,
-           _confirmarContaIndividual, _confirmarUsarCredito };
+           _confirmarContaIndividual, _confirmarUsarCredito,
+           _imprimirComprovante, _enviarComprovanteWhatsApp };
 })();
