@@ -57,10 +57,53 @@ function mensagemDoCupom() {
   return 'Obrigado pela preferencia!';
 }
 
+/**
+ * O bloco de entrega dentro do cupom de VENDA.
+ *
+ * Existia o `gerarHtmlCupomEntrega`, um documento separado, impresso por um
+ * botao dentro do modal de entrega. Quem fechava a venda e mandava imprimir o
+ * cupom recebia o cupom normal — sem nome, sem telefone, sem endereco —, e
+ * entao nao tinha papel nenhum para mandar junto com a mercadoria.
+ *
+ * Aqui o endereco entra no proprio cupom da venda. O comprovante de entrega
+ * continua existindo para quem quer a via assinada pelo entregador; este bloco
+ * resolve o caso comum, que e "imprimi o cupom e preciso saber para onde vai".
+ */
+function blocoDeEntrega(e, L) {
+  if (!e) return '';
+  const esc = (v) => escaparHtml(String(v ?? '').trim());
+  const linha1 = [e.logradouro, e.numero].filter(Boolean).join(', ');
+  const linha2 = [e.complemento, e.bairro].filter(Boolean).join(' - ');
+  const linha3 = [e.cidade, e.estado, e.cep].filter(Boolean).join(' - ');
+
+  // Sem nenhuma das tres linhas nao ha endereco: imprimir o titulo sozinho
+  // daria a impressao de que o dado existe e esta em branco.
+  if (!linha1 && !linha2 && !linha3) return '';
+
+  const turnos = { manha: 'Manha', tarde: 'Tarde', noite: 'Noite', qualquer: 'Qualquer periodo' };
+  const turno = turnos[e.turno] || e.turno || '';
+  const data = e.data_agendada || e.data_entrega
+    ? new Date(String(e.data_agendada || e.data_entrega) + 'T12:00:00').toLocaleDateString('pt-BR')
+    : '';
+  const quando = [data, turno].filter(Boolean).join(' - ');
+
+  return `
+  <hr class="sep">
+  <div class="rotulo">Entregar em</div>
+  ${linha1 ? `<div class="bold" style="font-size:${L.fonteBase}">${esc(linha1)}</div>` : ''}
+  ${linha2 ? `<div>${esc(linha2)}</div>` : ''}
+  ${linha3 ? `<div>${esc(linha3)}</div>` : ''}
+  ${e.referencia ? `<div class="sm">Ref.: ${esc(e.referencia)}</div>` : ''}
+  ${e.cliente_telefone ? `<div>Tel.: ${esc(e.cliente_telefone)}</div>` : ''}
+  ${quando ? `<div class="bold" style="margin-top:3px">Entrega: ${esc(quando)}</div>` : ''}
+  ${e.observacao ? `<div class="sm" style="margin-top:2px">${esc(e.observacao)}</div>` : ''}`;
+}
+
 function gerarHtmlCupom(dados) {
   const { numero, empresa_nome, vendedor_nome, cliente_nome, itens = [],
           subtotal = 0, desconto = 0, total = 0, forma_pagamento = '',
-          valor_pago = 0, troco = 0, created_at, observacao = '' } = dados;
+          valor_pago = 0, troco = 0, created_at, observacao = '',
+          entrega = null } = dados;
 
   const layoutNome = store.get('config.cupom_layout') || 'padrao';
   const L = LAYOUTS[layoutNome] || LAYOUTS.padrao;
@@ -84,13 +127,21 @@ function gerarHtmlCupom(dados) {
     const sub = Number(i.subtotal || i.total || 0);
     return `
       <tr>
-        <td colspan="2" style="padding-top:5px;font-weight:bold">${i.produto_nome}</td>
+        <td colspan="2" style="padding-top:5px;font-weight:bold">${escaparHtml(i.produto_nome ?? '')}</td>
       </tr>
       <tr>
         <td style="color:#555">${Math.abs(qtd)} x R$ ${fmt(preco)}</td>
         <td style="text-align:right;font-weight:bold">R$ ${fmt(Math.abs(sub))}</td>
       </tr>`;
   }).join('');
+
+  // O RABICHO DE PAPEL, em numero de linhas em branco no fim.
+  //
+  // Uma venda de um item so saia com uns quatro centimetros de papel — curto
+  // demais para o cliente guardar e, em impressora sem serrilha, curto demais
+  // para destacar sem puxar o proximo cupom junto. Zero por padrao: quem nao
+  // configurou nada continua recebendo o cupom do mesmo tamanho de sempre.
+  const extras = Math.max(0, Math.min(12, Number(store.get('config.cupom_linhas_extras') || 0)));
 
   return `<!DOCTYPE html>
 <html>
@@ -116,14 +167,24 @@ function gerarHtmlCupom(dados) {
   table   { width: 100%; border-collapse: collapse; }
   td      { vertical-align: top; padding: 1px 0; }
   .total-row td { font-size: ${L.fonteTotal}; font-weight: bold; padding-top: 6px; }
+  /* O rotulo do bloco: pequeno e discreto, porque quem precisa ser lido e o
+     dado embaixo dele, nao a palavra "Cliente". */
+  .rotulo { font-size: ${L.fonteSm}; color: #555; text-transform: uppercase; }
 </style>
 </head>
 <body>
-  <div class="center bold lg">${empresa_nome || 'PDV VARGAS'}</div>
+  <div class="center bold lg">${escaparHtml(empresa_nome || 'PDV VARGAS')}</div>
   <div class="center sm">Venda #${numero}</div>
   <div class="center sm">${data}</div>
-  ${vendedor_nome ? `<div class="center sm">Vendedor: ${vendedor_nome}</div>` : ''}
-  ${cliente_nome  ? `<div class="center sm">Cliente: ${cliente_nome}</div>`   : ''}
+  ${vendedor_nome ? `<div class="center sm">Vendedor: ${escaparHtml(vendedor_nome)}</div>` : ''}
+
+  ${cliente_nome ? `
+  <hr class="sep">
+  <div class="rotulo">Cliente</div>
+  <div class="bold">${escaparHtml(cliente_nome)}</div>` : ''}
+
+  ${blocoDeEntrega(entrega, L)}
+
   <hr class="sep">
 
   <table>${linhas}</table>
@@ -146,10 +207,11 @@ function gerarHtmlCupom(dados) {
     ${troco > 0     ? `<br>Troco: R$ ${fmt(troco)}`         : ''}
   </div>
 
-  ${observacao ? `<hr class="sep"><div class="sm">📝 ${observacao}</div>` : ''}
+  ${observacao ? `<hr class="sep"><div class="sm">📝 ${escaparHtml(observacao)}</div>` : ''}
 
   ${mensagem ? `<hr class="sep">
   <div class="center sm" style="margin-top:4px;white-space:pre-line">${escaparHtml(mensagem)}</div>` : ''}
+  ${'<br>'.repeat(extras)}
 </body>
 </html>`;
 }
