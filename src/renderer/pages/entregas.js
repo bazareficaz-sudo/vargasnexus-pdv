@@ -269,8 +269,11 @@ const Entregas = (() => {
       emitido_em:       new Date().toISOString(),
     };
     try {
-      await window.pdv.print.entrega(dados);
-      Toast.show('Comprovante enviado para impressão', 'success');
+      // A resposta diz se o comprovante saiu. Anunciar antes de olhar era o
+      // mesmo defeito do cupom de venda.
+      const r = lerDesfechoDaImpressao(await window.pdv.print.entrega(dados));
+      if (r.ok) Toast.show('Comprovante enviado para impressão', 'success');
+      else Toast.show('Impressão: ' + r.erro, 'warning', 8000);
     } catch(err) {
       Toast.show('Erro ao imprimir: ' + err.message, 'error');
     }

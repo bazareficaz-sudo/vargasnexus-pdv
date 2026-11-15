@@ -60,7 +60,16 @@ describe('uma regra so, para os tres documentos', () => {
 
   test('a VENDA tambem, e ela estava no renderer', () => {
     // Era a terceira copia da escolha — e a que ignorava a configuracao.
-    assert.match(PDV, /await window\.pdv\.print\.destino\(\) === 'servidor'/);
+    //
+    // O PDV nao pergunta mais o destino por conta propria: ele chama
+    // `imprimirCupom` (app.js), o despachante que a tela de Vendas tambem
+    // usa. Era preciso, porque a tela de Vendas ainda lia o IP cru e, no
+    // terminal que hospeda o servidor, mandava o cupom por outro caminho —
+    // uma tela imprimia e a outra nao.
+    const APP = fs.readFileSync(
+      path.resolve(__dirname, '..', 'src/renderer/app.js'), 'utf8');
+    assert.match(APP, /await window\.pdv\.print\.destino\(\)/);
+    assert.match(PDV, /await imprimirCupom\(dados\)/);
     assert.doesNotMatch(PDV, /config\.get\('config\.print_server_ip'\)/);
     assert.match(PRELOAD, /destino:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('print:destino'\)/);
   });

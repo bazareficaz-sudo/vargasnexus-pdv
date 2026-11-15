@@ -474,18 +474,29 @@ async function processarFila() {
   if (imprimindo || fila.length === 0) return;
   imprimindo = true;
   const job = fila.shift();
+  let desfecho;
   try {
-    await imprimirLocal(job);
+    desfecho = await imprimirLocal(job.dados);
   } catch (e) {
     console.warn('[PRINT] Erro no job:', e.message);
+    desfecho = { success: false, failureReason: e.message };
   }
   imprimindo = false;
+  job.resolve(desfecho || { success: false, failureReason: 'sem resposta da impressora' });
   if (fila.length > 0) setImmediate(processarFila);
 }
 
+// A fila existe para nao abrir duas janelas de impressao ao mesmo tempo. O que
+// ela NAO pode fazer e engolir o desfecho: `imprimirLocal` ja sabe se o cupom
+// saiu (`webContents.print` devolve `success` e `failureReason`), e antes esse
+// resultado morria aqui dentro. Quem chamou recebia `undefined` e nao tinha
+// como distinguir impresso de nao impresso -- foi assim que a tela passou a
+// avisar "Enviado para impressao" sem nada ter saido.
 function adicionarNaFila(dados) {
-  fila.push(dados);
-  processarFila();
+  return new Promise((resolve) => {
+    fila.push({ dados, resolve });
+    processarFila();
+  });
 }
 
 // ─── Servidor HTTP (modo CAIXA) ──────────────────────────────────────────────
@@ -507,12 +518,30 @@ function start(port) {
     if (req.method === 'POST' && req.url === '/imprimir') {
       let body = '';
       req.on('data', chunk => { body += chunk; });
-      req.on('end', () => {
+      req.on('end', async () => {
         try {
           const dados = JSON.parse(body);
-          adicionarNaFila(dados);
+          // Responder antes de imprimir era prometer pelo outro. O terminal
+          // que vendeu recebia `ok: true` e avisava "Enviado para impressao"
+          // enquanto, aqui, o job podia falhar calado. Agora a resposta
+          // espera o desfecho.
+          //
+          // Com teto: impressora travada nao pode prender o balcao. Estourou
+          // o teto, a resposta e honesta tambem — `pendente`, nem sucesso
+          // nem fracasso, e sem `erro` para nao acusar o que nao se sabe.
+          const TETO_MS = 8000;
+          const desfecho = await Promise.race([
+            adicionarNaFila(dados),
+            new Promise(r => setTimeout(() => r(null), TETO_MS)),
+          ]);
           res.writeHead(200);
-          res.end(JSON.stringify({ ok: true, posicao_fila: fila.length }));
+          if (!desfecho) {
+            res.end(JSON.stringify({ ok: true, pendente: true, posicao_fila: fila.length }));
+          } else if (desfecho.success) {
+            res.end(JSON.stringify({ ok: true }));
+          } else {
+            res.end(JSON.stringify({ ok: false, erro: desfecho.failureReason || 'a impressora nao respondeu' }));
+          }
         } catch (e) {
           res.writeHead(400);
           res.end(JSON.stringify({ erro: e.message }));
@@ -558,7 +587,10 @@ async function enviarParaServidor(dados) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(dados),
-    timeout: 6000,
+    // Maior que o teto de 8s que o servidor usa para esperar o desfecho do
+    // job. Menor, e o lado de ca desistiria no exato instante em que o outro
+    // ia contar se o cupom saiu.
+    timeout: 12000,
   });
   if (!res.ok) {
     const txt = await res.text().catch(() => '');

@@ -298,6 +298,55 @@ function fmtMoney(v) {
   return (v || 0).toFixed(2).replace('.', ',');
 }
 
+// ─── Impressão de cupom ───────────────────────────────────────────
+//
+// UM lugar que decide para onde o cupom vai, e UM lugar que sabe dizer se ele
+// saiu. Antes eram dois, e eles discordavam:
+//
+//   - o comprovante do PDV perguntava ao main (`print:destino`);
+//   - a tela de Vendas lia `config.print_server_ip` por conta propria.
+//
+// No terminal que HOSPEDA o servidor de impressao (`print_server_ativo`), o
+// main responde 'local' — imprimir na propria maquina em vez de dar a volta
+// pelo tunel ate ela mesma. A tela de Vendas nao sabia disso e mandava pelo
+// tunel. Resultado: pela tela de Vendas o cupom saia; pelo comprovante, nao.
+//
+// E a rota 'local' mentia. `print.local` era disparado sem `await` e sem
+// olhar a resposta, entao o "Enviado para impressao" aparecia mesmo quando a
+// impressora nao existia. Agora o desfecho vem de volta (ver
+// `adicionarNaFila` em print-server.js) e quem chama recebe o motivo.
+//
+// Devolve { ok, erro } — nunca lanca.
+async function imprimirCupom(dados) {
+  try {
+    const destino = await window.pdv.print.destino();
+    const res = destino === 'servidor'
+      ? await window.pdv.print.servidor(dados)
+      : await window.pdv.print.local(dados);
+    return lerDesfechoDaImpressao(res);
+  } catch (e) {
+    return { ok: false, erro: e.message };
+  }
+}
+
+/**
+ * Traduz as DUAS formas de resposta de impressao que existem no sistema:
+ * `{ erro }` da rota pelo servidor e `{ success, failureReason }` da rota
+ * local. Quem imprime so quer saber se saiu, e por que nao.
+ *
+ * Silencio NAO e recusa. Enquanto os outros terminais nao forem atualizados,
+ * `print:local` continua respondendo `undefined` e o servidor antigo responde
+ * `{ ok: true }` antes mesmo de imprimir. Inventar uma falha nesses casos
+ * assustaria o operador com um cupom que saiu.
+ */
+function lerDesfechoDaImpressao(res) {
+  if (res && res.erro) return { ok: false, erro: res.erro };
+  if (res && res.success === false) {
+    return { ok: false, erro: res.failureReason || 'a impressora não respondeu' };
+  }
+  return { ok: true };
+}
+
 function fmtDate(iso) {
   if (!iso) return '-';
   const d = new Date(iso);

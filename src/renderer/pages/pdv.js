@@ -2341,8 +2341,9 @@ ${podeDesconto ? `
       emitido_em:       new Date().toISOString(),
     };
     try {
-      await window.pdv.print.entrega(dados);
-      Toast.show('Comprovante de entrega enviado para impressão', 'success');
+      const r = lerDesfechoDaImpressao(await window.pdv.print.entrega(dados));
+      if (r.ok) Toast.show('Comprovante de entrega enviado para impressão', 'success');
+      else Toast.show('Impressão: ' + r.erro, 'warning', 8000);
     } catch(e) {
       Toast.show('Erro ao imprimir: ' + e.message, 'error');
     }
@@ -2751,7 +2752,10 @@ ${podeDesconto ? `
     const uv = _ultimaVenda;
     if (!uv) return;
     const ok = await _enviarImpressao(uv.numero, uv.venda, uv.entrega || null, { forcar: true });
-    Toast.show(ok ? 'Enviado para impressão' : 'Não foi possível imprimir', ok ? 'success' : 'warning');
+    // Só o sucesso é anunciado aqui. A falha já foi avisada COM O MOTIVO por
+    // `_enviarImpressao`; repetir um "não foi possível" genérico por cima
+    // apagaria a única informação útil da tela.
+    if (ok) Toast.show('Enviado para impressão', 'success');
   }
 
   async function _emitirNFCeComprovante() {
@@ -2811,20 +2815,27 @@ ${podeDesconto ? `
         observacao: venda.observacao || null,
         created_at: venda.created_at || new Date().toISOString(),
       };
-      // A mesma regra dos outros documentos, decidida no main. Ler o IP
-      // aqui era a terceira cópia da escolha — e a que ignorava a
-      // configuração do operador.
-      if (await window.pdv.print.destino() === 'servidor') {
-        const res = await window.pdv.print.servidor(dados);
-        if (res?.erro) { Toast.show('Impressão: ' + res.erro, 'warning'); return false; }
-      } else {
-        window.pdv.print.local(dados);
-      }
+      // A mesma regra dos outros documentos, decidida no main — e agora no
+      // MESMO despachante que a tela de Vendas usa (`imprimirCupom`, em
+      // app.js). Duas cópias da escolha eram duas respostas possíveis para a
+      // mesma pergunta, e no terminal que hospeda o servidor de impressão
+      // elas respondiam diferente.
+      const r = await imprimirCupom(dados);
+      if (!r.ok) { _avisarFalhaImpressao(r.erro); return false; }
       return true;
     } catch (e) {
       console.warn('[PRINT] Erro ao enviar impressão:', e.message);
+      _avisarFalhaImpressao(e.message);
       return false;
     }
+  }
+
+  // O motivo entra no aviso. "Não foi possível imprimir" sozinho manda o
+  // operador adivinhar entre impressora desligada, nome errado e servidor
+  // fora do ar — e foi justamente essa adivinhação que custou a descoberta
+  // deste defeito.
+  function _avisarFalhaImpressao(motivo) {
+    Toast.show('Impressão: ' + (motivo || 'não foi possível imprimir'), 'warning', 8000);
   }
 
   // Mantido para compatibilidade (não usado mais na UI mas chamado internamente)
