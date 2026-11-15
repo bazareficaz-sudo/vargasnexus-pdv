@@ -1060,23 +1060,67 @@ const WA = {
 
 // ─── Vendas ───────────────────────────────────────────────────────
 const Vendas = {
-  _todoTerminais: false,
+  // A LISTA E SEMPRE A DA LOJA INTEIRA, para quem tem permissao de ver.
+  //
+  // Antes havia um checkbox "Todos os terminais": desmarcado lia o banco LOCAL
+  // daquela maquina, marcado lia o servidor. Duas fontes diferentes atras de um
+  // rotulo que nao dizia isso -- e, como nao havia botao de atualizar, o caixa
+  // marcava e desmarcava o dia inteiro so para puxar venda nova.
+  //
+  // Agora a fonte e uma so e a atualizacao e de verdade: automatica a cada 10s
+  // enquanto a tela estiver aberta na data de hoje, mais um botao.
   _sortCol: 'data',
   _sortDir: 'desc',
   _sel: new Set(),
   _lista: [],
+  /** Ids que existem no SQLite DESTA maquina: so eles podem imprimir e editar. */
+  _locais: new Set(),
+  _timer: null,
+  _atualizadoEm: null,
+  _carregando: false,
+
+  /**
+   * A atualizacao automatica e ESCOLHA de quem esta no caixa, e a escolha fica
+   * gravada na maquina. Quem passa o dia na tela quer ligada; quem abre para
+   * conferir uma venda antiga pode nao querer a lista mexendo embaixo do dedo.
+   *
+   * `localStorage` e de proposito: e preferencia de tela, daquele computador,
+   * e nao tem por que viajar para o servidor nem valer para os outros
+   * terminais. Fora que ler isso nao pode depender de rede.
+   */
+  _lerAuto() {
+    try { return localStorage.getItem('vendas.auto') !== 'nao'; } catch { return true; }
+  },
+
+  ligarAuto(val) {
+    try { localStorage.setItem('vendas.auto', val ? 'sim' : 'nao'); } catch {}
+    this._carimbar(false);
+    if (val) this.load({ silencioso: true });
+  },
 
   render() {
     const podeVerTodos = podePermissao('ver_vendas_todos_terminais');
     return `
+<style>
+  /* A TELA QUE O CAIXA OLHA O DIA INTEIRO.
+     Fonte e altura de linha maiores que o padrao do app: aqui nao se procura
+     um dado, se le a tela de longe enquanto o cliente espera. */
+  #vendas-table { font-size: 15px; }
+  #vendas-table thead th { font-size: 12px; letter-spacing:.4px; padding: 10px 12px; }
+  #vendas-table tbody td { padding: 12px; vertical-align: middle; }
+  #vendas-table tbody tr:hover { background: var(--bg2, rgba(0,0,0,.02)); }
+</style>
 <div class="page-header">
-  <div><div class="page-title">Vendas</div></div>
+  <div>
+    <div class="page-title">Vendas</div>
+    <div class="page-subtitle" id="vendas-carimbo" style="font-size:12px;color:var(--text3)"></div>
+  </div>
   <div class="page-actions" style="display:flex;gap:8px;align-items:center">
-    ${podeVerTodos ? `
-    <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2);cursor:pointer;white-space:nowrap">
-      <input type="checkbox" id="venda-todos-terminais" onchange="Vendas.toggleTodos(this.checked)" style="cursor:pointer">
-      Todos os terminais
-    </label>` : ''}
+    <button class="btn btn-ghost btn-sm" id="vendas-btn-atualizar" onclick="Vendas.atualizarAgora()" title="Puxar as vendas novas agora" style="white-space:nowrap">↻ Atualizar</button>
+    <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text2);cursor:pointer;white-space:nowrap" title="Puxa as vendas novas a cada 10 segundos, sem precisar clicar">
+      <input type="checkbox" id="vendas-auto" ${Vendas._lerAuto() ? 'checked' : ''} onchange="Vendas.ligarAuto(this.checked)" style="cursor:pointer">
+      Atualizar sozinho
+    </label>
     <button class="btn btn-ghost btn-sm" title="Corrigir nome do cliente nas vendas enviadas ao Base44 sem identificação" onclick="Vendas.repararClientes()" style="white-space:nowrap">🔧 Reparar Clientes</button>
     <input class="input" id="venda-busca-produto" type="text" placeholder="🔍 Buscar por produto..." style="min-width:200px" oninput="Vendas.load()">
     <input class="input" id="venda-data" type="date" value="${new Date().toISOString().split('T')[0]}" onchange="Vendas.load()">
@@ -1098,9 +1142,60 @@ const Vendas = {
 </div>`;
   },
 
-  async init() { this._todoTerminais = false; this._sel = new Set(); this._lista = []; await this.load(); },
+  async init() {
+    this._sel = new Set();
+    this._lista = [];
+    this._locais = new Set();
+    await this.load();
+    this._ligarTimer();
+  },
 
-  toggleTodos(val) { this._todoTerminais = val; this._sel = new Set(); this.load(); },
+  /**
+   * A atualizacao automatica, que se desliga sozinha.
+   *
+   * O app nao tem gancho de "saiu da tela" -- `navigate` so troca o innerHTML.
+   * Entao o proprio tique confere se a tabela ainda existe no DOM; quando ela
+   * some, o intervalo se mata. Sem isto o timer ficaria consultando o servidor
+   * para sempre, em segundo plano, numa tela que ninguem esta vendo.
+   */
+  _ligarTimer() {
+    if (this._timer) clearInterval(this._timer);
+    this._timer = setInterval(() => {
+      if (!document.getElementById('vendas-tbody')) {
+        clearInterval(this._timer);
+        this._timer = null;
+        return;
+      }
+      if (!this._lerAuto()) return;
+      // So a data de hoje se atualiza sozinha: ficar repuxando um dia passado
+      // gasta rede para mostrar sempre a mesma coisa.
+      const data = document.getElementById('venda-data')?.value;
+      if (data !== new Date().toISOString().split('T')[0]) return;
+      this.load({ silencioso: true });
+    }, 10000);
+  },
+
+  /** O clique no botao: mostra que esta carregando e limpa a selecao. */
+  async atualizarAgora() {
+    const btn = document.getElementById('vendas-btn-atualizar');
+    if (btn) { btn.disabled = true; btn.textContent = '↻ Atualizando…'; }
+    try { await this.load(); }
+    finally { if (btn) { btn.disabled = false; btn.textContent = '↻ Atualizar'; } }
+  },
+
+  _carimbar(erro) {
+    const el = document.getElementById('vendas-carimbo');
+    if (!el) return;
+    const hora = this._atualizadoEm
+      ? this._atualizadoEm.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+      : '—';
+    // Sem rede a lista NAO e esvaziada: ela continua valendo, so fica velha. Um
+    // dia em branco por causa de oscilacao de internet assusta mais que ajuda.
+    const auto = this._lerAuto();
+    el.innerHTML = erro
+      ? `<span style="color:var(--red)">Sem conexão — mostrando o que foi carregado às ${hora}</span>`
+      : `Atualizado às ${hora}${auto ? ' · atualiza sozinho a cada 10s' : ' · atualização automática desligada'}`;
+  },
 
   _thSort(col, label) {
     const ativo = this._sortCol === col;
@@ -1178,51 +1273,89 @@ const Vendas = {
     this._renderTabela();
   },
 
-  async load() {
+  async load(opts = {}) {
+    // `silencioso` e o tique automatico: NAO limpa a selecao, NAO pisca
+    // "Carregando..." e NAO repinta se nada mudou. Sem esses tres cuidados a
+    // atualizacao de 10s seria pior que o checkbox -- a operadora perderia as
+    // vendas que marcou para NFC-e e o scroll pularia na mao dela.
+    const silencioso = opts.silencioso === true;
     const data = document.getElementById('venda-data')?.value || new Date().toISOString().split('T')[0];
     const tbody = document.getElementById('vendas-tbody');
     if (!tbody) return;
-    this._sel = new Set();
-    this._atualizarBarraSel();
+    if (this._carregando) return;
+    this._carregando = true;
 
-    if (this._todoTerminais) {
-      tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;padding:20px;color:var(--text3)">Carregando...</td></tr>';
-      try {
-        const lista = await window.pdv.vendas.listarCloud(data);
-        this._lista = lista;
-
-        const tt = document.getElementById('vendas-totais');
-        if (tt && podePermissao('ver_total_vendas_dia')) {
-          const ativos  = lista.filter(v => v.status !== 'cancelada');
-          const totalValor = ativos.reduce((s, v) => s + (v.total || 0), 0);
-          const pix        = ativos.filter(v => v.forma_pagamento === 'pix').reduce((s, v) => s + (v.total || 0), 0);
-          const dinheiro   = ativos.filter(v => v.forma_pagamento === 'dinheiro').reduce((s, v) => s + (v.total || 0), 0);
-          const cartao     = ativos.filter(v => ['credito','debito','cartao_credito','cartao_debito'].includes(v.forma_pagamento)).reduce((s, v) => s + (v.total || 0), 0);
-          tt.innerHTML = `
-            <div class="card"><div class="card-label">Total Vendas</div><div class="card-value">R$ ${fmtMoney(totalValor)}</div></div>
-            <div class="card"><div class="card-label">Transações</div><div class="card-value">${ativos.length}</div></div>
-            <div class="card"><div class="card-label">PIX + Dinheiro</div><div class="card-value">R$ ${fmtMoney(pix + dinheiro)}</div></div>
-            <div class="card"><div class="card-label">Cartão</div><div class="card-value">R$ ${fmtMoney(cartao)}</div></div>`;
-        } else if (tt) { tt.innerHTML = ''; }
-
-        this._renderTabela();
-      } catch(e) {
-        tbody.innerHTML = `<tr><td colspan="10" style="text-align:center;padding:20px;color:var(--red)">Erro ao carregar: ${e.message}</td></tr>`;
+    if (!silencioso) {
+      this._sel = new Set();
+      this._atualizarBarraSel();
+      if (!this._lista.length) {
+        tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;padding:20px;color:var(--text3)">Carregando...</td></tr>';
       }
-    } else {
-      const buscaProduto = document.getElementById('venda-busca-produto')?.value?.trim() || '';
-      const lista  = await window.pdv.vendas.listar({ data_inicio: data, data_fim: data, ...(buscaProduto ? { produto: buscaProduto } : {}) });
-      const totais = await window.pdv.vendas.totaisHoje();
+    }
+
+    const buscaProduto = document.getElementById('venda-busca-produto')?.value?.trim() || '';
+    const podeVerTodos = podePermissao('ver_vendas_todos_terminais');
+
+    try {
+      let lista;
+      if (podeVerTodos) {
+        lista = await window.pdv.vendas.listarCloud(data);
+        if (buscaProduto) {
+          // O filtro por produto existia so no caminho local. Na nuvem a venda
+          // traz `itens` em jsonb, entao da para filtrar aqui sem outra
+          // consulta -- e sem um segundo jeito de perguntar a mesma coisa.
+          const alvo = buscaProduto.toLowerCase();
+          lista = lista.filter(v => JSON.stringify(v.itens || '').toLowerCase().includes(alvo));
+        }
+      } else {
+        // Quem nao tem `ver_vendas_todos_terminais` continua vendo so o que
+        // esta maquina gravou. Abrir a loja inteira para todo mundo seria
+        // alargar permissao por conta de uma mudanca de tela.
+        lista = await window.pdv.vendas.listar({
+          data_inicio: data, data_fim: data,
+          ...(buscaProduto ? { produto: buscaProduto } : {}),
+        });
+      }
+
+      // Quais dessas vendas existem NESTA maquina. E o que decide se a linha
+      // pode imprimir, editar e emitir NFC-e: essas tres precisam do registro
+      // local, e uma venda de outro balcao simplesmente nao esta aqui.
+      if (podeVerTodos) {
+        try {
+          const locais = await window.pdv.vendas.listar({ data_inicio: data, data_fim: data, limit: 500 });
+          this._locais = new Set((locais || []).map(v => v.id));
+        } catch { /* sem o local, as linhas ficam so com as acoes de nuvem */ }
+      } else {
+        this._locais = new Set((lista || []).map(v => v.id));
+      }
+
+      const mudou = JSON.stringify(lista) !== JSON.stringify(this._lista);
       this._lista = lista;
+      this._atualizadoEm = new Date();
+      this._carimbar(false);
 
       const tt = document.getElementById('vendas-totais');
-      if (tt) tt.innerHTML = podePermissao('ver_total_vendas_dia') ? `
-        <div class="card"><div class="card-label">Total Vendas</div><div class="card-value">R$ ${fmtMoney(totais?.total_valor)}</div></div>
-        <div class="card"><div class="card-label">Transações</div><div class="card-value">${totais?.total_vendas || 0}</div></div>
-        <div class="card"><div class="card-label">PIX + Dinheiro</div><div class="card-value">R$ ${fmtMoney((totais?.pix||0)+(totais?.dinheiro||0))}</div></div>
-        <div class="card"><div class="card-label">Cartão</div><div class="card-value">R$ ${fmtMoney(totais?.cartao)}</div></div>` : '';
+      if (tt) {
+        if (podePermissao('ver_total_vendas_dia')) {
+          const ativos = lista.filter(v => v.status !== 'cancelada');
+          const soma = (f) => ativos.filter(f).reduce((t, v) => t + (Number(v.total) || 0), 0);
+          tt.innerHTML = `
+            <div class="card"><div class="card-label">Total Vendas</div><div class="card-value">R$ ${fmtMoney(soma(() => true))}</div></div>
+            <div class="card"><div class="card-label">Transações</div><div class="card-value">${ativos.length}</div></div>
+            <div class="card"><div class="card-label">PIX + Dinheiro</div><div class="card-value">R$ ${fmtMoney(soma(v => v.forma_pagamento === 'pix' || v.forma_pagamento === 'dinheiro'))}</div></div>
+            <div class="card"><div class="card-label">Cartão</div><div class="card-value">R$ ${fmtMoney(soma(v => ['credito','debito','cartao_credito','cartao_debito'].includes(v.forma_pagamento)))}</div></div>`;
+        } else { tt.innerHTML = ''; }
+      }
 
-      this._renderTabela();
+      if (mudou || !silencioso) this._renderTabela();
+    } catch (e) {
+      // A lista de antes continua na tela. So o carimbo muda.
+      this._carimbar(true);
+      if (!this._lista.length) {
+        tbody.innerHTML = `<tr><td colspan="11" style="text-align:center;padding:20px;color:var(--red)">Não foi possível carregar: ${e.message}</td></tr>`;
+      }
+    } finally {
+      this._carregando = false;
     }
   },
 
@@ -1231,14 +1364,14 @@ const Vendas = {
     const tbody = document.getElementById('vendas-tbody');
     if (!tbody) return;
 
-    const nuvem = this._todoTerminais;
-    const cols = 10;
+    const cols = 11;
 
     if (thead) thead.innerHTML = `<tr>
       <th style="width:32px"><input type="checkbox" title="Selecionar todas" onchange="Vendas.toggleTodasSel(this)"></th>
       ${this._thSort('numero', '#')}
       ${this._thSort('data', 'Data / Hora')}
-      <th>${nuvem ? 'Terminal' : 'Terminal'}</th>
+      <th>Terminal</th>
+      <th>Vendedor</th>
       ${this._thSort('cliente', 'Cliente')}
       ${this._thSort('pagamento', 'Pagamento')}
       ${this._thSort('total', 'Total')}
@@ -1262,7 +1395,12 @@ const Vendas = {
       const dataFmt = dt ? new Date(dt).toLocaleDateString('pt-BR', {day:'2-digit',month:'2-digit'}) : '—';
       const horaFmt = dt ? new Date(dt).toLocaleTimeString('pt-BR', {hour:'2-digit',minute:'2-digit'}) : '—';
       const pgBadge = v.forma_pagamento === 'pix' ? 'badge-green' : v.forma_pagamento === 'dinheiro' ? 'badge-yellow' : 'badge-blue';
-      const terminal = nuvem ? (v.terminal_id || '—') : 'Este terminal';
+      const terminal = v.terminal_id || '—';
+      const vendedor = v.vendedor_nome || v.operador_nome || '—';
+      // Imprimir, editar e emitir NFC-e precisam do registro LOCAL. Uma venda
+      // de outro balcao nao esta no SQLite desta maquina, e oferecer o botao
+      // seria prometer o que nao da para cumprir.
+      const nuvem = !this._locais.has(id);
 
       const naoSincronizada = !nuvem && !v.remote_id;
       const syncBadge = (nuvem || v.remote_id
@@ -1274,19 +1412,20 @@ const Vendas = {
 
       return `<tr style="${sel ? 'background:var(--accent-soft,rgba(108,99,255,.08))' : ''}">
         <td><input type="checkbox" ${sel ? 'checked' : ''} ${cancelada ? 'disabled' : ''} onchange="Vendas.toggleSel('${id}',this)"></td>
-        <td class="td-mono" style="font-size:13px;font-weight:600;color:var(--accent)">#${v.numero || '—'}</td>
+        <td class="td-mono" style="font-size:15px;font-weight:700;color:var(--accent)">#${v.numero || '—'}</td>
         <td>
-          <div style="font-size:13px;font-weight:500">${horaFmt}</div>
-          <div style="font-size:11px;color:var(--text3)">${dataFmt}</div>
+          <div style="font-size:15px;font-weight:600">${horaFmt}</div>
+          <div style="font-size:12px;color:var(--text3)">${dataFmt}</div>
         </td>
-        <td style="font-size:11px;color:var(--text3)">${terminal}</td>
+        <td style="font-size:13px;color:var(--text2);white-space:nowrap">${terminal}</td>
+        <td style="font-size:13px;color:var(--text2)">${vendedor}</td>
         <td>
           ${v.cliente_nome
-            ? `<div style="font-size:13px;font-weight:600;color:var(--text1)">${v.cliente_nome}</div>`
+            ? `<div style="font-size:15px;font-weight:600;color:var(--text1)">${v.cliente_nome}</div>`
             : `<span style="color:var(--text3);font-size:12px">—</span>`}
         </td>
         <td><span class="badge ${pgBadge}">${v.forma_pagamento || '—'}</span></td>
-        <td style="font-size:15px;font-weight:700;color:var(--accent);white-space:nowrap">R$ ${fmtMoney(v.total)}</td>
+        <td style="font-size:17px;font-weight:700;color:var(--accent);white-space:nowrap">R$ ${fmtMoney(v.total)}</td>
         <td>${cancelada ? '<span class="badge badge-red">Cancelada</span>' : '<span class="badge badge-green">Concluída</span>'}</td>
         <td>${syncBadge}</td>
         <td style="display:flex;gap:4px;flex-wrap:wrap;min-width:120px">
@@ -1301,11 +1440,152 @@ const Vendas = {
                  : !cancelada ? `<button class="btn btn-ghost btn-sm" style="color:var(--green);font-size:10px" onclick="Vendas.emitirNFCe('${id}')" title="Emitir NFC-e">🧾 NFC-e</button>` : ''}
                ${!cancelada ? `<button class="btn btn-ghost btn-sm" style="color:#25D366" title="Enviar por WhatsApp" onclick="${v.cliente_telefone ? `WA.abrirModal('Enviar cupom via WhatsApp','${(v.cliente_telefone||'').replace(/'/g,"\\'")}','venda','${id}',WA._vendas['${id}'])` : `WA.abrirModalCapturaCliente('venda','${id}','${(v.cliente_nome||'').replace(/'/g,"\\'")}',WA._vendas['${id}'])` }">${WA_ICON}</button>` : ''}
                ${!cancelada ? `<button class="btn btn-danger btn-sm" onclick="Vendas.cancelar('${id}')">Cancelar</button>` : ''}`}
+          ${!cancelada && podePermissao('fechar_caixa')
+            ? `<button class="btn btn-ghost btn-sm" style="color:var(--accent);white-space:nowrap"
+                 title="O cartão não passou, o cliente pagou de outro jeito"
+                 onclick="Vendas.trocarForma('${id}', '${(v.forma_pagamento || '').replace(/'/g, "")}')">⇄ Trocar forma</button>` : ''}
+          ${!cancelada && Vendas._centavos(v.total) > 0 && podePermissao('fechar_caixa')
+            ? `<button class="btn btn-ghost btn-sm" style="color:var(--green);white-space:nowrap"
+                 title="O cliente pagou o valor redondo e a loja abriu mão dos centavos"
+                 onclick="Vendas.arredondar('${id}', ${Number(v.total) || 0})">¢ Arredondar</button>` : ''}
         </td>
       </tr>`;
     }).join('');
     WA._vendas = WA._vendas || {};
     lista.forEach(v => { WA._vendas[v.id || v.remote_id] = v; });
+  },
+
+  /**
+   * Os centavos que dao para abater nesta venda.
+   *
+   * E o MESMO calculo que o banco faz, e a repeticao e consciente: serve para a
+   * tela ja sugerir o valor e nao oferecer o botao numa venda redonda. A
+   * autoridade continua sendo o banco -- se as duas contas divergirem, quem
+   * manda e a que recusa.
+   *
+   * Centavos INTEIROS antes do resto, senao 1.1 * 3 viraria 0,30000000000004
+   * na sugestao.
+   */
+  _centavos(total) {
+    const n = Number(total);
+    if (!Number.isFinite(n) || n <= 0) return 0;
+    return (Math.round(n * 100) % 100) / 100;
+  },
+
+  arredondar(id, total) {
+    const centavos = this._centavos(total);
+    if (centavos <= 0) return;
+    const redondo = Math.floor(Math.round(Number(total) * 100) / 100);
+    Modal.open(`
+<div style="margin-bottom:14px;font-size:15px">
+  A venda foi de <strong>R$ ${fmtMoney(total)}</strong>.
+  Arredondando, o cliente paga <strong>R$ ${fmtMoney(redondo)}</strong>.
+</div>
+<div class="form-group">
+  <label>Quanto a loja está abrindo mão</label>
+  <input class="input" id="arred-valor" inputmode="decimal" value="${centavos.toFixed(2).replace('.', ',')}">
+  <div style="color:var(--text3);font-size:12px;margin-top:4px">
+    No máximo os centavos da venda — R$ ${fmtMoney(centavos)} — e dentro do limite da loja.
+  </div>
+</div>
+<div class="form-group">
+  <label>Observação (opcional)</label>
+  <input class="input" id="arred-obs" placeholder="Ex.: cliente só tinha nota de 100">
+</div>
+<div class="modal-actions">
+  <button class="btn btn-ghost" onclick="Modal.close()">Cancelar</button>
+  <button class="btn btn-primary" id="arred-ok" onclick="Vendas._confirmarArredondar('${id}')">Registrar</button>
+</div>`, 'Arredondar o recebimento', `Venda #${id.slice(0, 8)}`);
+  },
+
+  async _confirmarArredondar(id) {
+    const bruto = (document.getElementById('arred-valor')?.value || '').trim().replace(/\./g, '').replace(',', '.');
+    const valor = Number(bruto);
+    const obs = (document.getElementById('arred-obs')?.value || '').trim();
+    if (!Number.isFinite(valor) || valor <= 0) return Toast.show('Informe quanto está sendo abatido.', 'error');
+
+    const btn = document.getElementById('arred-ok');
+    if (btn) { btn.disabled = true; btn.textContent = 'Enviando…'; }
+    const r = await window.pdv.caixa.arredondar({ vendaId: id, valor, observacao: obs || null });
+    if (btn) { btn.disabled = false; btn.textContent = 'Registrar'; }
+
+    if (!r || !r.ok) return Toast.show((r && r.erro) || 'Não foi possível arredondar.', 'error');
+    Modal.close();
+    Toast.show(r.aviso || 'Arredondamento registrado.', 'success');
+  },
+
+  /**
+   * Trocar a forma de pagamento de uma venda ja fechada.
+   *
+   * O `id` sorteado aqui e o da CORRECAO, nao o da venda: a mesma venda pode
+   * ser corrigida mais de uma vez -- cartao vira dinheiro e, se o cliente achar
+   * o outro cartao, volta. Chave pela venda faria a segunda virar um
+   * "ja corrigida" silencioso.
+   */
+  trocarForma(id, formaAtual) {
+    const correcaoId = this._uuid();
+    const opcoes = ['dinheiro', 'pix', 'debito', 'credito']
+      .map(f => `<option value="${f}" ${f === formaAtual ? 'disabled' : ''}>${f}</option>`).join('');
+    Modal.open(`
+<div style="margin-bottom:14px;font-size:15px">
+  Esta venda está como <strong>${formaAtual || '—'}</strong>.
+  Os produtos não mudam — só para onde o dinheiro foi.
+</div>
+<div class="form-group">
+  <label>Como o cliente pagou de verdade</label>
+  <select class="input" id="troca-forma" onchange="Vendas._trocaMostrarParcelas()">
+    <option value="">Escolha…</option>
+    ${opcoes}
+  </select>
+</div>
+<div class="form-group" id="troca-parcelas-box" style="display:none">
+  <label>Em quantas vezes</label>
+  <input class="input" id="troca-parcelas" type="number" min="1" value="1">
+</div>
+<div class="form-group">
+  <label>Motivo <span style="color:var(--text3)">(obrigatório)</span></label>
+  <input class="input" id="troca-motivo" placeholder="Ex.: cartão não passou, pagou em dinheiro">
+</div>
+<div class="modal-actions">
+  <button class="btn btn-ghost" onclick="Modal.close()">Cancelar</button>
+  <button class="btn btn-primary" id="troca-ok"
+    onclick="Vendas._confirmarTroca('${id}','${correcaoId}','${formaAtual || ''}')">Corrigir</button>
+</div>`, 'Trocar a forma de pagamento', `Venda #${id.slice(0, 8)}`);
+  },
+
+  _trocaMostrarParcelas() {
+    const box = document.getElementById('troca-parcelas-box');
+    if (box) box.style.display = document.getElementById('troca-forma').value === 'credito' ? '' : 'none';
+  },
+
+  async _confirmarTroca(vendaId, correcaoId, formaAtual) {
+    const formaNova = document.getElementById('troca-forma')?.value || '';
+    const motivo = (document.getElementById('troca-motivo')?.value || '').trim();
+    const parcelas = Number(document.getElementById('troca-parcelas')?.value || 1);
+
+    if (!formaNova) return Toast.show('Escolha como o cliente pagou.', 'error');
+    if (!motivo) return Toast.show('Escreva o motivo da correção.', 'error');
+
+    const btn = document.getElementById('troca-ok');
+    if (btn) { btn.disabled = true; btn.textContent = 'Corrigindo…'; }
+    const r = await window.pdv.caixa.corrigirPagamento({
+      id: correcaoId, vendaId, formaAtual, formaNova, parcelas, motivo,
+    });
+    if (btn) { btn.disabled = false; btn.textContent = 'Corrigir'; }
+
+    if (!r || !r.ok) return Toast.show((r && r.erro) || 'Não foi possível corrigir.', 'error');
+    Modal.close();
+    Toast.show(r.aviso || 'Forma de pagamento corrigida.', 'success');
+    await this.load();
+  },
+
+  _uuid() {
+    return crypto.randomUUID
+      ? crypto.randomUUID()
+      : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+        const r = Math.random() * 16 | 0;
+        return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+      });
   },
 
   async nfceLote() {
