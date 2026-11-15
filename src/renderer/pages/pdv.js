@@ -1077,7 +1077,7 @@ const PDV = (() => {
     }
     el.innerHTML = cart.map(item => `
       <div class="cart-item ${item.entregar ? 'cart-item-entrega' : ''}"
-        ${!item.devolucao ? `onclick="PDV.abrirEditarItem('${item.produto_id}')" style="cursor:pointer" title="Clique para editar preço/desconto"` : ''}>
+        ${!item.devolucao ? `onclick="PDV.abrirEditarItem('${item.produto_id}')" style="cursor:pointer" title="Clique para editar quantidade, preço e desconto"` : ''}>
         <div class="cart-emoji">${item.emoji}</div>
         <div class="cart-info">
           <div class="cart-name">${item.produto_nome}${item.devolucao ? ' <span style="color:var(--red);font-size:10px">DEV</span>' : ''}${item.em_promocao && !item.preco_manual ? ' <span style="color:var(--accent);font-size:10px">🏷️ PROMOÇÃO</span>' : ''}</div>
@@ -1099,30 +1099,143 @@ const PDV = (() => {
     _atualizarBadgeEntregas();
   }
 
-  // ─── Editar item do carrinho (preço / desconto) ────────────────
-  function abrirEditarItem(produtoId) {
+  // ─── Editar item do carrinho (quantidade / preço / desconto) ──────
+  //
+  // O vendedor clica na linha do carrinho e resolve ali o que antes exigia
+  // apagar o item e lançar de novo: a quantidade ("não quero 10 parafusos,
+  // quero 150"), o preço e o desconto.
+  //
+  // O modal também RESPONDE a pergunta que obrigava a procurar o produto
+  // outra vez na busca — quanto sai à vista, quanto é o cheio, quanto está
+  // sendo cobrado e quanto dá a linha inteira. Num orçamento de dez itens,
+  // achar de novo o produto pelo código custava mais que a conta.
+  //
+  // Custo e markup só aparecem para quem tem `ver_lucro_margem`, a mesma
+  // permissão que governa esses números no resto do PDV.
+  //
+  // Devolução não abre este modal: a linha do carrinho só chama para venda.
+
+  let _edicaoItem = null;   // { produtoId, permiteEstoqueNegativo } com o modal aberto
+
+  // Núcleo da edição, sem DOM: recebe o item e o que foi digitado, devolve a
+  // linha nova ou a recusa.
+  //
+  // O desconto da linha é acumulado POR UNIDADE. Guardá-lo como total, como
+  // era antes, fazia com que mudar a quantidade depois de dar desconto
+  // deixasse no pedido um desconto calculado para a quantidade antiga.
+  function calcularEdicaoItem({ item, novoPreco, novaQuantidade, permiteEstoqueNegativo = false }) {
+    if (!item) return { ok: false, erro: 'Item não encontrado' };
+    const preco = Number(novoPreco);
+    const qtd = Number(novaQuantidade);
+    if (!isFinite(preco) || preco < 0) return { ok: false, erro: 'Preço inválido' };
+    if (!isFinite(qtd) || qtd <= 0) {
+      return { ok: false, erro: 'Quantidade inválida — para tirar o item, use o ✕ da linha' };
+    }
+    const estoque = Number(item.estoque_max);
+    if (!permiteEstoqueNegativo && isFinite(estoque) && qtd > estoque) {
+      return { ok: false, erro: `Sem estoque suficiente. Disponível: ${estoque}` };
+    }
+
+    const qtdAntes = Number(item.quantidade) || 0;
+    const precoAntes = Number(item.preco_unitario) || 0;
+    const mudouPreco = Math.abs(preco - precoAntes) > 0.004;
+    const precoFinal = mudouPreco ? preco : precoAntes;
+
+    const descontoUnitAntes = qtdAntes > 0 ? (Number(item.desconto) || 0) / qtdAntes : 0;
+    const descontoUnit = Math.max(0, descontoUnitAntes + (precoAntes - precoFinal));
+
+    return {
+      ok: true,
+      quantidade: qtd,
+      preco_unitario: precoFinal,
+      total: qtd * precoFinal,
+      desconto: Math.round(descontoUnit * qtd * 100) / 100,
+      // Preço mexido na mão não deve ser sobrescrito pela troca de forma de
+      // pagamento — e quem já era manual continua sendo.
+      preco_manual: item.preco_manual === true || mudouPreco,
+    };
+  }
+
+  // Markup = lucro / custo (mesma conta do painel de saúde da venda).
+  // Sem custo cadastrado não há markup — e `null` diz isso melhor que 0.
+  function markupDoItem(precoUnitario, precoCusto) {
+    const custo = Number(precoCusto) || 0;
+    if (custo <= 0) return null;
+    return ((Number(precoUnitario) - custo) / custo) * 100;
+  }
+
+  async function abrirEditarItem(produtoId) {
     const item = cart.find(i => i.produto_id === produtoId);
     if (!item) return;
     const podeAlterarPreco = podePermissao('alterar_preco_venda');
     const podeDesconto = podePermissao('dar_desconto_pdv');
+    const podeVerCusto = podePermissao('ver_lucro_margem');
+    const permiteEstoqueNegativo =
+      await window.pdv.config.get('config.vender_estoque_negativo') === true;
+    _edicaoItem = { produtoId, permiteEstoqueNegativo };
+
+    const precoTabela = Number(item.preco_tabela ?? item.preco_unitario) || 0;
+    const temPromo = item.em_promocao && item.preco_promocional != null;
+
     Modal.open(`
-<div style="margin-bottom:14px">
+<div style="margin-bottom:12px">
   <div style="font-weight:600;font-size:14px">${item.emoji || '📦'} ${item.produto_nome}</div>
   <div style="font-size:11px;color:var(--text3);margin-top:2px">
-    Qtd: ${item.quantidade} · Preço tabela: R$ ${fmtMoney(item.preco_tabela ?? item.preco_unitario)}
+    ${item.produto_sku ? item.produto_sku + ' · ' : ''}Estoque: ${item.estoque_max}
   </div>
 </div>
-<div style="margin-bottom:14px">
-  <label style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text3);display:block;margin-bottom:4px">Preço unitário (R$)</label>
-  <input class="input" id="ei-preco" type="number" min="0" step="0.01" value="${item.preco_unitario}"
-    style="font-size:18px;font-weight:700;text-align:center;${podeAlterarPreco ? '' : 'opacity:.45;pointer-events:none'}"
-    ${podeAlterarPreco ? '' : 'readonly'}>
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
+  <div>
+    <label style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text3);display:block;margin-bottom:4px">Quantidade</label>
+    <div style="display:flex;gap:4px;align-items:center">
+      <button class="btn btn-ghost" style="flex:0 0 38px;padding:0;font-size:20px;line-height:1" onclick="PDV._passoQtdItem(-1)">−</button>
+      <input class="input" id="ei-qtd" type="number" min="0.001" step="1" value="${item.quantidade}"
+        style="flex:1;min-width:0;font-size:18px;font-weight:700;text-align:center"
+        oninput="PDV._previewEdicaoItem()"
+        onkeydown="if(event.key==='Enter'){event.preventDefault();PDV._salvarEdicaoItem('${produtoId}')}">
+      <button class="btn btn-ghost" style="flex:0 0 38px;padding:0;font-size:20px;line-height:1" onclick="PDV._passoQtdItem(1)">+</button>
+    </div>
+  </div>
+  <div>
+    <label style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text3);display:block;margin-bottom:4px">Preço unitário (R$)</label>
+    <input class="input" id="ei-preco" type="number" min="0" step="0.01" value="${Number(item.preco_unitario).toFixed(2)}"
+      style="font-size:18px;font-weight:700;text-align:center;${podeAlterarPreco ? '' : 'opacity:.45;pointer-events:none'}"
+      ${podeAlterarPreco ? '' : 'readonly'}
+      oninput="PDV._previewEdicaoItem()"
+      onkeydown="if(event.key==='Enter'){event.preventDefault();PDV._salvarEdicaoItem('${produtoId}')}">
+  </div>
 </div>
+
+<div style="background:var(--bg2);border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:12px">
+  <div style="display:flex;justify-content:space-between;padding:2px 0;color:var(--text3)">
+    <span>Preço cheio (tabela)</span><span>R$ ${fmtMoney(precoTabela)}</span>
+  </div>
+  ${temPromo ? `
+  <div style="display:flex;justify-content:space-between;padding:2px 0;color:var(--accent);font-weight:600">
+    <span>🏷️ À vista (promoção)</span><span>R$ ${fmtMoney(item.preco_promocional)}</span>
+  </div>` : ''}
+  <div style="display:flex;justify-content:space-between;padding:2px 0">
+    <span>Cobrando agora</span><span id="ei-cobrando" style="font-weight:700">R$ ${fmtMoney(item.preco_unitario)}</span>
+  </div>
+  <div id="ei-economia" style="display:none;justify-content:space-between;padding:2px 0;color:var(--green)">
+    <span>Desconto nesta linha</span><span id="ei-economia-valor"></span>
+  </div>
+  <div style="display:flex;justify-content:space-between;padding:6px 0 0;margin-top:4px;border-top:1px solid var(--border)">
+    <span>Total da linha</span><span id="ei-total" style="font-weight:700;font-size:14px">R$ ${fmtMoney(item.total)}</span>
+  </div>
+  ${podeVerCusto ? `
+  <div id="ei-margem" style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border);color:var(--text3);font-size:11px"></div>` : ''}
+</div>
+
+<div id="ei-aviso" style="display:none;font-size:11px;color:var(--orange,#e08a2e);margin-bottom:10px"></div>
+
 ${podeDesconto ? `
 <div style="margin-bottom:14px;padding:10px;background:var(--bg2);border-radius:8px">
   <label style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text3);display:block;margin-bottom:6px">Aplicar desconto sobre o preço acima</label>
   <div style="display:flex;gap:8px">
-    <input class="input" id="ei-desc-valor" type="number" min="0" step="0.01" value="0" style="flex:1" placeholder="0,00">
+    <input class="input" id="ei-desc-valor" type="number" min="0" step="0.01" value="0" style="flex:1" placeholder="0,00"
+      onkeydown="if(event.key==='Enter'){event.preventDefault();PDV._aplicarDescontoItem()}">
     <select class="input" id="ei-desc-tipo" style="width:64px">
       <option value="valor">R$</option>
       <option value="pct">%</option>
@@ -1135,7 +1248,66 @@ ${podeDesconto ? `
   <button class="btn btn-ghost" onclick="Modal.close()">Cancelar</button>
   <button class="btn btn-primary" onclick="PDV._salvarEdicaoItem('${produtoId}')">Salvar</button>
 </div>`, 'Editar item do carrinho');
-    setTimeout(() => document.getElementById('ei-preco')?.focus(), 80);
+
+    _previewEdicaoItem();
+    setTimeout(() => {
+      const campo = document.getElementById('ei-qtd');
+      campo?.focus();
+      campo?.select();
+    }, 80);
+  }
+
+  // Os números do painel acompanham o que está sendo digitado. Sem isto o
+  // vendedor só descobriria o total da linha depois de salvar.
+  function _previewEdicaoItem() {
+    if (!_edicaoItem) return;
+    const item = cart.find(i => i.produto_id === _edicaoItem.produtoId);
+    if (!item) return;
+    const preco = parseFloat(document.getElementById('ei-preco')?.value);
+    const qtd = parseFloat(document.getElementById('ei-qtd')?.value);
+    const precoOk = isFinite(preco) && preco >= 0 ? preco : 0;
+    const qtdOk = isFinite(qtd) && qtd > 0 ? qtd : 0;
+    const precoTabela = Number(item.preco_tabela ?? item.preco_unitario) || 0;
+
+    const elCobrando = document.getElementById('ei-cobrando');
+    if (elCobrando) elCobrando.textContent = `R$ ${fmtMoney(precoOk)}`;
+    const elTotal = document.getElementById('ei-total');
+    if (elTotal) elTotal.textContent = `R$ ${fmtMoney(precoOk * qtdOk)}`;
+
+    const economia = (precoTabela - precoOk) * qtdOk;
+    const elEco = document.getElementById('ei-economia');
+    if (elEco) {
+      elEco.style.display = economia > 0.004 ? 'flex' : 'none';
+      const elEcoValor = document.getElementById('ei-economia-valor');
+      if (elEcoValor) elEcoValor.textContent = `- R$ ${fmtMoney(economia)}`;
+    }
+
+    const elMargem = document.getElementById('ei-margem');
+    if (elMargem) {
+      const markup = markupDoItem(precoOk, item.preco_custo);
+      elMargem.textContent = markup === null
+        ? 'Custo não cadastrado — sem markup para calcular'
+        : `Custo R$ ${fmtMoney(item.preco_custo)} · Markup ${markup.toFixed(1)}%`
+          + ` · Lucro R$ ${fmtMoney((precoOk - (Number(item.preco_custo) || 0)) * qtdOk)}`;
+    }
+
+    // Aviso, não bloqueio: quem decide se a venda passa do estoque é o Salvar.
+    const elAviso = document.getElementById('ei-aviso');
+    if (elAviso) {
+      const estoque = Number(item.estoque_max);
+      const estoura = !_edicaoItem.permiteEstoqueNegativo && isFinite(estoque) && qtdOk > estoque;
+      elAviso.style.display = estoura ? 'block' : 'none';
+      if (estoura) elAviso.textContent = `⚠️ Estoque disponível: ${estoque}`;
+    }
+  }
+
+  function _passoQtdItem(delta) {
+    const campo = document.getElementById('ei-qtd');
+    if (!campo) return;
+    const atual = parseFloat(campo.value);
+    const base = isFinite(atual) ? atual : 0;
+    campo.value = Math.max(0.001, Math.round((base + delta) * 1000) / 1000);
+    _previewEdicaoItem();
   }
 
   function _aplicarDescontoItem() {
@@ -1145,23 +1317,27 @@ ${podeDesconto ? `
     const desconto = tipo === 'pct' ? base * (valor / 100) : valor;
     const campoPreco = document.getElementById('ei-preco');
     if (campoPreco) campoPreco.value = Math.max(0, base - desconto).toFixed(2);
+    _previewEdicaoItem();
   }
 
   function _salvarEdicaoItem(produtoId) {
     const item = cart.find(i => i.produto_id === produtoId);
     if (!item) return;
-    const novoPreco = parseFloat(document.getElementById('ei-preco')?.value);
-    if (isNaN(novoPreco) || novoPreco < 0) { Toast.show('Preço inválido', 'warning'); return; }
-    const precoAntes = item.preco_unitario;
-    if (Math.abs(novoPreco - precoAntes) > 0.004) {
-      item.preco_unitario = novoPreco;
-      item.total = item.quantidade * novoPreco;
-      // Registro do desconto aplicado à linha (usado no comprovante de orçamento)
-      item.desconto = Math.max(0, (precoAntes - novoPreco) * item.quantidade);
-      // Preço alterado manualmente pelo vendedor — não deve ser sobrescrito
-      // pela troca automática de forma de pagamento (mesma regra de addToCartConfirmado)
-      item.preco_manual = true;
-    }
+    const novo = calcularEdicaoItem({
+      item,
+      novoPreco: parseFloat(document.getElementById('ei-preco')?.value),
+      novaQuantidade: parseFloat(document.getElementById('ei-qtd')?.value),
+      permiteEstoqueNegativo: _edicaoItem?.permiteEstoqueNegativo === true,
+    });
+    if (!novo.ok) { Toast.show(novo.erro, 'warning'); return; }
+
+    item.quantidade = novo.quantidade;
+    item.preco_unitario = novo.preco_unitario;
+    item.total = novo.total;
+    item.desconto = novo.desconto;
+    item.preco_manual = novo.preco_manual;
+
+    _edicaoItem = null;
     Modal.close();
     renderCart();
     updateTotals();
@@ -3228,6 +3404,7 @@ ${podeDesconto ? `
     addToCart, changeQty, removeItem, clearCart, _confirmarLimparCarrinho, adicionarSugestao,
     escolherDaLista, _confirmarSimilar, _fecharSimilares, _dispensarSugestao, _realcarSimilar,
     abrirEditarItem, _aplicarDescontoItem, _salvarEdicaoItem,
+    _previewEdicaoItem, _passoQtdItem, calcularEdicaoItem, markupDoItem,
     toggleEntregar, _selecionarTurno, entrarModoEdicao, cancelarEdicao,
     setPayment, calcTroco, finalizarVenda, abrirPagamento, updateTotals,
     _selectPay, _setParcelas, _calcTrocoModal, _confirmarPagamento,
