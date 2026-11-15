@@ -27,6 +27,18 @@ const PDV = (() => {
   // config_termometro.promo_formas (mesma config de saude_config.orcamento_promo_formas
   // usada pelos orçamentos). Default local só pra não ficar sem nada antes do 1º sync.
   let formasAvista = ['pix', 'dinheiro'];
+  // A FORMA DE PAGAMENTO JA FOI DITA?
+  //
+  // `payMethod` nasce 'dinheiro' porque o modal precisa de um valor inicial —
+  // e dinheiro e forma a vista, entao o carrinho vinha com o preco
+  // promocional aplicado ANTES de o cliente dizer como paga. A argamassa de
+  // R$ 25,50 aparecia como R$ 25,50 na busca e virava R$ 21,99 ao entrar no
+  // carrinho, com o preco cheio sobrando so num quadrinho lateral.
+  //
+  // A loja cobra ao contrario: pede o cheio e, conforme a forma, informa o
+  // desconto. Entao o preco promocional so entra depois que alguem ESCOLHEU
+  // a forma — nao por um valor inicial de variavel.
+  let formaEscolhida = false;
 
   // ─── Render ────────────────────────────────────────────────────
   function render() {
@@ -674,7 +686,10 @@ const PDV = (() => {
     document.getElementById('qp-qty').value = '1';
 
     const emPromo = promocaoVigente(produto);
-    const precoInicial = emPromo && _formaEhAvista(payMethod) ? Number(produto.preco_promocional) : produto.preco_venda;
+    // O campo abre no preco de TABELA. Abrir no promocional ja entregava o
+    // desconto antes de o cliente dizer como paga — e o vendedor nem via que
+    // tinha entregado.
+    const precoInicial = emPromo && _promoValeAgora() ? Number(produto.preco_promocional) : produto.preco_venda;
     document.getElementById('qp-preco').value = precoInicial.toFixed(2);
 
     const elPromo = document.getElementById('qp-promo');
@@ -923,6 +938,8 @@ const PDV = (() => {
     dadosEntrega = null;
     modoEdicao = null;
     payMethod = 'dinheiro';
+    // Carrinho novo, ninguem disse ainda como paga: volta a cobrar o cheio.
+    formaEscolhida = false;
     payParcelas = 1;
     payComposicao = [];
     valorPago = 0;
@@ -948,6 +965,9 @@ const PDV = (() => {
       numero, label,
       cart: JSON.parse(JSON.stringify(cart)),
       selectedClient, vendedorAtual, dadosEntrega, payMethod, payParcelas, payComposicao,
+      // Guardado junto com a forma: sem ele, o atendimento que voltasse do
+      // espera nao saberia se o preco do carrinho ja e o da forma escolhida.
+      formaEscolhida,
       valorPago, modoEdicao,
       observacao: pedidoObservacao,
       desconto: getDesconto(),
@@ -1002,6 +1022,10 @@ const PDV = (() => {
     vendedorAtual = v.vendedorAtual || null;
     dadosEntrega = v.dadosEntrega || null;
     payMethod = v.payMethod || 'dinheiro';
+    // ATENDIMENTO EM ESPERA NAO FOI PAGO. Ele parou antes do pagamento, entao
+    // volta como parou: cobrando o cheio, ate alguem escolher a forma. Herdar
+    // `true` aqui devolveria o atendimento ja com o desconto dado.
+    formaEscolhida = v.formaEscolhida === true;
     // Venda em espera guardada antes deste campo volta como a vista, que é o
     // que ela era: o PDV nao tinha como registrar outra coisa.
     payParcelas = v.payParcelas || 1;
@@ -1210,7 +1234,7 @@ ${podeDesconto ? `
     return _similares.opcoes.map((p, i) => {
       const ativo = i === _similares.idx;
       const estoque = Number(p.estoque || 0);
-      const preco = promocaoVigente(p) && _formaEhAvista(payMethod)
+      const preco = promocaoVigente(p) && _promoValeAgora()
         ? Number(p.preco_promocional) : Number(p.preco_venda || 0);
       const thumb = p.foto_url
         ? `<img src="${p.foto_url}" class="sim-foto" alt=""
@@ -1352,7 +1376,7 @@ ${podeDesconto ? `
 
     return lista.slice(0, 6).map(s => {
       const estoque = Number(s.estoque || 0);
-      const preco = promocaoVigente(s) && _formaEhAvista(payMethod)
+      const preco = promocaoVigente(s) && _promoValeAgora()
         ? Number(s.preco_promocional) : Number(s.preco_venda || 0);
       const motivo = s.fixo ? '★ indicado' : `junto em ${s.vezes} vendas`;
       const thumb = s.foto_url
@@ -1446,7 +1470,7 @@ ${podeDesconto ? `
   async function adicionarSugestao(produtoId, origem = 'compre_junto') {
     const produto = await window.pdv.produtos.getById(produtoId);
     if (!produto) return;
-    const emPromo = promocaoVigente(produto) && _formaEhAvista(payMethod);
+    const emPromo = promocaoVigente(produto) && _promoValeAgora();
     const preco = emPromo ? Number(produto.preco_promocional) : produto.preco_venda;
     addToCartConfirmado(produto, 1, preco, false, origem);
   }
@@ -1475,6 +1499,26 @@ ${podeDesconto ? `
     return formasAvista.includes(forma);
   }
 
+  /**
+   * O preco promocional vale NESTE momento?
+   *
+   * Duas condicoes, e a segunda e a que faltava: a forma tem de ser a vista
+   * E alguem tem de ter escolhido essa forma. Enquanto ninguem escolheu, o
+   * preco e o de tabela — que e o que a loja cobra "a principio".
+   *
+   * Toda decisao de preco promocional passa por aqui. Antes eram quatro
+   * lugares perguntando `_formaEhAvista(payMethod)` por conta propria, e
+   * quatro lugares e onde uma regra comeca a divergir de si mesma.
+   */
+  function _promoValeAgora() {
+    return formaEscolhida && _formaEhAvista(payMethod);
+  }
+
+  /** O carrinho tem item em promocao que ainda pode mudar de preco. */
+  function _temItemEmPromocao() {
+    return cart.some(i => !i.devolucao && i.em_promocao && !i.preco_manual && i.preco_promocional != null);
+  }
+
   // Rótulo curto pro resumo de promoção na lateral (ex: "Din/Pix")
   const _NOMES_FORMA_CURTO = {
     pix: 'Pix', dinheiro: 'Din', debito: 'Débito',
@@ -1492,7 +1536,7 @@ ${podeDesconto ? `
   // agora valendo pra venda direta também. Item com preço editado manualmente
   // pelo vendedor (preco_manual) fica de fora — decisão dele prevalece.
   function _aplicarPrecoPorFormaPagamento() {
-    const avista = _formaEhAvista(payMethod);
+    const avista = _promoValeAgora();
     for (const item of cart) {
       if (item.devolucao || item.preco_manual || !item.em_promocao) continue;
       const precoCerto = avista ? item.preco_promocional : item.preco_tabela;
@@ -1628,21 +1672,29 @@ ${podeDesconto ? `
       { key: 'misto',    icon: '⊕',  label: 'Misto',     num: '6' },
     ];
 
+    // NENHUMA FORMA ACESA ENQUANTO NINGUEM ESCOLHEU, quando ha promocao no
+    // carrinho. Acender "Dinheiro" por ser o valor inicial da variavel diria
+    // ao operador que a escolha ja foi feita — e o preco na tela seria o de
+    // uma forma que o cliente nunca disse.
+    const exigirEscolha = !formaEscolhida && _temItemEmPromocao();
+
     Modal.open(`
 <div style="text-align:center;margin-bottom:20px">
   <div style="font-size:13px;color:var(--text3)">TOTAL A PAGAR</div>
   <div id="modal-total-pagar" class="font-syne" style="font-size:36px;font-weight:800;color:var(--accent)">R$ ${fmtMoney(total)}</div>
   <div id="modal-total-promo-aviso" style="display:none;font-size:11px;color:var(--text3);margin-top:4px"></div>
+  ${exigirEscolha ? `<div style="font-size:12px;color:var(--accent);font-weight:600;margin-top:6px">
+    🏷️ Tem item em promoção — escolha a forma para ver o valor final</div>` : ''}
 </div>
 <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:16px">
   ${payOpts.map(o => `
-  <button class="pay-opt ${payMethod === o.key ? 'active' : ''}" data-pay="${o.key}"
+  <button class="pay-opt ${!exigirEscolha && payMethod === o.key ? 'active' : ''}" data-pay="${o.key}"
     onclick="PDV._selectPay('${o.key}',this)" style="padding:14px 8px;font-size:13px;position:relative">
     <span style="position:absolute;top:4px;right:6px;font-size:9px;color:var(--text3);font-family:monospace">${o.num}</span>
     <span style="font-size:20px">${o.icon}</span><span>${o.label}</span>
   </button>`).join('')}
 </div>
-<div id="modal-pay-extra" style="margin-bottom:12px">${_extraHtml(payMethod, total)}</div>
+<div id="modal-pay-extra" style="margin-bottom:12px">${exigirEscolha ? '' : _extraHtml(payMethod, total)}</div>
 <div class="modal-actions">
   <button class="btn btn-ghost" onclick="Modal.close()">ESC · Cancelar</button>
   <button class="btn btn-primary btn-lg" onclick="PDV._confirmarPagamento()">↵ Enter · Confirmar</button>
@@ -1813,6 +1865,9 @@ ${podeDesconto ? `
   function _selectPay(method, btn) {
     const temPromoAntes = calcularTotaisPromocao().temPromo;
     payMethod = method;
+    // O CLIQUE E A ESCOLHA. A partir daqui o preco promocional pode valer --
+    // e e por isso que o desconto so aparece agora, que e como a loja vende.
+    formaEscolhida = true;
     // Item em promoção cobra o preço certo pra CADA forma — recalcula e
     // já reflete no total exibido no próprio modal, sem precisar fechar.
     if (temPromoAntes) {
@@ -1857,6 +1912,21 @@ ${podeDesconto ? `
 
   // Etapa 2: após confirmar pagamento, checar saúde e pedir código do vendedor
   async function _confirmarPagamento() {
+    // COM ITEM EM PROMOCAO, A FORMA TEM DE SER DITA.
+    //
+    // `payMethod` tem um valor inicial ('dinheiro') que ninguem escolheu.
+    // Confirmar sem clicar gravaria a venda com a forma que a variavel
+    // trouxe de fabrica — e, pior, pelo preco errado: cheio quando o cliente
+    // pagou a vista e merecia o desconto. Cobrar a mais em silencio e briga
+    // no balcao.
+    //
+    // So exige quando ha o que mudar de preco. Venda sem promocao continua
+    // fechando no mesmo numero de cliques de sempre.
+    if (!formaEscolhida && _temItemEmPromocao()) {
+      Toast.show('Escolha a forma de pagamento — o preço muda conforme ela', 'warning');
+      return;
+    }
+
     const total = getTotal();
 
     // A VENDA DIVIDIDA SO PASSA SE FECHAR. Deixar passar sem fechar gravaria
@@ -2972,6 +3042,10 @@ ${podeDesconto ? `
     dadosEntrega = null;
     vendedorAtual = null;
     payMethod = venda.forma_pagamento || 'dinheiro';
+    // Venda JA PAGA que volta para edicao: a forma e conhecida, foi registrada
+    // com ela. Reabrir cobrando o cheio mudaria o preco de uma venda que o
+    // cliente ja pagou.
+    formaEscolhida = true;
     // A venda que volta para edicao nao traz parcela: o servidor nao a
     // devolve neste caminho. Reabrir em 1 e deixar o operador reinformar é
     // melhor que herdar um numero que pode nao ser o daquela venda.
