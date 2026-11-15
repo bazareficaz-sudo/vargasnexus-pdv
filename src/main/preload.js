@@ -121,6 +121,8 @@ contextBridge.exposeInMainWorld('pdv', {
     saida:  (p) => ipcRenderer.invoke('caixa:saida', p),
     abrir:  (p) => ipcRenderer.invoke('caixa:abrir', p),
     fechar: (p) => ipcRenderer.invoke('caixa:fechar', p),
+    arredondar: (p) => ipcRenderer.invoke('caixa:arredondar', p),
+    corrigirPagamento: (p) => ipcRenderer.invoke('caixa:corrigirPagamento', p),
   },
 
   faltas: {
