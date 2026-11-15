@@ -2299,6 +2299,19 @@ const Config = {
         </select>
         <div style="font-size:11px;color:var(--text3);margin-top:4px">Define o tamanho da fonte no cupom impresso</div>
       </div>
+      <div class="form-group" style="margin-top:12px">
+        <label class="form-label">Papel extra no fim do cupom</label>
+        <select class="input" id="cfg-cupom-extras">
+          <option value="0">Nenhum (padrão)</option>
+          <option value="3">Pouco — 3 linhas</option>
+          <option value="6">Médio — 6 linhas</option>
+          <option value="9">Bastante — 9 linhas</option>
+        </select>
+        <div style="font-size:11px;color:var(--text3);margin-top:4px">
+          Venda de um item só sai com um pedaço de papel muito curto, difícil de destacar
+          e de o cliente guardar. Isto alonga o cupom sem mexer na fonte.
+        </div>
+      </div>
     </div>
 
     <!-- Cloudflare Tunnel (visível quando É servidor) -->
@@ -2564,6 +2577,9 @@ const Config = {
     const cupomLayout = await window.pdv.config.get('config.cupom_layout') || 'padrao';
     const selLayout = document.getElementById('cfg-cupom-layout');
     if (selLayout) selLayout.value = cupomLayout;
+    const selExtras = document.getElementById('cfg-cupom-extras');
+    // Sem configuração, zero: o cupom continua do tamanho de sempre.
+    if (selExtras) selExtras.value = String(await window.pdv.config.get('config.cupom_linhas_extras') || 0);
     // Mensagem do cupom. A da empresa chega pelo sync; a local é sobreposição
     // e pode estar em branco, que significa "não configurei aqui".
     const txtMsg = document.getElementById('cfg-cupom-mensagem');
@@ -2929,6 +2945,8 @@ const Config = {
     await window.pdv.config.set('config.impressora_nome', impressora);
     await window.pdv.config.set('config.imprimir_automatico', auto);
     await window.pdv.config.set('config.cupom_layout', layout);
+    const extras = parseInt(document.getElementById('cfg-cupom-extras')?.value || '0', 10);
+    await window.pdv.config.set('config.cupom_linhas_extras', Number.isFinite(extras) ? extras : 0);
 
     if (ativo) {
       const res = await window.pdv.print.serverStart(porta);

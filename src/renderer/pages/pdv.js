@@ -2371,8 +2371,20 @@ ${podeDesconto ? `
         }
       }
 
+      // A ENTREGA PRECISA SER GUARDADA ANTES DE `clearCart()`.
+      //
+      // `clearCart` zera `dadosEntrega` junto com o resto da tela — e ele roda
+      // ANTES da impressao. Quem fosse ler `dadosEntrega` dentro de
+      // `_enviarImpressao` leria `null`, e foi por isso que o cupom de uma
+      // venda com entrega nunca teve endereco nenhum.
+      //
+      // Guardado dentro de `_ultimaVenda` tambem, e nao so passado adiante:
+      // assim o botao Imprimir do comprovante reimprime o cupom COM o
+      // endereco, em vez de uma segunda via pior que a primeira.
+      const entregaDoCupom = (dadosEntrega && !eDevolucao) ? { ...dadosEntrega } : null;
+
       clearCart();
-      _ultimaVenda = { id: result.id, numero: result.numero, remoteId: result.remote_id || null, venda };
+      _ultimaVenda = { id: result.id, numero: result.numero, remoteId: result.remote_id || null, venda, entrega: entregaDoCupom };
 
       // 0.6C.6A — a conversão JÁ ACONTECEU, dentro da transação da venda.
       //
@@ -2393,7 +2405,7 @@ ${podeDesconto ? `
 
       Modal.open(renderComprovante(result.numero, venda, result.remote_id), eDevolucao ? 'Comprovante de Devolução' : 'Comprovante');
       _setupComprovanteKeys();
-      _enviarImpressao(result.numero, venda);
+      _enviarImpressao(result.numero, venda, entregaDoCupom);
     } catch (err) {
       Toast.show('Erro ao registrar: ' + err.message, 'error');
     }
@@ -2478,11 +2490,22 @@ ${podeDesconto ? `
     }
   }
 
+  /**
+   * O botao Imprimir do comprovante — e a tecla [P].
+   *
+   * Passa `forcar`, e isso conserta um botao que nao fazia nada:
+   * `_enviarImpressao` desiste logo na primeira linha quando
+   * `imprimir_automatico` esta desligado, entao a loja que nao quer imprimir
+   * TODA venda ficava sem conseguir imprimir NENHUMA. Pior, o toast dizia
+   * "Enviado para impressão" do mesmo jeito.
+   *
+   * O automatico e sobre imprimir sem pedir; apertar o botao ja e o pedido.
+   */
   async function _reimprimir(numero) {
     const uv = _ultimaVenda;
     if (!uv) return;
-    await _enviarImpressao(uv.numero, uv.venda);
-    Toast.show('Enviado para impressão', 'success');
+    const ok = await _enviarImpressao(uv.numero, uv.venda, uv.entrega || null, { forcar: true });
+    Toast.show(ok ? 'Enviado para impressão' : 'Não foi possível imprimir', ok ? 'success' : 'warning');
   }
 
   async function _emitirNFCeComprovante() {
@@ -2512,15 +2535,21 @@ ${podeDesconto ? `
     }
   }
 
-  async function _enviarImpressao(numero, venda) {
+  async function _enviarImpressao(numero, venda, entrega = null, { forcar = false } = {}) {
     try {
       const auto = await window.pdv.config.get('config.imprimir_automatico');
-      if (!auto) return;
+      // `forcar` e o clique no botao Imprimir. O automatico decide se imprime
+      // SOZINHA ao fechar a venda; nao decide se a loja pode imprimir.
+      if (!auto && !forcar) return false;
       const dados = {
         numero,
         empresa_nome: (await window.pdv.config.get('auth.usuario'))?.empresa_nome || 'VargasNexus PDV',
         vendedor_nome: venda.vendedor_nome || null,
         cliente_nome: venda.cliente_nome || null,
+        // O endereco entra no cupom da venda. Antes so existia no comprovante
+        // de entrega, que e outro documento e outro botao — quem imprimia o
+        // cupom nao tinha para onde mandar a mercadoria.
+        entrega: entrega || null,
         itens: (venda.itens || []).map(i => ({
           produto_nome: i.produto_nome,
           quantidade: i.quantidade,
@@ -2541,12 +2570,14 @@ ${podeDesconto ? `
       // configuração do operador.
       if (await window.pdv.print.destino() === 'servidor') {
         const res = await window.pdv.print.servidor(dados);
-        if (res?.erro) Toast.show('Impressão: ' + res.erro, 'warning');
+        if (res?.erro) { Toast.show('Impressão: ' + res.erro, 'warning'); return false; }
       } else {
         window.pdv.print.local(dados);
       }
+      return true;
     } catch (e) {
       console.warn('[PRINT] Erro ao enviar impressão:', e.message);
+      return false;
     }
   }
 
