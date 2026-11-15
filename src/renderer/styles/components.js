@@ -1073,8 +1073,17 @@ const Vendas = {
   _sortDir: 'desc',
   _sel: new Set(),
   _lista: [],
-  /** Ids que existem no SQLite DESTA maquina: so eles podem imprimir e editar. */
-  _locais: new Set(),
+  /**
+   * O que existe no SQLite DESTA maquina, por id: `id -> registro local`.
+   *
+   * Era um Set de ids, e isso bastava para decidir imprimir/editar. Nao
+   * bastava para a coluna Nuvem: quando o operador enxerga todos os
+   * terminais, a lista vem do SERVIDOR, e o registro do servidor nao tem
+   * `remote_id` nem `sync_status` (sao colunas do SQLite, nao da nuvem).
+   * A linha caia no ultimo ramo do badge e saia "X Erro" — justamente nas
+   * vendas que TINHAM sincronizado, que sao as unicas que a nuvem devolve.
+   */
+  _locais: new Map(),
   _timer: null,
   _atualizadoEm: null,
   _carregando: false,
@@ -1145,7 +1154,7 @@ const Vendas = {
   async init() {
     this._sel = new Set();
     this._lista = [];
-    this._locais = new Set();
+    this._locais = new Map();
     await this.load();
     this._ligarTimer();
   },
@@ -1323,10 +1332,18 @@ const Vendas = {
       if (podeVerTodos) {
         try {
           const locais = await window.pdv.vendas.listar({ data_inicio: data, data_fim: data, limit: 500 });
-          this._locais = new Set((locais || []).map(v => v.id));
+          this._locais = new Map((locais || []).map(v => [v.id, v]));
+
+          // A venda que NAO subiu nao esta na resposta da nuvem — e some da
+          // tela de quem poderia conserta-la. Era o avesso do que esta tela
+          // existe para fazer: o gerente via todas as vendas menos as que
+          // precisavam dele. Entra aqui, com o nome deste terminal, e o
+          // badge mostra o estado de verdade.
+          const esteTerminal = await window.pdv.config.get('config.terminal_id');
+          lista = this._juntarLocaisForaDaNuvem(lista, this._locais, esteTerminal);
         } catch { /* sem o local, as linhas ficam so com as acoes de nuvem */ }
       } else {
-        this._locais = new Set((lista || []).map(v => v.id));
+        this._locais = new Map((lista || []).map(v => [v.id, v]));
       }
 
       const mudou = JSON.stringify(lista) !== JSON.stringify(this._lista);
@@ -1357,6 +1374,46 @@ const Vendas = {
     } finally {
       this._carregando = false;
     }
+  },
+
+  /**
+   * Acrescenta a lista da nuvem as vendas desta maquina que nao estao nela.
+   *
+   * Uma venda que falhou ao subir nao existe no servidor, entao a lista da
+   * nuvem nao a traz — e ela sumia da tela de quem tem permissao para ver
+   * todos os terminais, que e exatamente quem poderia conserta-la. O gerente
+   * via todas as vendas menos as que precisavam dele.
+   *
+   * O pareamento olha os dois ids: `id` (o protocolo V1 usa o mesmo id dos
+   * dois lados) e `remote_id` (nas vendas antigas eles diferem). Olhar so um
+   * duplicaria na tela toda venda antiga ja sincronizada.
+   */
+  _juntarLocaisForaDaNuvem(lista, locais, terminalId) {
+    const naNuvem = new Set((lista || []).map(v => v.id));
+    const faltando = [];
+    for (const [id, v] of (locais || new Map())) {
+      if (naNuvem.has(id)) continue;
+      if (v.remote_id && naNuvem.has(v.remote_id)) continue;
+      faltando.push({ ...v, terminal_id: v.terminal_id || terminalId || null });
+    }
+    return faltando.length ? (lista || []).concat(faltando) : (lista || []);
+  },
+
+  /**
+   * A coluna Nuvem de uma linha.
+   *
+   * `local` e o registro do SQLITE desta maquina, nunca o da nuvem: so ele
+   * tem `remote_id` e `sync_status`. Nao existe registro local => a venda e
+   * de outro balcao, e estar na resposta do servidor ja prova que subiu.
+   */
+  _badgeNuvem(id, local) {
+    if (!local || local.remote_id) {
+      return '<span class="badge badge-green" title="Sincronizado">☁ Sync</span>';
+    }
+    const badge = local.sync_status === 'pending'
+      ? '<span class="badge badge-yellow" title="Aguardando">⏳ Pendente</span>'
+      : '<span class="badge badge-red" title="Erro">✕ Erro</span>';
+    return badge + `<button class="btn btn-ghost btn-sm" style="padding:2px 6px;margin-left:4px" title="Tentar enviar de novo agora e ver o erro, se houver" onclick="Vendas.retentarSync('${id}')">🔄</button>`;
   },
 
   _renderTabela() {
@@ -1400,15 +1457,13 @@ const Vendas = {
       // Imprimir, editar e emitir NFC-e precisam do registro LOCAL. Uma venda
       // de outro balcao nao esta no SQLite desta maquina, e oferecer o botao
       // seria prometer o que nao da para cumprir.
-      const nuvem = !this._locais.has(id);
-
-      const naoSincronizada = !nuvem && !v.remote_id;
-      const syncBadge = (nuvem || v.remote_id
-        ? '<span class="badge badge-green" title="Sincronizado">☁ Sync</span>'
-        : v.sync_status === 'pending'
-          ? '<span class="badge badge-yellow" title="Aguardando">⏳ Pendente</span>'
-          : '<span class="badge badge-red" title="Erro">✕ Erro</span>')
-        + (naoSincronizada ? `<button class="btn btn-ghost btn-sm" style="padding:2px 6px;margin-left:4px" title="Tentar enviar de novo agora e ver o erro, se houver" onclick="Vendas.retentarSync('${id}')">🔄</button>` : '');
+      // `remote_id` e `sync_status` so existem no registro LOCAL. Lendo-os
+      // de `v` — que, nesta tela, costuma ser o registro da NUVEM — a venda
+      // sincronizada aparecia como erro e oferecia um botao de reenviar que
+      // respondia "Venda sincronizada!" sem mudar nada na tela.
+      const local = this._locais.get(id);
+      const nuvem = !local;
+      const syncBadge = this._badgeNuvem(id, local);
 
       return `<tr style="${sel ? 'background:var(--accent-soft,rgba(108,99,255,.08))' : ''}">
         <td><input type="checkbox" ${sel ? 'checked' : ''} ${cancelada ? 'disabled' : ''} onchange="Vendas.toggleSel('${id}',this)"></td>
@@ -1618,16 +1673,15 @@ const Vendas = {
     else Toast.show(`${sucesso} emitida(s) · ${erros} com erro — verifique o cadastro fiscal dos produtos`, 'warning', 7000);
   },
 
+  // Mesmo despachante do comprovante do PDV (`imprimirCupom`, em app.js).
+  // Esta tela lia `print_server_ip` sozinha e, no terminal que hospeda o
+  // servidor de impressão, mandava o cupom por um caminho diferente do que
+  // o comprovante usava — por isso uma tela imprimia e a outra não.
   async _enviarImpressao(dados) {
-    const ip = await window.pdv.config.get('config.print_server_ip');
-    if (ip) {
-      const res = await window.pdv.print.servidor(dados);
-      if (res?.erro) Toast.show('Impressão: ' + res.erro, 'warning');
-      else Toast.show('Enviado para impressão', 'success');
-    } else {
-      window.pdv.print.local(dados);
-      Toast.show('Enviado para impressão', 'success');
-    }
+    const r = await imprimirCupom(dados);
+    if (r.ok) Toast.show('Enviado para impressão', 'success');
+    else Toast.show('Impressão: ' + (r.erro || 'não foi possível imprimir'), 'warning', 8000);
+    return r.ok;
   },
 
   _renderPreview(numero, itens, total, subtotal, desconto, forma_pagamento, troco, vendedor_nome, cliente_nome, created_at, observacao) {
@@ -1713,7 +1767,7 @@ const Vendas = {
     Toast.show('Tentando enviar ao Supabase...', 'info');
     const r = await window.pdv.vendas.retentarSync(id);
     if (r.ok) {
-      Toast.show('Venda sincronizada!', 'success');
+      Toast.show(r.jaEstava ? 'Esta venda ja estava sincronizada' : 'Venda sincronizada!', 'success');
     } else {
       // Mostra o erro de verdade — é justamente o que a fila automática
       // esconde depois de esgotar as tentativas sozinha.

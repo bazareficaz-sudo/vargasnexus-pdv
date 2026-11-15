@@ -220,7 +220,12 @@ describe('o que a tela passou a mostrar', () => {
   test('imprimir e editar so na venda que existe nesta maquina', () => {
     // Oferecer o botao numa venda de outro balcao seria prometer o que nao da
     // para cumprir: o registro nao esta no SQLite daqui.
+    //
+    // `_locais` deixou de ser um Set de ids e virou um Map `id -> registro
+    // local`: a coluna Nuvem precisa do registro inteiro, porque `remote_id`
+    // e `sync_status` so existem no SQLite. A regra que este teste protege
+    // nao mudou — o que decide e EXISTIR aqui, e nada mais.
     assert.match(VENDAS, /_locais/);
-    assert.match(VENDAS, /const nuvem = !this\._locais\.has\(id\)/);
+    assert.match(VENDAS, /const local = this\._locais\.get\(id\);\s*\n\s*const nuvem = !local;/);
   });
 });

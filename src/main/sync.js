@@ -943,8 +943,25 @@ async function _sincronizarVendaCreateExclusiva(vendaId) {
 // Vendas) — ao contrário da fila, propaga o erro de verdade em vez de só
 // registrar tentativa e desistir depois de 5 falhas sem avisar ninguém.
 async function retentarVendaManual(vendaId) {
+  const antes = db.vendas.getById(vendaId);
+  if (!antes) return { ok: false, erro: 'Venda nao encontrada localmente' };
+  if (antes.remote_id) return { ok: true, jaEstava: true, remoteId: antes.remote_id };
+
   const remoteId = await _sincronizarVendaCreate(vendaId);
-  return { ok: true, remoteId };
+  if (remoteId) return { ok: true, remoteId };
+
+  // `null` aqui NAO e sucesso. `_sincronizarVendaCreateExclusiva` desiste sem
+  // lancar em varios desfechos legitimos — venda cancelada, portao do
+  // orcamento barrou, conflito marcado, servidor respondeu sem id. Responder
+  // `ok: true` a todos eles fazia a tela dizer "Venda sincronizada!" e a
+  // coluna Nuvem continuar vermelha, que e a contradicao que o operador ve.
+  const depois = db.vendas.getById(vendaId);
+  if (!depois) return { ok: false, erro: 'Venda nao encontrada localmente' };
+  if (depois.status === 'cancelada') return { ok: false, erro: 'Venda cancelada — nao e enviada' };
+  if (depois.conflito_conversao) {
+    return { ok: false, erro: 'Venda em conflito de orcamento — nao sera reenviada' };
+  }
+  return { ok: false, erro: 'O servidor nao confirmou o envio' };
 }
 
 // ─── Upload: Local → Servidor (fila pendente) ─────────────────────

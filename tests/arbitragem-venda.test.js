@@ -207,8 +207,21 @@ describe('7. O CÓDIGO QUE OBEDECE A REGRA', () => {
   test('o retry manual entra pela mesma porta', () => {
     // `retentarVendaManual` chama `_sincronizarVendaCreate`, então herda o
     // portão. Se algum dia tiver caminho próprio, este teste cai.
-    const fn = sync.slice(sync.indexOf('async function retentarVendaManual'));
-    assert.match(fn.slice(0, 300), /_sincronizarVendaCreate/);
+    //
+    // O corpo inteiro, e não os primeiros 300 caracteres: a função cresceu
+    // ao passar a distinguir os desfechos em que a venda NÃO sobe, e uma
+    // janela fixa transformaria isso numa falsa quebra do portão. Nenhuma
+    // chamada ao servidor pode escapar dele — por isso também se confere
+    // que não há rota própria para a api aqui dentro.
+    const i = sync.indexOf('async function retentarVendaManual');
+    let nivel = 0, j = sync.indexOf('{', i);
+    for (; j < sync.length; j++) {
+      if (sync[j] === '{') nivel++;
+      else if (sync[j] === '}') { nivel--; if (nivel === 0) break; }
+    }
+    const fn = sync.slice(i, j + 1);
+    assert.match(fn, /_sincronizarVendaCreate/);
+    assert.doesNotMatch(fn, /\bapi\./);
   });
 
   test('recuperarVendasPendentes exclui conflito_orcamento', () => {
