@@ -1490,8 +1490,8 @@ const Vendas = {
             : `<button class="btn btn-ghost btn-sm" onclick="Vendas.imprimir('${id}')" title="Imprimir">🖨️</button>
                ${!cancelada && podePermissao('editar_venda') ? `<button class="btn btn-ghost btn-sm" style="color:var(--accent)" onclick="Vendas.editarNoPDV('${id}')">✏️</button>` : ''}
                ${!cancelada && v.nfce_emitida
-                 ? `<span class="badge badge-green" title="NFC-e emitida · Chave: ${v.nfce_chave || ''}">✅ NFC-e</span>
-                    ${v.nfce_url_pdf ? `<button class="btn btn-ghost btn-sm" style="color:var(--green);font-size:10px" onclick="window.open('${v.nfce_url_pdf}','_blank')" title="Ver DANFE">📄 DANFE</button>` : ''}`
+                 ? `<span class="badge badge-green" title="NFC-e ${v.nfce_numero || ''} · Chave: ${v.nfce_chave || ''}">✅ NFC-e</span>
+                    <button class="btn btn-ghost btn-sm" style="color:var(--green);font-size:10px" onclick="Vendas.imprimirNota('${id}')" title="Reimprimir o cupom da nota">🖨️ Nota</button>`
                  : !cancelada ? `<button class="btn btn-ghost btn-sm" style="color:var(--green);font-size:10px" onclick="Vendas.emitirNFCe('${id}')" title="Emitir NFC-e">🧾 NFC-e</button>` : ''}
                ${!cancelada ? `<button class="btn btn-ghost btn-sm" style="color:#25D366" title="Enviar por WhatsApp" onclick="${v.cliente_telefone ? `WA.abrirModal('Enviar cupom via WhatsApp','${(v.cliente_telefone||'').replace(/'/g,"\\'")}','venda','${id}',WA._vendas['${id}'])` : `WA.abrirModalCapturaCliente('venda','${id}','${(v.cliente_nome||'').replace(/'/g,"\\'")}',WA._vendas['${id}'])` }">${WA_ICON}</button>` : ''}
                ${!cancelada ? `<button class="btn btn-danger btn-sm" onclick="Vendas.cancelar('${id}')">Cancelar</button>` : ''}`}
@@ -1649,28 +1649,46 @@ const Vendas = {
     const ok = await window.pdv.app.confirm(`Emitir NFC-e para ${ids.length} venda(s) selecionada(s)?`);
     if (!ok) return;
 
+    const politica = await window.pdv.nfce.politica();
+    if (!politica.emitir_no_balcao) {
+      Toast.show('A emissão de nota pelo caixa está desligada para esta loja', 'warning', 7000);
+      return;
+    }
+
     let sucesso = 0, erros = 0;
+    const motivos = [];
     Toast.show(`Emitindo NFC-e para ${ids.length} venda(s)...`, 'info', 10000);
 
     for (const id of ids) {
       try {
-        const venda = await window.pdv.vendas.getById(id);
-        if (!venda || venda.status === 'cancelada') continue;
-        const res = await window.pdv.nfce.emitir(venda);
-        if (res.ok || res.aguardando) sucesso++;
-        else { erros++; console.warn('[NFCe lote] Erro venda', id, res.erro); }
-      } catch(e) {
+        // Em lote não se pergunta documento: não há um cliente na frente de
+        // quem perguntar. Nota identificada é o caminho de uma venda só.
+        const res = await window.pdv.nfce.emitir(id, null);
+        if (res.ok) sucesso++;
+        else { erros++; motivos.push(res.erro || 'sem motivo'); console.warn('[NFCe lote] venda', id, res.erro); }
+      } catch (e) {
         erros++;
+        motivos.push(e.message);
         console.error('[NFCe lote] Exceção venda', id, e);
       }
     }
 
     this._sel.clear();
     this._atualizarBarraSel();
-    this._renderTabela();
+    await this.load();
 
-    if (erros === 0) Toast.show(`✅ ${sucesso} NFC-e(s) emitida(s) com sucesso`, 'success', 5000);
-    else Toast.show(`${sucesso} emitida(s) · ${erros} com erro — verifique o cadastro fiscal dos produtos`, 'warning', 7000);
+    if (erros === 0) { Toast.show(`✅ ${sucesso} NFC-e emitida(s)`, 'success', 5000); return; }
+
+    // O PRIMEIRO MOTIVO, por extenso. "Verifique o cadastro fiscal dos
+    // produtos" era um palpite impresso como diagnóstico: a recusa pode ser
+    // NCM, CFOP, desconto, venda que não subiu ou política desligada, e só o
+    // servidor sabe qual.
+    const unicos = [...new Set(motivos)];
+    Toast.show(
+      `${sucesso} emitida(s) · ${erros} não saíram. Primeiro motivo: ${unicos[0]}`
+        + (unicos.length > 1 ? ` (e ${unicos.length - 1} outro(s))` : ''),
+      'warning', 14000,
+    );
   },
 
   // Mesmo despachante do comprovante do PDV (`imprimirCupom`, em app.js).
@@ -1786,83 +1804,48 @@ const Vendas = {
     await this.load();
   },
 
+  // ─── NFC-e na lista de vendas ───────────────────────────────────────
+  //
+  // Mesma rota e mesmas mensagens do [F] do comprovante (ver `app.js`): quem
+  // emite é o servidor. O que havia aqui era o caminho da Focus — token no
+  // terminal, consulta de status por `setTimeout(5000)` e espelho no Base44 —
+  // e as três chamadas que ele usava deixaram de existir junto com ele.
   async emitirNFCe(id) {
-    const venda = await window.pdv.vendas.getById(id);
-    if (!venda) { Toast.show('Venda não encontrada', 'error'); return; }
-
-    Toast.show('Emitindo NFC-e...', 'info', 5000);
-    const res = await window.pdv.nfce.emitir(venda);
-
-    if (res.ok || res.aguardando) {
-      if (res.aguardando) {
-        Toast.show('Aguardando autorização da SEFAZ...', 'info', 4000);
-        await new Promise(r => setTimeout(r, 5000));
-        const consulta = await window.pdv.nfce.consultar(res.reference);
-        if (consulta.status === 'autorizado') {
-          this._abrirResultadoNFCe(res.reference, consulta, venda.remote_id, id);
-        } else {
-          Toast.show(`Status: ${consulta.status || 'aguardando'} — consulte em instantes`, 'warning', 5000);
-        }
-      } else {
-        this._abrirResultadoNFCe(res.reference, res.data, venda.remote_id, id);
-      }
-    } else {
-      Modal.open(`
-        <div style="padding:16px">
-          <div style="color:var(--red);font-size:14px;font-weight:600;margin-bottom:8px">❌ Erro na emissão</div>
-          <div style="font-size:13px;color:var(--text2);word-break:break-word">${res.erro || 'Erro desconhecido'}</div>
-          <div class="modal-actions"><button class="btn btn-ghost" onclick="Modal.close()">Fechar</button></div>
-        </div>`, 'NFC-e — Erro');
+    const politica = await window.pdv.nfce.politica();
+    if (!politica.emitir_no_balcao) {
+      Toast.show('A emissão de nota pelo caixa está desligada para esta loja', 'warning', 7000);
+      return;
     }
+    if (politica.pedir_documento) {
+      Modal.open(
+        htmlDocumentoDaNota(`Vendas._confirmarDocumentoNota('${id}')`, 'Modal.close()'),
+        'Emitir NFC-e',
+      );
+      setTimeout(() => document.getElementById('nota-doc')?.focus(), 100);
+      return;
+    }
+    await this._emitirEImprimirNota(id, null);
   },
 
-  _abrirResultadoNFCe(reference, data, remoteId, localId) {
-    const chave = data?.chave_nfe || data?.chave || '—';
-    const protocolo = data?.numero_protocolo || data?.protocolo || '—';
-    const danfeUrl = data?.danfe_url || data?.url_danfe_nfce || null;
+  async _confirmarDocumentoNota(id) {
+    const informado = documentoInformadoNaTela();
+    if (!informado) return;   // o próprio campo já disse o que falta
+    Modal.close();
+    await this._emitirEImprimirNota(id, informado.digitos);
+  },
 
-    // Salvar localmente
-    if (localId) {
-      window.pdv.vendas.atualizarNfce(localId, {
-        chave: data?.chave_nfe || data?.chave || '',
-        numero: data?.numero || '',
-        serie: data?.serie || '',
-        url_pdf: danfeUrl || '',
-        referencia: reference,
-      }).catch(() => {});
-    }
+  async _emitirEImprimirNota(id, cpfCnpj) {
+    const r = await emitirNotaDaVenda(id, cpfCnpj);
+    if (!r.ok) return;
+    // A lista mostra o selo a partir do banco local, que `nfce.emitir` acabou
+    // de espelhar — recarregar é o que faz o ✅ aparecer sem F5.
+    await this.load();
+    await imprimirNotaDaVenda(id);
+  },
 
-    // Sincronizar com Base44 em background
-    if (remoteId) {
-      window.pdv.nfce.registrarBase44(remoteId, {
-        chave:        data?.chave_nfe || data?.chave || '',
-        numero:       data?.numero || '',
-        serie:        data?.serie || '',
-        status:       data?.status || 'autorizado',
-        status_sefaz: data?.status_sefaz || '100',
-        motivo_sefaz: data?.motivo || '',
-        danfe_url:    danfeUrl || '',
-        url_xml:      data?.url_xml || '',
-        referencia:   reference,
-      }).catch(e => console.warn('[NFCe sync Base44]', e.message));
-    }
-
-    Modal.open(`
-      <div style="padding:16px;text-align:center">
-        <div style="font-size:32px;margin-bottom:8px">✅</div>
-        <div style="font-size:15px;font-weight:700;margin-bottom:4px">NFC-e Autorizada!</div>
-        <div style="font-size:11px;color:var(--text3);margin-bottom:16px">Ref: ${reference}</div>
-        <div style="background:var(--bg3);border-radius:8px;padding:12px;margin-bottom:16px;text-align:left">
-          <div style="font-size:10px;color:var(--text3);margin-bottom:4px">CHAVE DE ACESSO</div>
-          <div style="font-size:11px;font-family:monospace;word-break:break-all">${chave}</div>
-          <div style="font-size:10px;color:var(--text3);margin-top:8px;margin-bottom:4px">PROTOCOLO</div>
-          <div style="font-size:12px;font-weight:600">${protocolo}</div>
-        </div>
-        <div class="modal-actions">
-          <button class="btn btn-ghost" onclick="Modal.close()">Fechar</button>
-          ${danfeUrl ? `<button class="btn btn-primary" onclick="window.open('${danfeUrl}','_blank')">📄 Abrir DANFE</button>` : ''}
-        </div>
-      </div>`, 'NFC-e Emitida');
+  /** Reimprime o cupom de uma nota já autorizada. Não emite nada. */
+  async imprimirNota(id) {
+    await imprimirNotaDaVenda(id);
   },
 
   async repararClientes() {
@@ -2828,31 +2811,23 @@ const Config = {
     </div>
   </div>
 
+  <!-- FISCAL: NÃO HÁ MAIS NADA PARA CONFIGURAR AQUI, e isso é o conserto.
+       Este cartão pedia o token do provedor fiscal digitado no terminal, em
+       dois ambientes, e tinha um "Testar conexão" que emitia nota de verdade
+       a partir daqui. Token de provedor fiscal é credencial da conta: ele
+       mora no servidor, como o do Mercado Pago. Quem emite agora é o sistema
+       web, e o terminal só pede. -->
   <div class="card" style="margin-bottom:16px">
-    <div style="font-size:13px;font-weight:600;margin-bottom:14px">🧾 Fiscal (NFC-e / FocusNFe)</div>
-    <!-- Empresa fiscal da sessão (somente leitura — vem do login) -->
-    <div id="cfg-fiscal-empresa-info" style="background:var(--bg3);border-radius:8px;padding:10px 12px;margin-bottom:14px;font-size:12px;color:var(--text2)">
+    <div style="font-size:13px;font-weight:600;margin-bottom:8px">🧾 Fiscal (NFC-e)</div>
+    <div id="cfg-fiscal-empresa-info" style="background:var(--bg3);border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:12px;color:var(--text2)">
       Carregando dados da empresa fiscal...
     </div>
-    <div class="form-group">
-      <label class="form-label">Ambiente</label>
-      <select class="input" id="cfg-fiscal-ambiente">
-        <option value="homologacao">Homologação (testes)</option>
-        <option value="producao">Produção</option>
-      </select>
+    <div style="font-size:12px;color:var(--text3);line-height:1.6">
+      A nota é emitida pelo servidor. As credenciais do provedor fiscal, a série e a numeração
+      ficam no sistema web, em <strong>Empresas → Fiscal</strong> — nada disso é digitado no caixa.
+      <br>Quem decide se este caixa emite nota, e sob qual regra, é
+      <strong>Configurações → PDV</strong> no sistema web.
     </div>
-    <div class="form-group">
-      <label class="form-label">Token Homologação</label>
-      <input class="input" id="cfg-fiscal-token" type="password" placeholder="Token de testes do FocusNFe">
-      <div style="font-size:11px;color:var(--text3);margin-top:4px">Token do ambiente de testes (homologação)</div>
-    </div>
-    <div class="form-group">
-      <label class="form-label">Token Produção</label>
-      <input class="input" id="cfg-fiscal-token-producao" type="password" placeholder="Token de produção do FocusNFe">
-      <div style="font-size:11px;color:var(--text3);margin-top:4px">Token do ambiente de produção — diferente do de testes</div>
-    </div>
-    <button class="btn btn-primary btn-sm" onclick="Config.salvarFiscal()">Salvar configuração fiscal</button>
-    <button class="btn btn-ghost btn-sm" style="margin-left:8px" onclick="Config.testarFiscal()">Testar conexão</button>
   </div>
 
   <div class="card" style="margin-bottom:16px">
@@ -2978,10 +2953,8 @@ const Config = {
     const iaStatus = await window.pdv.ia.status();
     this._atualizarBadgeIA(iaStatus.configurado);
 
-    // Fiscal — tokens por ambiente; CNPJ/empresa vêm do login (Base44)
-    if (f('cfg-fiscal-token'))          f('cfg-fiscal-token').value          = await window.pdv.config.get('config.fiscal_token')          || '';
-    if (f('cfg-fiscal-token-producao')) f('cfg-fiscal-token-producao').value = await window.pdv.config.get('config.fiscal_token_producao') || '';
-    if (f('cfg-fiscal-ambiente'))       f('cfg-fiscal-ambiente').value       = await window.pdv.config.get('config.fiscal_ambiente')       || 'homologacao';
+    // Fiscal — não há campo para carregar: token, ambiente e numeração são do
+    // servidor. O que resta é o painel informativo de qual empresa emite.
 
     // Painel informativo da empresa fiscal (dados da sessão)
     const user = await window.pdv.config.get('auth.usuario');
@@ -3126,52 +3099,6 @@ const Config = {
     } else {
       el.style.background = 'rgba(251,191,36,.1)'; el.style.color = 'var(--orange)';
       el.textContent = '⚠ Chave API não configurada — IA indisponível';
-    }
-  },
-
-  async salvarFiscal() {
-    const token         = document.getElementById('cfg-fiscal-token')?.value.trim();
-    const tokenProd     = document.getElementById('cfg-fiscal-token-producao')?.value.trim();
-    const ambiente      = document.getElementById('cfg-fiscal-ambiente')?.value;
-    await window.pdv.config.set('config.fiscal_token',         token);
-    await window.pdv.config.set('config.fiscal_token_producao',tokenProd);
-    await window.pdv.config.set('config.fiscal_ambiente',      ambiente);
-    Toast.show('Configuração fiscal salva!', 'success');
-  },
-
-  async testarFiscal() {
-    const token = document.getElementById('cfg-fiscal-token')?.value.trim();
-    const cnpj  = document.getElementById('cfg-fiscal-cnpj')?.value.replace(/\D/g, '');
-    if (!token || !cnpj) { Toast.show('Informe o token e CNPJ antes de testar', 'warning'); return; }
-    // Emitir NFC-e mínima de teste (homologação)
-    const vendaTeste = {
-      numero: 'TESTE-' + Date.now(),
-      id: 'teste',
-      total: 1.00,
-      desconto: 0,
-      troco: 0,
-      forma_pagamento: 'dinheiro',
-      itens: [{
-        produto_sku: 'TESTE',
-        produto_nome: 'PRODUTO TESTE',
-        ncm: '00000000',
-        cfop: '5102',
-        unidade: 'UN',
-        quantidade: 1,
-        preco_unitario: 1.00,
-        total: 1.00,
-        desconto: 0,
-      }],
-    };
-    try {
-      const res = await window.pdv.nfce.emitir(vendaTeste);
-      if (res.ok || res.aguardando) {
-        Toast.show(`✅ FocusNFe conectado! Ref: ${res.reference}`, 'success');
-      } else {
-        Toast.show(`Erro: ${res.erro}`, 'error', 6000);
-      }
-    } catch (e) {
-      Toast.show('Erro ao conectar FocusNFe: ' + e.message, 'error');
     }
   },
 

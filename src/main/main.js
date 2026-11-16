@@ -19,7 +19,7 @@ const printServer = require('./print-server');
 const tunnel = require('./tunnel');
 const envioImpressao = require('./envioImpressao');
 const updater = require('./updater');
-const focusnfe = require('./focusnfe');
+const nfce = require('./nfce');
 const ia       = require('./ia');
 const shopee   = require('./shopee');
 const tiktok   = require('./tiktok');
@@ -1258,61 +1258,45 @@ ipcMain.handle('tunnel:start', async (_, porta) => iniciarTunnel(porta));
 ipcMain.handle('tunnel:stop', () => { tunnel.stop(); return { ok: true }; });
 ipcMain.handle('tunnel:status', () => tunnel.getStatus());
 
-// NFC-e / FocusNFe
-ipcMain.handle('nfce:emitir', async (_, venda) => {
+// ─── NFC-e ──────────────────────────────────────────────────────────────
+//
+// A emissão mora no servidor (ver `nfce.js`). Aqui só passa recado: o
+// renderer nunca vê token, provedor nem payload fiscal.
+//
+// `nfce:consultar`, `nfce:cancelar` e `nfce:registrarBase44` saíram junto com
+// o `focusnfe.js`. Consultar não existe mais porque a rota já devolve o
+// desfecho da SEFAZ; cancelar nota autorizada é ato do sistema web, com
+// justificativa e registro; e Base44 não é mais o servidor deste PDV desde a
+// migração.
+ipcMain.handle('nfce:emitir', async (_, id, cpfCnpj) => {
   try {
-    // Enriquecer itens com dados fiscais do produto local (NCM, CFOP, CSTs)
-    if (venda.itens && venda.itens.length) {
-      venda.itens = venda.itens.map(item => {
-        const prod = item.produto_id
-          ? db.db().prepare('SELECT ncm, cfop, icms_cst, icms_origem, pis_cst, cofins_cst, unidade FROM produtos WHERE id = ? OR remote_id = ?').get(item.produto_id, item.produto_id)
-          : null;
-        return {
-          ...item,
-          ncm:        (prod?.ncm        || item.ncm        || '').replace(/\D/g, ''),
-          cfop:       prod?.cfop        || item.cfop        || '5102',
-          icms_cst:   prod?.icms_cst    || item.icms_cst    || '400',
-          icms_origem:prod?.icms_origem ?? item.icms_origem ?? 0,
-          pis_cst:    prod?.pis_cst     || item.pis_cst     || '07',
-          cofins_cst: prod?.cofins_cst  || item.cofins_cst  || '07',
-          unidade:    prod?.unidade     || item.unidade      || 'UN',
-        };
-      });
-    }
-    return await focusnfe.emitirNFCe(venda);
+    return await nfce.emitir(id, cpfCnpj);
   } catch (err) {
-    return { ok: false, erro: err.message };
+    console.warn('[nfce:emitir]', err.message);
+    return { ok: false, estado: 'excecao', erro: err.message };
   }
 });
-ipcMain.handle('nfce:consultar', async (_, reference) => {
+
+ipcMain.handle('nfce:cupom', async (_, id) => {
   try {
-    return await focusnfe.consultarNFCe(reference);
+    return await nfce.cupom(id);
   } catch (err) {
-    return { ok: false, erro: err.message };
-  }
-});
-ipcMain.handle('nfce:cancelar', async (_, reference, justificativa) => {
-  try {
-    return await focusnfe.cancelarNFCe(reference, justificativa);
-  } catch (err) {
-    return { ok: false, erro: err.message };
-  }
-});
-ipcMain.handle('nfce:danfe', async (_, reference) => {
-  try {
-    return await focusnfe.obterDanfe(reference);
-  } catch (err) {
+    console.warn('[nfce:cupom]', err.message);
     return { ok: false, erro: err.message };
   }
 });
 
-ipcMain.handle('nfce:registrarBase44', async (_, remoteId, dados) => {
-  try {
-    return await api.registrarNfceVenda(remoteId, dados);
-  } catch (err) {
-    console.warn('[nfce:registrarBase44]', err.message);
-    return { ok: false, erro: err.message };
-  }
+// A política é lida do que o sincronismo guardou. Perguntar ao servidor a
+// cada abertura de comprovante poria uma ida à rede no meio do caixa, e a
+// resposta mudaria uma vez por mês.
+ipcMain.handle('nfce:politica', () => {
+  const guardada = store.get('config_fiscal');
+  return (guardada && typeof guardada.emissao_balcao === 'string')
+    ? guardada
+    // Sem nada guardado, o padrão é o de quem nunca configurou: o caixa não
+    // emite. Nunca o contrário — uma política ausente não pode fazer nota
+    // sair sozinha.
+    : { emissao_balcao: 'desligado', emitir_no_balcao: false, emitir_ao_fechar: false, pedir_documento: false };
 });
 
 ipcMain.handle('vendas:atualizarNfce', (_, id, dados) => {

@@ -202,12 +202,13 @@ contextBridge.exposeInMainWorld('pdv', {
   },
 
   // NFC-e
+  // NFC-e. A emissão é do servidor: daqui vai o id da venda e, se o cliente
+  // pediu, o documento dele. Token, provedor e payload fiscal nunca chegam
+  // nesta camada.
   nfce: {
-    emitir:          (venda)           => ipcRenderer.invoke('nfce:emitir', venda),
-    consultar:       (reference)       => ipcRenderer.invoke('nfce:consultar', reference),
-    cancelar:        (reference, just) => ipcRenderer.invoke('nfce:cancelar', reference, just),
-    danfe:           (reference)       => ipcRenderer.invoke('nfce:danfe', reference),
-    registrarBase44: (remoteId, dados) => ipcRenderer.invoke('nfce:registrarBase44', remoteId, dados),
+    emitir:   (id, cpfCnpj) => ipcRenderer.invoke('nfce:emitir', id, cpfCnpj),
+    cupom:    (id)          => ipcRenderer.invoke('nfce:cupom', id),
+    politica: ()            => ipcRenderer.invoke('nfce:politica'),
   },
 
   // IA

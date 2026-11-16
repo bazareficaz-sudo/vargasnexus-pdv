@@ -22,6 +22,13 @@ const PDV = (() => {
   let _orcamentoOrigem = null;   // { id, numero, revisao_base }
   let pedidoObservacao = ''; // nota livre do pedido (ex: telefone pra ligar) — impressa no comprovante
   let _ultimaVenda = null;  // { numero, remoteId, venda } — usado pelos botões do comprovante
+
+  // A política de nota da loja, lida uma vez na abertura da tela.
+  //
+  // O padrão é o de quem nunca configurou: o caixa não emite. Importa que
+  // seja ESTE o padrão — uma política que não chegou não pode fazer nota sair
+  // sozinha, e o botão que não aparece é melhor do que o botão que falha.
+  let _politicaFiscal = { emissao_balcao: 'desligado', emitir_no_balcao: false, emitir_ao_fechar: false, pedir_documento: false };
   let vendasEmEspera = [];  // atendimentos pausados — persistidos em config.pdv.vendasEmEspera
   // Formas de pagamento que preservam o preço promocional — carregado de
   // config_termometro.promo_formas (mesma config de saude_config.orcamento_promo_formas
@@ -2653,101 +2660,128 @@ ${podeDesconto ? `
       Modal.open(renderComprovante(result.numero, venda, result.remote_id), eDevolucao ? 'Comprovante de Devolução' : 'Comprovante');
       _setupComprovanteKeys();
       _enviarImpressao(result.numero, venda, entregaDoCupom);
+      // Solta, de propósito: em "emitir em toda venda" a nota é um efeito da
+      // venda, não um passo dela. A venda já está registrada e o comprovante
+      // já está na tela — travar o caixa esperando a SEFAZ seria transformar
+      // a automação no gargalo. Quem acompanha o desfecho é o Toast.
+      _emitirAoFechar();
     } catch (err) {
       Toast.show('Erro ao registrar: ' + err.message, 'error');
     }
   }
 
   // ─── Atalhos teclado comprovante ──────────────────────────────────────
+  //
+  // O handler anterior é removido ANTES de registrar o novo, e isso não é
+  // zelo: o comprovante passou a ser redesenhado no meio da vida (pedir CPF
+  // da nota, voltar depois de emitir). O handler antigo só se auto-remove no
+  // próximo keydown, então sem isto dois handlers ficariam vivos ao mesmo
+  // tempo e um [F] viraria dois cliques — duas tentativas de emissão.
+  let _handlerComprovante = null;
+
   function _setupComprovanteKeys() {
+    _desligarComprovanteKeys();
     function handler(e) {
-      if (!document.getElementById('btn-comprovante-nova')) { document.removeEventListener('keydown', handler, true); return; }
+      if (!document.getElementById('btn-comprovante-nova')) { _desligarComprovanteKeys(); return; }
       const tag = (e.target || {}).tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA') return;
       const k = e.key;
       if (k === 'Enter' || k === 'n' || k === 'N') { e.preventDefault(); document.getElementById('btn-comprovante-nova')?.click(); }
       else if (k === 'p' || k === 'P') { e.preventDefault(); document.getElementById('btn-comprovante-imprimir')?.click(); }
       else if (k === 'f' || k === 'F') { e.preventDefault(); document.getElementById('btn-comprovante-nfce')?.click(); }
-      else if (k === 'Escape') { document.removeEventListener('keydown', handler, true); }
+      else if (k === 'Escape') { _desligarComprovanteKeys(); }
     }
+    _handlerComprovante = handler;
     document.addEventListener('keydown', handler, true);
   }
 
-  // ─── NFC-e Auto-emissão ─────────────────────────────────────────────
-  async function _autoEmitirNFCe(result, venda) {
-    const usuario = await window.pdv.config.get('auth.usuario');
-    if (!usuario?.nfce_habilitada) return;
-
-    Toast.show('Emitindo NFC-e...', 'info', 7000);
-    const vendaParaNFCe = { ...venda, numero: result.numero };
-    const res = await window.pdv.nfce.emitir(vendaParaNFCe);
-
-    if (res.aguardando) {
-      Toast.show('Aguardando autorização SEFAZ...', 'info', 6000);
-      await new Promise(r => setTimeout(r, 5000));
-      const consulta = await window.pdv.nfce.consultar(res.reference);
-      if (consulta.status === 'autorizado') {
-        await _sincNFCeBase44(result.remote_id, res.reference, consulta);
-      } else {
-        Toast.show(`NFC-e: ${consulta.status || 'aguardando'} — verifique nas vendas`, 'warning', 6000);
-      }
-      return;
-    }
-
-    if (res.ok) {
-      await _sincNFCeBase44(result.remote_id, res.reference, res.data);
-    } else {
-      Toast.show(`NFC-e: ${res.erro || 'erro na emissão'}`, 'error', 8000);
-    }
+  function _desligarComprovanteKeys() {
+    if (!_handlerComprovante) return;
+    document.removeEventListener('keydown', _handlerComprovante, true);
+    _handlerComprovante = null;
   }
 
-  async function _sincNFCeBase44(remoteId, reference, data) {
-    const danfeUrl = data?.danfe_url || data?.url_danfe_nfce || null;
+  // ─── NFC-e ──────────────────────────────────────────────────────────
+  //
+  // Quem emite é o servidor (`src/main/nfce.js` → /api/pdv/nfce). Esta tela
+  // só decide QUANDO perguntar e o que dizer depois.
+  //
+  // O que havia aqui antes: emissão montada no terminal pela Focus, com
+  // consulta de status em `setTimeout(5000)` e espelho no Base44. Nada disso
+  // funcionava desde a migração — o token não existia mais em terminal nenhum
+  // e `_autoEmitirNFCe` não era chamada de lugar nenhum.
 
-    Toast.show(`NFC-e ${data?.numero || ''} Autorizada ✅`, 'success');
-
-    // Atualizar registro local
-    const uv = _ultimaVenda;
-    if (uv?.id) {
-      window.pdv.vendas.atualizarNfce(uv.id, {
-        chave: data?.chave_nfe || data?.chave || '',
-        numero: data?.numero || '',
-        serie: data?.serie || '',
-        url_pdf: danfeUrl || '',
-        referencia: reference,
-      }).catch(() => {});
-    }
-
-    if (remoteId) {
-      window.pdv.nfce.registrarBase44(remoteId, {
-        chave:       data?.chave_nfe || data?.chave || '',
-        numero:      data?.numero || '',
-        serie:       data?.serie || '',
-        status:      data?.status || 'autorizado',
-        status_sefaz: data?.status_sefaz || '100',
-        motivo_sefaz: data?.motivo || data?.motivo_sefaz || '',
-        danfe_url:   danfeUrl || '',
-        url_xml:     data?.url_xml || '',
-        referencia:  reference,
-      }).catch(e => console.warn('[NFCe sync Base44]', e.message));
-    }
-
-    if (danfeUrl) {
-      window.open(danfeUrl, '_blank');
-    }
+  /** A nota sai sozinha ao fechar a venda? Só quando o gestor escolheu isso. */
+  async function _emitirAoFechar() {
+    if (!_politicaFiscal.emitir_ao_fechar) return;
+    // Sem documento: em "emitir em toda venda" a nota é automática, e parar o
+    // caixa para perguntar CPF em cada venda transformaria a automação em
+    // atrito. Cliente com documento cadastrado sai identificado de todo jeito,
+    // porque o servidor resolve isso pela venda.
+    await _emitirEImprimirNota(null);
   }
 
   /**
-   * O botao Imprimir do comprovante — e a tecla [P].
-   *
-   * Passa `forcar`, e isso conserta um botao que nao fazia nada:
-   * `_enviarImpressao` desiste logo na primeira linha quando
-   * `imprimir_automatico` esta desligado, entao a loja que nao quer imprimir
-   * TODA venda ficava sem conseguir imprimir NENHUMA. Pior, o toast dizia
-   * "Enviado para impressão" do mesmo jeito.
-   *
-   * O automatico e sobre imprimir sem pedir; apertar o botao ja e o pedido.
+   * [F] no comprovante. Três caminhos, nesta ordem:
+   *   nota já emitida  → reimprime, não emite de novo
+   *   política pede CPF → pergunta primeiro
+   *   caso contrário    → emite direto
    */
+  async function _emitirNFCeComprovante() {
+    const uv = _ultimaVenda;
+    if (!uv) { Toast.show('Nenhuma venda ativa', 'warning'); return; }
+
+    if (uv.nfce?.numero) { await imprimirNotaDaVenda(uv.id); return; }
+    if (!_politicaFiscal.emitir_no_balcao) {
+      Toast.show('A emissão de nota pelo caixa está desligada para esta loja', 'warning', 7000);
+      return;
+    }
+    if (_politicaFiscal.pedir_documento) { _abrirModalDocumentoNota(); return; }
+    await _emitirEImprimirNota(null);
+  }
+
+  function _abrirModalDocumentoNota() {
+    Modal.open(
+      htmlDocumentoDaNota('PDV._confirmarDocumentoNota()', 'PDV._voltarAoComprovante()'),
+      'Emitir NFC-e',
+      'Venda #' + (_ultimaVenda?.numero ?? ''),
+    );
+    setTimeout(() => document.getElementById('nota-doc')?.focus(), 100);
+  }
+
+  async function _confirmarDocumentoNota() {
+    const informado = documentoInformadoNaTela();
+    if (!informado) return;   // o próprio campo já disse o que falta
+    _voltarAoComprovante();
+    await _emitirEImprimirNota(informado.digitos);
+  }
+
+  /** Volta à tela do comprovante sem perder o que já aconteceu nela. */
+  function _voltarAoComprovante() {
+    const uv = _ultimaVenda;
+    if (!uv) { Modal.close(); return; }
+    Modal.open(renderComprovante(uv.numero, uv.venda), 'Comprovante');
+    _setupComprovanteKeys();
+  }
+
+  async function _emitirEImprimirNota(cpfCnpj) {
+    const uv = _ultimaVenda;
+    if (!uv) return;
+
+    const r = await emitirNotaDaVenda(uv.id, cpfCnpj);
+    if (!r.ok) return;
+
+    uv.nfce = { numero: r.numero || null, serie: r.serie || null, chave: r.chave || null };
+
+    // Redesenha para o botão virar "reimprimir" e o número da nota aparecer.
+    // Só quando o comprovante ainda está aberto: em "emitir em toda venda" a
+    // nota pode terminar depois de o operador já ter aberto outra venda, e
+    // reabrir o comprovante dele por cima disso seria roubar a tela.
+    if (document.getElementById('btn-comprovante-nova')) _voltarAoComprovante();
+
+    await imprimirNotaDaVenda(uv.id);
+  }
+
   async function _reimprimir(numero) {
     const uv = _ultimaVenda;
     if (!uv) return;
@@ -2756,33 +2790,6 @@ ${podeDesconto ? `
     // `_enviarImpressao`; repetir um "não foi possível" genérico por cima
     // apagaria a única informação útil da tela.
     if (ok) Toast.show('Enviado para impressão', 'success');
-  }
-
-  async function _emitirNFCeComprovante() {
-    const uv = _ultimaVenda;
-    if (!uv) { Toast.show('Nenhuma venda ativa', 'warning'); return; }
-
-    Toast.show('Emitindo NFC-e...', 'info', 7000);
-    const vendaParaNFCe = { ...uv.venda, numero: uv.numero };
-    const res = await window.pdv.nfce.emitir(vendaParaNFCe);
-
-    if (res.aguardando) {
-      Toast.show('Aguardando autorização SEFAZ...', 'info', 6000);
-      await new Promise(r => setTimeout(r, 5000));
-      const consulta = await window.pdv.nfce.consultar(res.reference);
-      if (consulta.status === 'autorizado') {
-        await _sincNFCeBase44(uv.remoteId, res.reference, consulta);
-      } else {
-        Toast.show(`NFC-e: ${consulta.status || 'aguardando'} — verifique em instantes`, 'warning', 6000);
-      }
-      return;
-    }
-
-    if (res.ok) {
-      await _sincNFCeBase44(uv.remoteId, res.reference, res.data);
-    } else {
-      Toast.show(`NFC-e: ${res.erro || 'erro na emissão'}`, 'error', 8000);
-    }
   }
 
   async function _enviarImpressao(numero, venda, entrega = null, { forcar = false } = {}) {
@@ -2851,6 +2858,31 @@ ${podeDesconto ? `
     }
   }
 
+  /**
+   * O botão da nota, nos três estados que ele pode ter.
+   *
+   * Loja que não emite pelo caixa não ganha botão nenhum: oferecer [F] para
+   * depois recusar é pior do que não oferecer. Venda que já tem nota troca
+   * "emitir" por "reimprimir", porque apertar [F] duas vezes não pode virar
+   * duas notas — e o número da nota aparece ali para o operador poder dizer
+   * ao cliente.
+   */
+  function _botaoDaNota() {
+    const nota = _ultimaVenda?.nfce;
+    if (nota?.numero) {
+      return `
+  <button id="btn-comprovante-nfce" class="btn btn-ghost" style="color:var(--green)" onclick="PDV._emitirNFCeComprovante()"
+    title="Chave: ${nota.chave || ''}">
+    🧾 Reimprimir NFC-e ${nota.numero} <span style="font-size:10px;opacity:.6">[F]</span>
+  </button>`;
+    }
+    if (!_politicaFiscal.emitir_no_balcao) return '';
+    return `
+  <button id="btn-comprovante-nfce" class="btn btn-ghost" onclick="PDV._emitirNFCeComprovante()">
+    📄 Emitir NFC-e <span style="font-size:10px;opacity:.6">[F]</span>
+  </button>`;
+  }
+
   function renderComprovante(numero, venda) {
     const itensVenda = venda.itens.filter(i => i.quantidade > 0);
     const itensDevol = venda.itens.filter(i => i.quantidade < 0);
@@ -2904,9 +2936,7 @@ ${podeDesconto ? `
   <button id="btn-comprovante-imprimir" class="btn btn-ghost" onclick="PDV._reimprimir(${numero})">
     🖨️ Imprimir <span style="font-size:10px;opacity:.6">[P]</span>
   </button>
-  <button id="btn-comprovante-nfce" class="btn btn-ghost" onclick="PDV._emitirNFCeComprovante()">
-    📄 Emitir NFC-e <span style="font-size:10px;opacity:.6">[F]</span>
-  </button>
+  ${_botaoDaNota()}
   <button id="btn-comprovante-fechar" class="btn btn-ghost" style="font-size:11px;color:var(--text3)" onclick="Modal.close()">
     Fechar <span style="font-size:10px;opacity:.6">[ESC]</span>
   </button>
@@ -3172,6 +3202,17 @@ ${podeDesconto ? `
         return;
       }
 
+      // ── ESC no pedido de CPF da nota: volta ao comprovante ────
+      //
+      // Antes do ESC genérico: o modal da nota tem `btn-primary` próprio
+      // (emitir), então o seletor de baixo não o reconhece — e fechar tudo
+      // faria o operador perder o comprovante por desistir de informar CPF.
+      if (e.key === 'Escape' && modalAberto && document.getElementById('nota-doc')) {
+        e.preventDefault();
+        _voltarAoComprovante();
+        return;
+      }
+
       // ── ESC no comprovante: fecha e volta para busca ──────────
       if (e.key === 'Escape' && modalAberto) {
         const temComprovante = document.querySelector('.modal-actions .btn-primary[onclick="Modal.close()"]');
@@ -3398,6 +3439,8 @@ ${podeDesconto ? `
     renderClientBar();
     carregarEsperas();
     _atualizarBotaoObservacao();
+    const politica = await window.pdv.nfce.politica();
+    if (politica && typeof politica.emissao_balcao === 'string') _politicaFiscal = politica;
     const termometro = await window.pdv.config.get('config_termometro');
     if (Array.isArray(termometro?.promo_formas) && termometro.promo_formas.length) {
       formasAvista = termometro.promo_formas;
@@ -3424,7 +3467,8 @@ ${podeDesconto ? `
     _abrirModalVendedor, _validarVendedor, _finalizarComVendedor, _vendedorAtualValido,
     openClientSearch, searchClientes, selectClient, clearClient,
     _abrirNovoCliente, _salvarNovoCliente,
-    _reimprimir, _enviarImpressao, _emitirNFCeComprovante,
+    _reimprimir, _enviarImpressao,
+    _emitirNFCeComprovante, _confirmarDocumentoNota, _voltarAoComprovante,
     verContaCliente, _receberCredito,
     salvarComoOrcamento, carregarDoOrcamento,
     colocarEmEspera, retomarEspera, descartarEspera,
