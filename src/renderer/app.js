@@ -347,6 +347,116 @@ function lerDesfechoDaImpressao(res) {
   return { ok: true };
 }
 
+// ─── NFC-e: o que as duas telas fazem igual ──────────────────────────────
+//
+// O comprovante do PDV e a lista de Vendas emitem a mesma nota, pela mesma
+// rota, e precisam dizer a mesma coisa quando ela dá certo e quando não dá.
+// Duas cópias dessa decisão é o defeito que esta base já pagou antes — a tela
+// de pendências fiscais recalculando por conta própria o que a emissão
+// decidia, e anunciando "nenhuma pendência" sobre item que a emissão recusava.
+
+/**
+ * O documento digitado serve para emitir?
+ *
+ * Em branco serve: é o caso mais comum no balcão, e a nota sai como consumidor
+ * não identificado. Pela metade NÃO serve — emitir calado como não
+ * identificado entregaria ao cliente justamente a nota que ele pediu para não
+ * receber. A mesma recusa existe na rota, que é onde ela vale; aqui ela existe
+ * para o operador corrigir com o cliente na frente dele.
+ */
+function conferirDocumentoDaNota(bruto) {
+  const texto = String(bruto ?? '').trim();
+  if (texto === '') return { ok: true, digitos: null };
+  const digitos = texto.replace(/\D/g, '');
+  if (digitos.length !== 11 && digitos.length !== 14) {
+    return {
+      ok: false,
+      erro: `Faltam dígitos (${digitos.length} de 11 para CPF ou 14 para CNPJ). Apague tudo para emitir sem identificação.`,
+    };
+  }
+  return { ok: true, digitos };
+}
+
+/** O corpo do modal que pergunta o CPF/CNPJ, igual nas duas telas. */
+function htmlDocumentoDaNota(aoConfirmar, aoCancelar) {
+  return `
+<div class="form-group">
+  <label class="form-label">CPF ou CNPJ do cliente</label>
+  <input class="input" id="nota-doc" inputmode="numeric" placeholder="Deixe em branco se o cliente não quiser"
+    onkeydown="if(event.key==='Enter'){event.preventDefault();${aoConfirmar}}">
+  <div style="font-size:11px;color:var(--text3);margin-top:6px">
+    Sem documento, a nota sai como consumidor não identificado — e vale do mesmo jeito.
+  </div>
+  <div id="nota-doc-erro" style="font-size:11px;color:var(--red);margin-top:6px"></div>
+</div>
+<div class="modal-actions" style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+  <button class="btn btn-ghost" onclick="${aoCancelar}">Cancelar [ESC]</button>
+  <button class="btn btn-primary" onclick="${aoConfirmar}">Emitir nota [Enter]</button>
+</div>`;
+}
+
+/** Lê o campo do modal; devolve `null` quando ele próprio já reclamou na tela. */
+function documentoInformadoNaTela() {
+  const campo = document.getElementById('nota-doc');
+  const r = conferirDocumentoDaNota(campo?.value);
+  if (!r.ok) {
+    const erro = document.getElementById('nota-doc-erro');
+    if (erro) erro.textContent = r.erro;
+    campo?.focus();
+    return null;
+  }
+  return { digitos: r.digitos };
+}
+
+/**
+ * Pede a nota ao servidor e anuncia o desfecho — com o motivo, sempre.
+ *
+ * O motivo vem inteiro: rejeição da SEFAZ, cadastro fiscal do produto,
+ * política desligada, venda que ainda não subiu. Um "erro na emissão"
+ * genérico manda o operador adivinhar com o cliente esperando.
+ */
+async function emitirNotaDaVenda(id, cpfCnpj) {
+  Toast.show('Emitindo NFC-e...', 'info', 9000);
+  const r = await window.pdv.nfce.emitir(id, cpfCnpj);
+
+  if (!r || !r.ok) {
+    Toast.show('NFC-e: ' + ((r && r.erro) || 'não foi autorizada'), 'error', 12000);
+    return r || { ok: false };
+  }
+
+  Toast.show(r.jaEstava
+    ? `NFC-e ${r.numero || ''} já estava emitida para esta venda`
+    : `NFC-e ${r.numero || ''} autorizada`, 'success', 6000);
+  return r;
+}
+
+/**
+ * Imprime o cupom da nota.
+ *
+ * O HTML vem do servidor já ajustado para a bobina — é o DANFE que a SEFAZ
+ * autorizou, com QR Code e chave de acesso, não um cupom remontado aqui. Vai
+ * pela mesma porta do comprovante de entrega, então respeita o destino
+ * configurado e diz o motivo quando a impressora não responde.
+ */
+async function imprimirNotaDaVenda(id) {
+  const c = await window.pdv.nfce.cupom(id);
+  if (!c || !c.ok) {
+    Toast.show('Nota emitida, mas o cupom não veio: ' + ((c && c.erro) || 'sem detalhe'), 'warning', 10000);
+    return { ok: false };
+  }
+  if (c.html) {
+    const r = await imprimirCupom({ _html: c.html });
+    if (r.ok) Toast.show('Cupom da nota enviado para impressão', 'success');
+    else Toast.show('Impressão da nota: ' + r.erro, 'warning', 10000);
+    return r;
+  }
+  // Nota antiga, guardada como endereço externo: não dá para imprimir na
+  // bobina, mas dá para abrir.
+  if (c.url) { window.open(c.url, '_blank'); return { ok: true }; }
+  Toast.show('A nota está autorizada, mas sem cupom para imprimir', 'warning', 8000);
+  return { ok: false };
+}
+
 function fmtDate(iso) {
   if (!iso) return '-';
   const d = new Date(iso);

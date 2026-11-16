@@ -2283,7 +2283,6 @@ module.exports = {
   atualizarOrcamento,
   listarOrcamentosCloud,
   getOrcamentoCloud,
-  registrarNfceVenda: _naoDisponivel('NFC-e'),
   chamarPdvProxy,
   repararClienteNasVendas: _naoDisponivel('Manutenção'),
 };

@@ -146,6 +146,11 @@ async function syncNow(win) {
     await syncDownUrlImpressao();
     await syncDownConfigCupom();
     await syncDownPoliticaSaude();
+    // Depois da politica de saude, e nao antes, porque um teste existente
+    // afirma que aquelas duas linhas sao vizinhas. A ordem entre as descidas
+    // de configuracao e indiferente; quebrar a assercao de outro assunto para
+    // ganhar nada, nao.
+    await syncDownPoliticaFiscal();
     await syncDownFaltas();
     await syncDownOrcamentos();
     await syncDownCancelamentosOrcamentos();
@@ -553,6 +558,26 @@ async function syncDownConfigCupom() {
     }
   } catch (err) {
     console.warn('[SYNC] Mensagem do cupom: erro (nao critico):', err.message);
+  }
+}
+
+// A politica de emissao de nota no balcao, decidida pelo gestor da loja.
+//
+// Guardada no store porque a tela do comprovante precisa dela NA HORA de
+// desenhar o botao: ir a rede ali poria uma espera no meio do caixa, e a
+// resposta muda uma vez por mes. `undefined` = nao deu para perguntar, e aí
+// o que estava guardado continua valendo — mesma regra da mensagem do cupom.
+async function syncDownPoliticaFiscal() {
+  try {
+    const p = await require('./nfce').politica();
+    if (p === undefined) return;
+    const antes = store.get('config_fiscal');
+    store.set('config_fiscal', p);
+    if (!antes || antes.emissao_balcao !== p.emissao_balcao) {
+      console.log('[SYNC] Politica de nota no balcao:', p.emissao_balcao);
+    }
+  } catch (err) {
+    console.warn('[SYNC] Politica fiscal: erro (nao critico):', err.message);
   }
 }
 
