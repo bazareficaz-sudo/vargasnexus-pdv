@@ -1291,12 +1291,25 @@ ipcMain.handle('nfce:cupom', async (_, id) => {
 // resposta mudaria uma vez por mês.
 ipcMain.handle('nfce:politica', () => {
   const guardada = store.get('config_fiscal');
-  return (guardada && typeof guardada.emissao_balcao === 'string')
-    ? guardada
-    // Sem nada guardado, o padrão é o de quem nunca configurou: o caixa não
-    // emite. Nunca o contrário — uma política ausente não pode fazer nota
-    // sair sozinha.
-    : { emissao_balcao: 'desligado', emitir_no_balcao: false, emitir_ao_fechar: false, pedir_documento: false };
+  if (guardada && typeof guardada.emissao_balcao === 'string') {
+    // `terminal_liberado` passou a existir depois que este cache ja rodava
+    // nas maquinas. Numa politica guardada pela versao anterior o campo nao
+    // existe, e a tela leria `undefined` ate o proximo sincronismo.
+    //
+    // A derivacao e segura no sentido que importa: `emitir_no_balcao` so e
+    // verdadeiro quando o servidor ja confirmou o rollout deste terminal,
+    // entao poder emitir IMPLICA estar liberado. O contrario nao vale — uma
+    // loja com a emissao desligada e o terminal liberado cai em `false` ate
+    // o sincronismo trazer a politica inteira. Errar para o lado de esconder
+    // um botao e menos grave do que oferecer o que responde 409.
+    return ('terminal_liberado' in guardada)
+      ? guardada
+      : { ...guardada, terminal_liberado: guardada.emitir_no_balcao === true };
+  }
+  // Sem nada guardado, o padrão é o de quem nunca configurou: o caixa não
+  // emite. Nunca o contrário — uma política ausente não pode fazer nota
+  // sair sozinha.
+  return { emissao_balcao: 'desligado', terminal_liberado: false, emitir_no_balcao: false, emitir_ao_fechar: false, pedir_documento: false };
 });
 
 ipcMain.handle('vendas:atualizarNfce', (_, id, dados) => {
