@@ -1084,6 +1084,10 @@ const Vendas = {
    * vendas que TINHAM sincronizado, que sao as unicas que a nuvem devolve.
    */
   _locais: new Map(),
+  // A politica fiscal do balcao, para a linha saber se oferece NFC-e. Comeca
+  // negada: antes da primeira resposta e melhor nao oferecer do que oferecer
+  // e recusar.
+  _politicaFiscal: { emissao_balcao: 'desligado', terminal_liberado: false, emitir_no_balcao: false, pedir_documento: false },
   _timer: null,
   _atualizadoEm: null,
   _carregando: false,
@@ -1305,6 +1309,13 @@ const Vendas = {
     const buscaProduto = document.getElementById('venda-busca-produto')?.value?.trim() || '';
     const podeVerTodos = podePermissao('ver_vendas_todos_terminais');
 
+    // A politica do balcao decide se a linha oferece nota. Nao e chamada de
+    // rede: o main responde do que guardou no ultimo sync.
+    try {
+      const p = await window.pdv.nfce.politica();
+      if (p) this._politicaFiscal = p;
+    } catch { /* mantem a anterior — a tela nao para por causa disto */ }
+
     try {
       let lista;
       if (podeVerTodos) {
@@ -1465,6 +1476,21 @@ const Vendas = {
       const nuvem = !local;
       const syncBadge = this._badgeNuvem(id, local);
 
+      // NOTA FISCAL NAO DEPENDE DO REGISTRO LOCAL.
+      //
+      // Imprimir o cupom da venda, editar e cancelar precisam do que esta no
+      // SQLite desta maquina. A NFC-e nao: quem emite e o servidor, e o que
+      // ele precisa e o id da venda NA NUVEM — que a linha da nuvem tem de
+      // sobra. Estes dois botoes estavam dentro do ramo "so local" junto com
+      // os outros tres, e por isso sumiam exatamente onde mais fazem falta:
+      // no caixa olhando a venda que outro balcao fechou.
+      const podeEmitir = this._politicaFiscal?.emitir_no_balcao === true;
+      const podeVerCupom = this._politicaFiscal?.terminal_liberado === true;
+      const acoesNfce = cancelada ? '' : (v.nfce_emitida
+        ? `<span class="badge badge-green" title="NFC-e ${v.nfce_numero || ''} · Chave: ${v.nfce_chave || ''}">✅ NFC-e</span>`
+          + (podeVerCupom ? `<button class="btn btn-ghost btn-sm" style="color:var(--green);font-size:10px" onclick="Vendas.imprimirNota('${id}')" title="Reimprimir o cupom da nota">🖨️ Nota</button>` : '')
+        : (podeEmitir ? `<button class="btn btn-ghost btn-sm" style="color:var(--green);font-size:10px" onclick="Vendas.emitirNFCe('${id}')" title="Emitir NFC-e">🧾 NFC-e</button>` : ''));
+
       return `<tr style="${sel ? 'background:var(--accent-soft,rgba(108,99,255,.08))' : ''}">
         <td><input type="checkbox" ${sel ? 'checked' : ''} ${cancelada ? 'disabled' : ''} onchange="Vendas.toggleSel('${id}',this)"></td>
         <td class="td-mono" style="font-size:15px;font-weight:700;color:var(--accent)">#${v.numero || '—'}</td>
@@ -1486,13 +1512,11 @@ const Vendas = {
         <td style="display:flex;gap:4px;flex-wrap:wrap;min-width:120px">
           ${nuvem
             ? `<button class="btn btn-ghost btn-sm" onclick="Vendas.imprimirCloud(${JSON.stringify(v).replace(/"/g,'&quot;')})" title="Imprimir">🖨️</button>
+               ${acoesNfce}
                ${!cancelada ? `<button class="btn btn-ghost btn-sm" style="color:#25D366" title="Enviar por WhatsApp" onclick="${v.cliente_telefone ? `WA.abrirModal('Enviar cupom via WhatsApp','${(v.cliente_telefone||'').replace(/'/g,"\\'")}','venda','${id}',WA._vendas['${id}'])` : `WA.abrirModalCapturaCliente('venda','${id}','${(v.cliente_nome||'').replace(/'/g,"\\'")}',WA._vendas['${id}'])` }">${WA_ICON}</button>` : ''}`
             : `<button class="btn btn-ghost btn-sm" onclick="Vendas.imprimir('${id}')" title="Imprimir">🖨️</button>
                ${!cancelada && podePermissao('editar_venda') ? `<button class="btn btn-ghost btn-sm" style="color:var(--accent)" onclick="Vendas.editarNoPDV('${id}')">✏️</button>` : ''}
-               ${!cancelada && v.nfce_emitida
-                 ? `<span class="badge badge-green" title="NFC-e ${v.nfce_numero || ''} · Chave: ${v.nfce_chave || ''}">✅ NFC-e</span>
-                    <button class="btn btn-ghost btn-sm" style="color:var(--green);font-size:10px" onclick="Vendas.imprimirNota('${id}')" title="Reimprimir o cupom da nota">🖨️ Nota</button>`
-                 : !cancelada ? `<button class="btn btn-ghost btn-sm" style="color:var(--green);font-size:10px" onclick="Vendas.emitirNFCe('${id}')" title="Emitir NFC-e">🧾 NFC-e</button>` : ''}
+               ${acoesNfce}
                ${!cancelada ? `<button class="btn btn-ghost btn-sm" style="color:#25D366" title="Enviar por WhatsApp" onclick="${v.cliente_telefone ? `WA.abrirModal('Enviar cupom via WhatsApp','${(v.cliente_telefone||'').replace(/'/g,"\\'")}','venda','${id}',WA._vendas['${id}'])` : `WA.abrirModalCapturaCliente('venda','${id}','${(v.cliente_nome||'').replace(/'/g,"\\'")}',WA._vendas['${id}'])` }">${WA_ICON}</button>` : ''}
                ${!cancelada ? `<button class="btn btn-danger btn-sm" onclick="Vendas.cancelar('${id}')">Cancelar</button>` : ''}`}
           ${!cancelada && podePermissao('fechar_caixa')
@@ -1646,6 +1670,19 @@ const Vendas = {
   async nfceLote() {
     if (!this._sel.size) return;
     const ids = [...this._sel];
+
+    // UMA venda marcada nao e lote: e o caso em que existe um cliente na
+    // frente do caixa, e portanto alguem a quem perguntar o CPF. Em vez de
+    // emitir calada como nao identificada, a barra azul manda para o mesmo
+    // caminho do botao da linha — que pergunta o documento quando a loja
+    // emite sob pedido, e imprime o cupom no fim.
+    if (ids.length === 1) {
+      this._sel.clear();
+      this._atualizarBarraSel();
+      await this.emitirNFCe(ids[0]);
+      return;
+    }
+
     const ok = await window.pdv.app.confirm(`Emitir NFC-e para ${ids.length} venda(s) selecionada(s)?`);
     if (!ok) return;
 
