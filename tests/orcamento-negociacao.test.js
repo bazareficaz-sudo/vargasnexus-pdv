@@ -597,3 +597,128 @@ describe('a regua é MARKUP, nao margem', () => {
     assert.ok(Number.isFinite(a.markup));
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// O ORÇAMENTO DO BALCÃO GUARDA O PREÇO DE TABELA
+//
+// Relato de 16/11/2026: orçamento #148, R$ 175,05, três itens em promoção, e
+// a proposta saiu "SEM PARCELAMENTO" e sem desconto nenhum.
+//
+// Os testes acima sempre passaram porque entregavam o item JÁ no preço
+// promocional (`preco_unitario: 270`). Só que o carrinho de orçamento guarda
+// o preço de TABELA, de propósito: a promoção da loja vale à vista e, num
+// orçamento, ninguém escolheu ainda como paga. Com tabela gravada, "cheio" e
+// "praticado" viravam o mesmo número e a promoção sumia da conta.
+// ─────────────────────────────────────────────────────────────────────────
+
+const pelaTabela = (preco, catalogo = CATALOGO) => N.calcular({
+  itens: [{ produto_id: 'p1', produto_nome: 'CAIXA DAGUA', quantidade: 1, preco_unitario: preco }],
+  descontoManualPct: 0,
+  politica: POLITICA,
+  buscarProdutos: () => catalogo,
+});
+
+describe('a promoção na proposta feita pelo balcão', () => {
+  test('gravado pelo CHEIO, a promoção ainda vira condição à vista', () => {
+    const r = pelaTabela(300);
+    assert.equal(r.aplicaEstrategia, true);
+    assert.equal(r.totalExibido, 300);
+    assert.equal(r.condicoes.descontoAvistaPct, 10);
+    assert.equal(r.totalAvista, 270);
+  });
+
+  test('dá no MESMO resultado de quando o carrinho já aplicou a promoção', () => {
+    const cheio = pelaTabela(300);
+    const promo = pelaTabela(270);
+    assert.deepEqual(
+      { t: cheio.totalExibido, a: cheio.totalAvista, d: cheio.condicoes.descontoAvistaPct },
+      { t: promo.totalExibido, a: promo.totalAvista, d: promo.condicoes.descontoAvistaPct },
+    );
+  });
+
+  test('preço negociado ABAIXO da promoção continua sendo o preço', () => {
+    const r = pelaTabela(250);
+    assert.equal(r.totalExibido, 300);
+    assert.equal(r.totalAvista, 250);
+    assert.equal(r.condicoes.descontoAvistaPct, 16.67);
+  });
+
+  test('sem promoção vigente, o cheio é o que foi gravado — nada aparece', () => {
+    const semPromo = [{ id: 'p1', preco_venda: 300, preco_custo: 60, promocao_ativa: false }];
+    const r = pelaTabela(300, semPromo);
+    assert.equal(r.aplicaEstrategia, false);
+    assert.equal(r.condicoes.descontoAvistaPct, 0);
+    assert.equal(r.totalExibido, 300);
+  });
+
+  test('promoção fora da janela não vira desconto, mesmo com tabela gravada', () => {
+    const vencida = [{
+      id: 'p1', preco_venda: 300, preco_custo: 60, preco_promocional: 270,
+      promocao_ativa: true, promocao_fim: '2020-01-01T00:00:00Z',
+    }];
+    const r = pelaTabela(300, vencida);
+    assert.equal(r.aplicaEstrategia, false);
+    assert.equal(r.condicoes.descontoAvistaPct, 0);
+  });
+
+  test('promocional maior ou igual ao cheio é ignorado — não é promoção', () => {
+    const torta = [{
+      id: 'p1', preco_venda: 300, preco_custo: 60, preco_promocional: 320, promocao_ativa: true,
+    }];
+    const r = pelaTabela(300, torta);
+    assert.equal(r.condicoes.descontoAvistaPct, 0);
+  });
+});
+
+// O orçamento #148 inteiro, com os números que estão na produção.
+describe('o orçamento #148, como ele é no banco', () => {
+  // produto, qtd, preço gravado (tabela), preço de tabela, custo, promocional
+  const CESTA = [
+    ['TUBO ESGOTO 75MM 3 METROS',   59.00, 59.99, 44.22, null],
+    ['JOELHO ESGOTO 90 - 75MM',      7.38,  7.38,  3.35, 6.71],
+    ['JUNCAO ESGOTO SIMPLES 75MM',  23.47, 23.47, 13.04, null],
+    ['ANEL DE VEDACAO 75MM',         1.90,  1.90,  0.85, null],
+    ['FITA METALICA PERFURANTE',    28.90, 28.90, 16.66, null],
+    ['SEUMOTA ARGAMASSA AC2 20KG',  25.50, 25.50, 17.00, 21.99],
+    ['AREIA LAVADA ENSACADA 7KG',    3.00,  3.00,  1.70, null],
+    ['CIMENTO CP-3 25KG',           25.90, 25.90, 19.26, 23.90],
+  ];
+  const r = N.calcular({
+    itens: CESTA.map(([nome, gravado], n) => ({
+      produto_id: `i${n}`, produto_nome: nome, quantidade: 1, preco_unitario: gravado,
+    })),
+    descontoManualPct: 0,
+    politica: POLITICA,
+    buscarProdutos: () => CESTA.map(([, , tabela, custo, promo], n) => ({
+      id: `i${n}`, preco_venda: tabela, preco_custo: custo,
+      preco_promocional: promo, promocao_ativa: promo != null,
+    })),
+  });
+
+  test('o total que o cliente lê continua o da proposta: R$ 175,05', () => {
+    assert.equal(r.totalExibido, 175.05);
+  });
+
+  test('os três itens em promoção viram R$ 6,18 de desconto à vista', () => {
+    assert.equal(r.totalAvista, 168.87);
+    assert.equal(r.condicoes.descontoAvistaPct, 3.53);
+    assert.equal(r.vitrine.temPromo, true);
+  });
+
+  test('a cesta fica na faixa Atenção — 37,5% de markup', () => {
+    assert.equal(r.saude.base.faixa.nome, 'Atenção');
+    assert.ok(Math.abs(r.saude.base.markup - 37.49) < 0.1, `markup ${r.saude.base.markup}`);
+  });
+
+  // ISTO NAO E DEFEITO, E A POLITICA DA LOJA: a faixa Atencao esta
+  // configurada com `permite_parcelamento: false`. Parcelar aqui exigiria
+  // mudar a faixa em Configuracoes -> Saude da venda, nao mudar o codigo.
+  test('sem parcelamento, porque a faixa Atenção não permite parcelar', () => {
+    assert.equal(r.condicoes.parcelasMax, null);
+    assert.equal(FAIXAS.find(f => f.nome === 'Atenção').permite_parcelamento, false);
+  });
+
+  test('o custo existe em todos os itens — o semáforo não é ficção', () => {
+    assert.equal(r.semCusto, false);
+  });
+});

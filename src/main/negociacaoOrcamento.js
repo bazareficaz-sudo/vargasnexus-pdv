@@ -57,18 +57,39 @@ function calcular({ itens, descontoManualPct, politica, buscarProdutos, agora } 
 
   const enriquecidos = lista.map((i) => {
     const p = catalogo.get(i.produto_id);
-    const praticado = num(i.preco_unitario);
+    const gravado = num(i.preco_unitario);
     // Preço cheio só existe se a promoção está VIGENTE. Promoção fora da
     // janela de datas não é promoção — tratá-la como tal transformaria um
     // desconto de fim de semana em desconto à vista para sempre.
-    const cheio = p && emPromocao(p, agora) ? num(p.preco_venda) : praticado;
+    const temPromo = p ? emPromocao(p, agora) : false;
+
+    // ── O PREÇO PROMOCIONAL TEM QUE VIR DO CATÁLOGO ─────────────────────
+    //
+    // O carrinho de ORÇAMENTO guarda o preço de TABELA, e isso é proposital:
+    // a promoção da loja vale à vista, e num orçamento ninguém escolheu ainda
+    // como paga (`_promoValeAgora` no PDV). Só que daqui a promoção era lida
+    // como a DIFERENÇA entre o preço gravado e o cheio — e, num orçamento, os
+    // dois são o mesmo número.
+    //
+    // Resultado medido no #148 (16/11/2026): três itens em promoção, e a
+    // proposta saía sem linha à vista e sem desconto nenhum. A estratégia
+    // "promoção vira desconto à vista" nunca chegou a valer para orçamento
+    // feito no balcão, que é justamente onde ela foi pensada para valer.
+    //
+    // `preco_promocional` está no catálogo local, ao lado do custo que já
+    // lemos. O `min` preserva a negociação: preço digitado abaixo da promoção
+    // continua sendo o preço.
+    const promocional = temPromo ? num(p.preco_promocional) : 0;
+    const praticado = (temPromo && promocional > 0) ? Math.min(gravado, promocional) : gravado;
+    const cheio = temPromo ? num(p.preco_venda) : gravado;
+
     return {
       ...i,
       quantidade: num(i.quantidade),
       precoPraticado: praticado,
       precoCheio: Math.max(cheio, praticado),
       custo: p ? num(p.preco_custo) : 0,
-      temPromo: p ? emPromocao(p, agora) : false,
+      temPromo,
     };
   });
 
