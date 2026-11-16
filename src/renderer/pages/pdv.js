@@ -3369,7 +3369,21 @@ ${podeDesconto ? `
 
     try {
       const result = await window.pdv.orcamentos.registrar(orc);
-      Toast.show(`Orçamento #${result.numero} salvo! O carrinho foi mantido.`, 'success');
+      // O CARRINHO SAI DA TELA DEPOIS DE GRAVAR.
+      //
+      // Ele ficava, e a ideia era boa no papel: o cliente aceita na hora e o
+      // orcamento vira venda sem redigitar. So que no balcao o que vem depois
+      // de um orcamento e o PROXIMO cliente -- quem pediu orcamento saiu com
+      // o papel para pensar. Com os itens parados ali, o operador tinha que
+      // apagar linha por linha antes de atender.
+      //
+      // O caminho de converter em venda nao se perde: continua na tela de
+      // Orcamentos, que carrega o carrinho de volta pelo numero.
+      clearCart();
+      Toast.show(
+        `Orçamento #${result.numero} salvo. Carrinho limpo — para virar venda, abra Orçamentos e use Converter em venda.`,
+        'success', 7000,
+      );
     } catch (err) {
       Toast.show('Erro ao salvar orçamento: ' + err.message, 'error');
     }
