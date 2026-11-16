@@ -179,3 +179,56 @@ describe('a barra azul com VARIAS vendas', () => {
     assert.match(f.toasts.join(' | '), /desligada/);
   });
 });
+
+// ─── o contrato entre quem le e quem entrega a politica ──────────────────
+//
+// O relato de 16/11/2026, com a 1.18.1 ja instalada no caixa: a nota emite,
+// imprime na hora, a linha mostra "✅ NFC-e" -- e nao ha onde pedir a segunda
+// via. Clicar no selo verde nao faz nada, porque selo nao e botao.
+//
+// O botao de reimprimir existia no fonte desde a 1.18.1, atras de
+// `_politicaFiscal.terminal_liberado`. O campo vinha do servidor, que o manda
+// certo, mas `nfce.politica()` normaliza a resposta campo a campo e nao
+// copiava esse. A tela lia `undefined`, e `undefined === true` e falso em
+// todo terminal, de toda loja, sempre.
+//
+// O teste da 1.18.1 afirmava a LINHA da tela. Faltava afirmar que o dado que
+// a linha le chega ate ela. E o que estes dois testes fazem: varrem os campos
+// que a tela consulta e exigem que cada um exista nos dois lugares que os
+// produzem -- o normalizador e o padrao de quem nunca sincronizou.
+
+describe('todo campo que a tela le da politica chega ate ela', () => {
+  const NFCE = fs.readFileSync(raiz('src/main/nfce.js'), 'utf8');
+  const MAIN = fs.readFileSync(raiz('src/main/main.js'), 'utf8');
+
+  /** Os campos que a tela de Vendas consulta em `_politicaFiscal`. */
+  const camposLidos = [...new Set(
+    [...COMPONENTS.matchAll(/_politicaFiscal\?\.([a-z_]+)/g)].map(m => m[1]),
+  )];
+
+  test('a tela le pelo menos os dois interruptores que decidem os botoes', () => {
+    assert.ok(camposLidos.includes('emitir_no_balcao'), camposLidos.join(','));
+    assert.ok(camposLidos.includes('terminal_liberado'), camposLidos.join(','));
+  });
+
+  test('`nfce.politica()` devolve todos eles', () => {
+    const fn = extrair(NFCE, 'async function politica(');
+    for (const campo of camposLidos) {
+      assert.match(fn, new RegExp(`${campo}: `), `politica() nao devolve "${campo}" -- a tela vai ler undefined`);
+    }
+  });
+
+  test('o padrao de quem nunca sincronizou tambem os traz, todos em false', () => {
+    const handler = extrair(MAIN, "ipcMain.handle('nfce:politica'");
+    const padrao = handler.slice(handler.lastIndexOf('return {'));
+    for (const campo of camposLidos) {
+      assert.match(padrao, new RegExp(`${campo}: false`), `o padrao nao traz "${campo}": false`);
+    }
+  });
+
+  test('politica guardada pela versao anterior nao esconde o botao ate o proximo sync', () => {
+    const handler = extrair(MAIN, "ipcMain.handle('nfce:politica'");
+    assert.match(handler, /'terminal_liberado' in guardada/);
+    assert.match(handler, /terminal_liberado: guardada\.emitir_no_balcao === true/);
+  });
+});

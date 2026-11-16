@@ -168,6 +168,20 @@ async function politica() {
   if (typeof d.emissao_balcao !== 'string') return undefined;
   return {
     emissao_balcao: d.emissao_balcao,
+    // O rollout tecnico deste terminal, SEPARADO da decisao do gestor.
+    //
+    // `emitir_no_balcao` e a conjuncao dos dois interruptores, e so serve
+    // para decidir se o caixa PODE emitir. Reimprimir a nota de uma venda
+    // que ja tem nota nao e emitir: nao gera documento, nao consome numero,
+    // nao fala com a SEFAZ. Uma loja que desliga a emissao no balcao hoje
+    // continua precisando reimprimir a nota de ontem.
+    //
+    // Este campo chegava do servidor e morria aqui, porque esta funcao
+    // normaliza campo a campo. A tela de Vendas lia `terminal_liberado` para
+    // desenhar o botao de reimprimir: lia `undefined`, e o botao nunca
+    // apareceu em terminal nenhum. Quem emitia via a nota sair e depois nao
+    // achava onde tirar a segunda via.
+    terminal_liberado: !!d.terminal_liberado,
     emitir_no_balcao: !!d.emitir_no_balcao,
     emitir_ao_fechar: !!d.emitir_ao_fechar,
     pedir_documento: !!d.pedir_documento,
