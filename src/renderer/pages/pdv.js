@@ -2753,7 +2753,7 @@ ${podeDesconto ? `
     const informado = documentoInformadoNaTela();
     if (!informado) return;   // o próprio campo já disse o que falta
     _voltarAoComprovante();
-    await _emitirEImprimirNota(informado.digitos);
+    await _emitirEImprimirNota(informado.digitos, informado.clienteId);
   }
 
   /** Volta à tela do comprovante sem perder o que já aconteceu nela. */
@@ -2764,11 +2764,11 @@ ${podeDesconto ? `
     _setupComprovanteKeys();
   }
 
-  async function _emitirEImprimirNota(cpfCnpj) {
+  async function _emitirEImprimirNota(cpfCnpj, clienteId) {
     const uv = _ultimaVenda;
     if (!uv) return;
 
-    const r = await emitirNotaDaVenda(uv.id, cpfCnpj);
+    const r = await emitirNotaDaVenda(uv.id, cpfCnpj, clienteId);
     if (!r.ok) return;
 
     uv.nfce = { numero: r.numero || null, serie: r.serie || null, chave: r.chave || null };

@@ -377,9 +377,150 @@ function conferirDocumentoDaNota(bruto) {
   return { ok: true, digitos };
 }
 
-/** O corpo do modal que pergunta o CPF/CNPJ, igual nas duas telas. */
+/**
+ * O CLIENTE ESCOLHIDO NO MODAL DA NOTA.
+ *
+ * Mora fora do HTML porque o modal e desenhado por string: guardar o escolhido
+ * num campo escondido significaria reler e confiar no DOM, e esta parte do DOM
+ * e reescrita a cada tecla da busca.
+ *
+ * `remoto` e o id NA NUVEM. O banco local tem id proprio, e a venda no
+ * servidor aponta para o remoto — mandar o local seria mandar um id que nao
+ * existe la, e a rota recusaria com "cliente nao encontrado nesta loja".
+ */
+let _clienteDaNota = null;
+
+const NotaCliente = {
+  _timer: null,
+
+  /** Zera o escolhido. Chamado toda vez que o modal e montado. */
+  reiniciar() {
+    _clienteDaNota = null;
+  },
+
+  escolhido() {
+    return _clienteDaNota;
+  },
+
+  /** Busca com folga de digitacao: o balcao digita o nome inteiro de uma vez. */
+  aoDigitar(valor) {
+    clearTimeout(this._timer);
+    const q = String(valor || '').trim();
+    if (q.length < 2) { this._pintarResultados([]); return; }
+    this._timer = setTimeout(async () => {
+      try {
+        const achados = await window.pdv.clientes.buscar(q);
+        this._pintarResultados((achados || []).slice(0, 6));
+      } catch (e) {
+        console.warn('[NOTA] busca de cliente falhou:', e.message);
+        this._pintarResultados([]);
+      }
+    }, 250);
+  },
+
+  /** Enter na busca pega o primeiro da lista, em vez de emitir sem ninguem. */
+  aoTeclar(ev) {
+    if (ev.key !== 'Enter') return false;
+    ev.preventDefault();
+    const primeiro = document.querySelector('#nota-cliente-lista [data-cli]');
+    if (primeiro) primeiro.click();
+    return true;
+  },
+
+  _pintarResultados(lista) {
+    const caixa = document.getElementById('nota-cliente-lista');
+    if (!caixa) return;
+    if (!lista.length) { caixa.innerHTML = ''; return; }
+    caixa.innerHTML = lista.map((c, i) => {
+      const dados = encodeURIComponent(JSON.stringify({
+        local: c.id, remoto: c.remote_id || null, nome: c.nome || '', cpf: c.cpf_cnpj || '',
+      }));
+      const doc = c.cpf_cnpj ? ' \u00b7 ' + c.cpf_cnpj : '';
+      const tel = c.telefone ? ' \u00b7 ' + c.telefone : '';
+      return `<button type="button" data-cli="${i}" class="btn btn-ghost btn-sm"
+        style="display:block;width:100%;text-align:left;padding:6px 8px"
+        onclick="NotaCliente.escolher('${dados}')">
+        <span style="font-weight:600">${c.nome || '(sem nome)'}</span><span style="color:var(--text3);font-size:11px">${doc}${tel}</span>
+      </button>`;
+    }).join('');
+  },
+
+  escolher(encodado) {
+    const c = JSON.parse(decodeURIComponent(encodado));
+    _clienteDaNota = c;
+
+    // O cadastro sem documento nao identifica a nota sozinho: o destinatario
+    // precisa de CPF ou CNPJ. Entao o campo do documento continua aberto, e o
+    // aviso diz por que ele ainda importa.
+    const campo = document.getElementById('nota-doc');
+    if (campo && c.cpf) campo.value = c.cpf;
+
+    this._pintarResultados([]);
+    const busca = document.getElementById('nota-cliente-busca');
+    if (busca) busca.value = '';
+    this._pintarEscolhido();
+  },
+
+  limpar() {
+    _clienteDaNota = null;
+    this._pintarEscolhido();
+  },
+
+  _pintarEscolhido() {
+    const alvo = document.getElementById('nota-cliente-escolhido');
+    if (!alvo) return;
+    const c = _clienteDaNota;
+    if (!c) { alvo.innerHTML = ''; return; }
+
+    // Cliente criado neste terminal e ainda nao sincronizado nao tem id na
+    // nuvem. A nota ainda sai no CPF dele; o que nao da para fazer e ligar a
+    // venda ao cadastro — e isso se diz agora, nao depois.
+    const semNuvem = !c.remoto
+      ? `<div style="font-size:11px;color:#b45309;margin-top:4px">
+           Este cadastro ainda nao sincronizou. A nota sai no CPF, mas a venda nao fica ligada a ficha dele.
+         </div>` : '';
+    const semDoc = !c.cpf
+      ? `<div style="font-size:11px;color:#b45309;margin-top:4px">
+           Este cadastro esta sem CPF. Informe o documento abaixo, ou a nota sai sem identificacao.
+         </div>` : '';
+
+    alvo.innerHTML = `
+      <div style="display:flex;align-items:center;gap:8px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:6px 8px">
+        <span style="font-size:13px;font-weight:600;flex:1">${c.nome || '(sem nome)'}</span>
+        <button type="button" class="btn btn-ghost btn-sm" onclick="NotaCliente.limpar()" title="Tirar o cliente">\u2715</button>
+      </div>${semNuvem}${semDoc}`;
+  },
+};
+
+/**
+ * O corpo do modal que identifica a nota, igual nas duas telas.
+ *
+ * DUAS PERGUNTAS, E ELAS NAO SAO A MESMA.
+ *
+ * O CPF identifica o DESTINATARIO da nota — e so isso. Quem digita o
+ * documento e nada mais entrega ao cliente a nota que ele pediu e deixa a
+ * venda orfa: a compra nao entra na ficha de ninguem, e a nota sai sem nome.
+ *
+ * O cadastro identifica os DOIS: a nota passa a sair com nome, e a venda
+ * passa a pertencer aquele cliente. Por isso a busca vem primeiro, e o
+ * documento fica para quem nao e cadastrado — que continua sendo a maioria.
+ *
+ * A busca le o banco DESTA maquina. Nao ha ida a rede no meio do caixa.
+ */
 function htmlDocumentoDaNota(aoConfirmar, aoCancelar) {
+  NotaCliente.reiniciar();
   return `
+<div class="form-group">
+  <label class="form-label">Cliente cadastrado (opcional)</label>
+  <input class="input" id="nota-cliente-busca" placeholder="Nome, CPF ou telefone"
+    oninput="NotaCliente.aoDigitar(this.value)"
+    onkeydown="NotaCliente.aoTeclar(event)">
+  <div id="nota-cliente-lista" style="max-height:170px;overflow:auto;margin-top:4px"></div>
+  <div id="nota-cliente-escolhido" style="margin-top:6px"></div>
+  <div style="font-size:11px;color:var(--text3);margin-top:6px">
+    Com o cadastro, a nota sai no nome dele e a compra entra na ficha do cliente.
+  </div>
+</div>
 <div class="form-group">
   <label class="form-label">CPF ou CNPJ do cliente</label>
   <input class="input" id="nota-doc" inputmode="numeric" placeholder="Deixe em branco se o cliente não quiser"
@@ -395,7 +536,14 @@ function htmlDocumentoDaNota(aoConfirmar, aoCancelar) {
 </div>`;
 }
 
-/** Lê o campo do modal; devolve `null` quando ele próprio já reclamou na tela. */
+/**
+ * Le o modal inteiro; devolve `null` quando ele proprio ja reclamou na tela.
+ *
+ * `clienteId` so sai preenchido com o id DA NUVEM. Cadastro feito neste
+ * terminal e ainda nao sincronizado nao tem um, e mandar o id local produziria
+ * uma recusa do servidor no meio do caixa — o modal ja avisou, e o que sobra
+ * dele (o CPF) continua valendo.
+ */
 function documentoInformadoNaTela() {
   const campo = document.getElementById('nota-doc');
   const r = conferirDocumentoDaNota(campo?.value);
@@ -405,7 +553,8 @@ function documentoInformadoNaTela() {
     campo?.focus();
     return null;
   }
-  return { digitos: r.digitos };
+  const cliente = NotaCliente.escolhido();
+  return { digitos: r.digitos, clienteId: cliente?.remoto || null };
 }
 
 /**
@@ -415,9 +564,9 @@ function documentoInformadoNaTela() {
  * política desligada, venda que ainda não subiu. Um "erro na emissão"
  * genérico manda o operador adivinhar com o cliente esperando.
  */
-async function emitirNotaDaVenda(id, cpfCnpj) {
+async function emitirNotaDaVenda(id, cpfCnpj, clienteId) {
   Toast.show('Emitindo NFC-e...', 'info', 9000);
-  const r = await window.pdv.nfce.emitir(id, cpfCnpj);
+  const r = await window.pdv.nfce.emitir(id, cpfCnpj, clienteId || null);
 
   if (!r || !r.ok) {
     Toast.show('NFC-e: ' + ((r && r.erro) || 'não foi autorizada'), 'error', 12000);

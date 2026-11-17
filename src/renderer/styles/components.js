@@ -1868,11 +1868,11 @@ const Vendas = {
     const informado = documentoInformadoNaTela();
     if (!informado) return;   // o próprio campo já disse o que falta
     Modal.close();
-    await this._emitirEImprimirNota(id, informado.digitos);
+    await this._emitirEImprimirNota(id, informado.digitos, informado.clienteId);
   },
 
-  async _emitirEImprimirNota(id, cpfCnpj) {
-    const r = await emitirNotaDaVenda(id, cpfCnpj);
+  async _emitirEImprimirNota(id, cpfCnpj, clienteId) {
+    const r = await emitirNotaDaVenda(id, cpfCnpj, clienteId);
     if (!r.ok) return;
     // A lista mostra o selo a partir do banco local, que `nfce.emitir` acabou
     // de espelhar — recarregar é o que faz o ✅ aparecer sem F5.
