@@ -1268,9 +1268,9 @@ ipcMain.handle('tunnel:status', () => tunnel.getStatus());
 // desfecho da SEFAZ; cancelar nota autorizada é ato do sistema web, com
 // justificativa e registro; e Base44 não é mais o servidor deste PDV desde a
 // migração.
-ipcMain.handle('nfce:emitir', async (_, id, cpfCnpj) => {
+ipcMain.handle('nfce:emitir', async (_, id, cpfCnpj, clienteId) => {
   try {
-    return await nfce.emitir(id, cpfCnpj);
+    return await nfce.emitir(id, cpfCnpj, clienteId);
   } catch (err) {
     console.warn('[nfce:emitir]', err.message);
     return { ok: false, estado: 'excecao', erro: err.message };

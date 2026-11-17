@@ -132,7 +132,7 @@ function montarEmitir({ vendaLocal = null, resposta = { ok: true, dados: { estad
   vm.createContext(ctx);
   vm.runInContext(`${extrair(NFCE, 'function idRemotoDe(id)')}
     ${extrair(NFCE, 'function lerDesfechoDaEmissao(r)')}
-    ${extrair(NFCE, 'async function emitir(id, cpfCnpj)')}
+    ${extrair(NFCE, 'async function emitir(id, cpfCnpj, clienteId)')}
     module.fn = emitir;`, ctx);
   return { emitir: ctx.module.fn, chamadas };
 }
@@ -312,7 +312,7 @@ describe('o terminal nao conhece credencial fiscal', () => {
   });
 
   test('a superficie do preload tem so as tres chamadas novas', () => {
-    assert.match(PRELOAD, /emitir:\s+\(id, cpfCnpj\)/);
+    assert.match(PRELOAD, /emitir:\s+\(id, cpfCnpj, clienteId\)/);
     assert.match(PRELOAD, /cupom:\s+\(id\)/);
     assert.match(PRELOAD, /politica:\s+\(\)/);
     assert.doesNotMatch(PRELOAD, /nfce:consultar|nfce:cancelar|nfce:registrarBase44/);
@@ -376,8 +376,8 @@ describe('as duas telas usam a mesma decisao', () => {
     assert.equal((APP.match(/async function emitirNotaDaVenda/g) || []).length, 1);
     assert.equal((APP.match(/async function imprimirNotaDaVenda/g) || []).length, 1);
     // E as telas chamam, em vez de reimplementar.
-    assert.match(PDV, /await emitirNotaDaVenda\(uv\.id, cpfCnpj\)/);
-    assert.match(COMPONENTS, /await emitirNotaDaVenda\(id, cpfCnpj\)/);
+    assert.match(PDV, /await emitirNotaDaVenda\(uv\.id, cpfCnpj, clienteId\)/);
+    assert.match(COMPONENTS, /await emitirNotaDaVenda\(id, cpfCnpj, clienteId\)/);
   });
 
   test('o cupom da nota vai pela mesma porta do resto da impressao', () => {

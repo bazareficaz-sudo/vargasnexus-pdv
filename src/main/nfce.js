@@ -91,7 +91,7 @@ function idRemotoDe(id) {
   return { remoto: local.remote_id || null, local };
 }
 
-async function emitir(id, cpfCnpj) {
+async function emitir(id, cpfCnpj, clienteId) {
   const { remoto, local } = idRemotoDe(id);
 
   if (!remoto) {
@@ -107,6 +107,10 @@ async function emitir(id, cpfCnpj) {
   const r = await terminal.chamarProtegida('/api/pdv/nfce', {
     venda_id: remoto,
     cpf_cnpj: cpfCnpj || null,
+    // O id do cadastro NA NUVEM, quando o operador escolheu um cliente. Quem
+    // confere se ele existe, e se e desta loja, e o servidor: este id sai do
+    // banco local do terminal, que pode estar atrasado em relacao ao cadastro.
+    cliente_id: clienteId || null,
     // Chave estável por venda: a mesma na primeira tentativa e na décima.
     // Resposta perdida devolve o mesmo desfecho em vez de emitir de novo.
     idempotency_key: terminal.chaveDe('nfce', remoto),

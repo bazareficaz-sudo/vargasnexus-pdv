@@ -206,7 +206,7 @@ contextBridge.exposeInMainWorld('pdv', {
   // pediu, o documento dele. Token, provedor e payload fiscal nunca chegam
   // nesta camada.
   nfce: {
-    emitir:   (id, cpfCnpj) => ipcRenderer.invoke('nfce:emitir', id, cpfCnpj),
+    emitir:   (id, cpfCnpj, clienteId) => ipcRenderer.invoke('nfce:emitir', id, cpfCnpj, clienteId),
     cupom:    (id)          => ipcRenderer.invoke('nfce:cupom', id),
     politica: ()            => ipcRenderer.invoke('nfce:politica'),
   },
