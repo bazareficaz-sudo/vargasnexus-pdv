@@ -6,7 +6,6 @@
  */
 
 const { autoUpdater } = require('electron-updater');
-const { dialog, shell } = require('electron');
 const log = require('electron-log');
 
 let mainWindowRef = null;
@@ -40,20 +39,18 @@ function init(win) {
     });
   });
 
+  // INSTALA SOZINHO, NA HORA CERTA. Antes abria uma caixa "Reiniciar agora
+  // / Depois": o caixa clicava em Depois para não perder o cliente da vez e
+  // o terminal ficava dias na versão velha. Agora a atualização espera o
+  // balcão ficar parado — carrinho vazio, nenhuma janela aberta e alguns
+  // minutos sem ninguém mexer — e reinicia sozinha, em silêncio. Fechar o
+  // programa também instala (autoInstallOnAppQuit). Venda que ainda não
+  // subiu não se perde: a fila mora no SQLite e sobe depois de reabrir.
   autoUpdater.on('update-downloaded', (info) => {
     log.info('[UPDATE] Download completo:', info.version);
-    emitir({ evento: 'downloaded', versao: info.version });
-    // Notificação via dialog — usuário decide quando reiniciar
-    dialog.showMessageBox(mainWindowRef, {
-      type: 'info',
-      title: 'Atualização pronta',
-      message: `VargasNexus PDV ${info.version} foi baixado.`,
-      detail: 'Clique em "Reiniciar agora" para aplicar a atualização, ou "Depois" para instalar quando fechar o app.',
-      buttons: ['Reiniciar agora', 'Depois'],
-      defaultId: 0,
-    }).then(({ response }) => {
-      if (response === 0) autoUpdater.quitAndInstall(false, true);
-    });
+    versaoBaixada = info.version;
+    emitir({ evento: 'downloaded', versao: info.version, automatico: true });
+    vigiarOcioParaInstalar();
   });
 
   autoUpdater.on('error', (err) => {
@@ -61,12 +58,40 @@ function init(win) {
     emitir({ evento: 'error', mensagem: err.message });
   });
 
-  // Checar 15s após iniciar (dá tempo do app carregar)
-  setTimeout(() => {
-    autoUpdater.checkForUpdates().catch(err => {
-      log.warn('[UPDATE] Falha ao checar:', err.message);
-    });
-  }, 15000);
+  // Checar 15s após iniciar (dá tempo do app carregar) e depois a cada 2h:
+  // o terminal passa o dia inteiro aberto, e só checar ao abrir deixava a
+  // versão nova para o dia seguinte.
+  const checar = () => autoUpdater.checkForUpdates().catch(err => {
+    log.warn('[UPDATE] Falha ao checar:', err.message);
+  });
+  setTimeout(checar, 15000);
+  setInterval(() => { if (!versaoBaixada) checar(); }, INTERVALO_CHECAGEM_MS);
+}
+
+const INTERVALO_CHECAGEM_MS = 2 * 60 * 60 * 1000;
+const INTERVALO_OCIO_MS = 60 * 1000;
+let versaoBaixada = null;
+let vigiaOcio = null;
+
+// A cada minuto pergunta à tela se o balcão está parado
+// (`window.__pdvPodeAtualizar`, em pdv.js). Sem resposta, não instala.
+function vigiarOcioParaInstalar() {
+  if (vigiaOcio) return;
+  vigiaOcio = setInterval(async () => {
+    try {
+      if (!mainWindowRef || mainWindowRef.isDestroyed()) return;
+      const pode = await mainWindowRef.webContents.executeJavaScript(
+        'typeof window.__pdvPodeAtualizar === "function" ? window.__pdvPodeAtualizar() : false', true);
+      if (pode === true) {
+        clearInterval(vigiaOcio);
+        vigiaOcio = null;
+        log.info('[UPDATE] Balcão parado — instalando', versaoBaixada);
+        autoUpdater.quitAndInstall(true, true);
+      }
+    } catch (e) {
+      log.warn('[UPDATE] Não consegui perguntar se o balcão está parado:', e.message);
+    }
+  }, INTERVALO_OCIO_MS);
 }
 
 function checarAgora() {

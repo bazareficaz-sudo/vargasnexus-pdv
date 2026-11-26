@@ -1,0 +1,55 @@
+# PUBLICA UMA VERSÃO DO PDV — e os caixas atualizam sozinhos.
+#
+# Dispara ao criar uma etiqueta `vX.Y.Z` (ex.: v1.19.0). Compila o instalador
+# no Windows e publica a versão no GitHub Releases, que é onde o
+# electron-updater de cada caixa procura (src/main/updater.js). O caixa baixa
+# em segundo plano e instala quando o balcão fica parado.
+#
+# Antes, cada versão era compilada à mão num computador da loja e instalada
+# caixa por caixa: a última publicada aqui era a 1.10.1, e nenhum caixa se
+# atualizava sozinho desde setembro.
+name: Publicar versão do PDV
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publicar:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # A etiqueta e o package.json precisam dizer a mesma versão: o caixa
+      # compara a versão do latest.yml, e uma divergência publicaria um
+      # instalador com número diferente do anunciado.
+      - name: Conferir versão
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          VERSAO_PACOTE=$(node -p "require('./package.json').version")
+          if [ "v$VERSAO_PACOTE" != "${GITHUB_REF_NAME}" ]; then
+            echo "Etiqueta ${GITHUB_REF_NAME} não bate com package.json ($VERSAO_PACOTE)"; exit 1
+          fi
+
+      - name: Instalar dependências
+        run: npm ci
+
+      # Os testes rodam no Node (SQLite do próprio Node quando o better-sqlite3
+      # está compilado para o Electron). Versão com teste falhando não sai.
+      - name: Testes
+        run: npm test
+
+      - name: Compilar e publicar
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx electron-builder --win --x64 --publish always

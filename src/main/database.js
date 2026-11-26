@@ -11,7 +11,7 @@ const { v4: uuidv4 } = require('uuid');
 const { normalizarGrupoSimilar } = require('./similares');
 const orcSql = require('./orcamentoSql');
 const { exigirCriacaoReconciliada } = require('./protocoloVenda');
-const { comporDaVendaLocal, validarComposicao, ehEstritamenteLocal } = require('./pagamentoVenda');
+const { comporDaVendaLocal, validarComposicao, ehEstritamenteLocal, creditoClienteUsado } = require('./pagamentoVenda');
 
 const DB_PATH = path.join(app.getPath('userData'), 'pdv-vargas.db');
 let db;
@@ -1543,6 +1543,52 @@ const creditosCliente = {
     `).all(clienteRemoteId);
   },
 
+  // Baixa local do crédito usado numa venda: do mais antigo para o mais novo,
+  // a mesma ordem da baixa no servidor. Devolve quanto foi baixado.
+  baixarLocal(clienteRemoteId, valor) {
+    let resta = Math.round(Number(valor || 0) * 100);
+    if (!clienteRemoteId || resta <= 0) return 0;
+    const abertos = this.getAbertosDoCliente(clienteRemoteId);
+    const agora = new Date().toISOString();
+    const upd = db.prepare('UPDATE creditos_cliente SET saldo_atual = ?, status = ?, updated_date = ? WHERE id = ?');
+    let baixado = 0;
+    for (const c of abertos) {
+      if (resta <= 0) break;
+      const saldo = Math.round(Number(c.saldo_atual || 0) * 100);
+      if (saldo <= 0) continue;
+      const usar = Math.min(resta, saldo);
+      const novo = saldo - usar;
+      upd.run(novo / 100, novo <= 0 ? 'usado_totalmente' : 'usado_parcialmente', agora, c.id);
+      resta -= usar;
+      baixado += usar;
+    }
+    return baixado / 100;
+  },
+
+  // Este cliente tem venda paga com crédito que ainda não subiu? Então o
+  // servidor ainda não baixou o crédito dela, e trocar o saldo local pelo do
+  // servidor faria o crédito parecer disponível de novo.
+  temVendaComCreditoPendente(clienteRemoteId) {
+    const row = db.prepare(`
+      SELECT COUNT(*) AS n FROM vendas v JOIN clientes c ON c.id = v.cliente_id
+       WHERE c.remote_id = ? AND COALESCE(v.sync_status, 'pending') <> 'synced'
+         AND v.forma_pagamento IN ('credito_cliente', 'misto')
+    `).get(clienteRemoteId);
+    return (row?.n || 0) > 0;
+  },
+
+  // Os créditos de UM cliente, trazidos agora do servidor, no lugar dos que
+  // estavam no terminal. Usado ao escolher o cliente no balcão: um crédito
+  // lançado no painel há cinco minutos já aparece, sem esperar o sync geral.
+  substituirDoCliente(clienteRemoteId, lista) {
+    if (!clienteRemoteId || !Array.isArray(lista)) return;
+    const t = db.transaction(() => {
+      db.prepare('DELETE FROM creditos_cliente WHERE cliente_id = ?').run(clienteRemoteId);
+      this.upsertBatch(lista.map(c => ({ ...c, cliente_id: clienteRemoteId })));
+    });
+    t();
+  },
+
   // Zerar crédito localmente após uso
   marcarUsado(creditoId) {
     db.prepare(`UPDATE creditos_cliente SET saldo_atual = 0, status = 'usado_totalmente' WHERE id = ?`).run(creditoId);
@@ -1761,18 +1807,27 @@ const vendas = {
           'venda', item.quantidade, qtdAnterior, qtdPosterior, id, 'venda', now, 'pending');
       }
 
-      // Lançar crédito do cliente se necessário
-      if (venda.forma_pagamento === 'credito_cliente' || venda.usa_credito) {
-        const cli = db.prepare('SELECT saldo_credito FROM clientes WHERE id = ?').get(venda.cliente_id);
+      // CRÉDITO DO CLIENTE (vale de devolução, troca, pagamento a mais) usado
+      // como pagamento. Só o valor pago em crédito — numa venda Misto é a
+      // parte `credito_cliente`, não o total. Carteira (fiado) não entra aqui:
+      // fiado é dívida nova, não uso de crédito.
+      //
+      // A baixa de verdade é no servidor, na mesma transação que grava a
+      // venda (`sincronizar_venda_pdv_v1`). Esta é a local, para o próximo
+      // atendimento no balcão já ver o saldo que sobrou, com ou sem internet.
+      const creditoUsado = creditoClienteUsado(venda);
+      if (creditoUsado > 0 && venda.cliente_id) {
+        const cli = db.prepare('SELECT remote_id, saldo_credito FROM clientes WHERE id = ?').get(venda.cliente_id);
         if (cli) {
-          const saldoAnterior = cli.saldo_credito;
-          const saldoPosterior = saldoAnterior - venda.total;
+          const saldoAnterior = Number(cli.saldo_credito || 0);
+          const saldoPosterior = Math.max(0, Math.round((saldoAnterior - creditoUsado) * 100) / 100);
           db.prepare('UPDATE clientes SET saldo_credito = ? WHERE id = ?').run(saldoPosterior, venda.cliente_id);
+          if (cli.remote_id) creditosCliente.baixarLocal(cli.remote_id, creditoUsado);
           db.prepare(`
             INSERT INTO credito_movimentacoes
             (id, cliente_id, venda_id, tipo, valor, saldo_anterior, saldo_posterior, created_at, sync_status)
             VALUES (?,?,?,?,?,?,?,?,?)
-          `).run(uuidv4(), venda.cliente_id, id, 'debito', venda.total, saldoAnterior, saldoPosterior, now, 'pending');
+          `).run(uuidv4(), venda.cliente_id, id, 'debito', creditoUsado, saldoAnterior, saldoPosterior, now, 'pending');
         }
       }
 

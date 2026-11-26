@@ -202,7 +202,7 @@ function gerarHtmlCupom(dados) {
   </tr></table>
 
   <div style="margin-top:6px;font-size:${L.fonteSm}">
-    Pagamento: <strong>${(forma_pagamento || '').toUpperCase()}</strong>
+    Pagamento: <strong>${({ credito_cliente: 'CRÉDITO DO CLIENTE', carteira: 'CARTEIRA' }[forma_pagamento] || (forma_pagamento || '').toUpperCase())}</strong>
     ${valor_pago > 0 ? `<br>Recebido: R$ ${fmt(valor_pago)}` : ''}
     ${troco > 0     ? `<br>Troco: R$ ${fmt(troco)}`         : ''}
   </div>
@@ -627,7 +627,8 @@ function gerarHtmlOrcamento(dados) {
     return d.toLocaleDateString('pt-BR');
   })();
   const formaMap = { dinheiro:'Dinheiro', pix:'PIX', credito:'Cartão de Crédito',
-    debito:'Cartão de Débito', boleto:'Boleto', outros:'A Combinar', carteira:'Crédito Loja' };
+    debito:'Cartão de Débito', boleto:'Boleto', outros:'A Combinar', carteira:'Crédito Loja',
+    credito_cliente:'Crédito do cliente' };
   const formaTxt = formaMap[forma_pagamento] || forma_pagamento || '—';
   const descItens = itens.reduce((s, i) => s + (Number(i.desconto) || 0), 0);
 

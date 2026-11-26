@@ -21,6 +21,8 @@
 
 'use strict';
 
+const { creditoClienteUsado } = require('./pagamentoVenda');
+
 const SCHEMA_VERSION = 1;
 const SCHEMA_VERSION_PAGAMENTOS = 2;
 
@@ -151,6 +153,12 @@ function montarPayloadVendaV1(venda, ctx = {}) {
 
     itens,
   };
+
+  // Quanto foi pago com o crédito do cliente. Vai em v1 e v2: o terminal sem
+  // a composição liberada não manda `pagamentos`, e sem este campo o servidor
+  // não saberia quanto baixar do crédito numa venda Misto. Ausente quando zero.
+  const credito = creditoClienteUsado(venda);
+  if (credito > 0) payload.credito_cliente_usado = credito;
 
   // Campo ausente em v1, nunca `[]`: o servidor distingue "sem composicao"
   // de "composicao vazia", e um array vazio seria recusado.

@@ -218,7 +218,24 @@ function comporDaVendaLocal({ forma_pagamento, total, valor_pago, parcelas } = {
   return [pagamento];
 }
 
+/**
+ * Quanto desta venda foi pago com o CRÉDITO DO CLIENTE (vale da loja).
+ *
+ * Numa venda Misto é a soma das partes `credito_cliente`; numa venda de forma
+ * única `credito_cliente`, o total. Carteira (fiado) não conta: é dívida
+ * nova, não uso de crédito. Em reais, somado em centavos inteiros.
+ */
+function creditoClienteUsado(venda) {
+  if (!venda) return 0;
+  const lista = Array.isArray(venda.pagamentos) ? venda.pagamentos : [];
+  const partes = lista.filter(p => p && p.forma === 'credito_cliente');
+  if (partes.length) return somarCentavos(partes) / 100;
+  if (venda.forma_pagamento === 'credito_cliente') return Math.max(0, centavos(venda.total)) / 100;
+  return 0;
+}
+
 module.exports = {
+  creditoClienteUsado,
   FORMAS_CANONICAS, FORMAS_AGREGADAS, FORMAS_EM_ESPECIE,
   ehCanonica, ehAgregada, ehEspecie,
   centavos, somarCentavos,
