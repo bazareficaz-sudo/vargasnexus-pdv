@@ -373,6 +373,21 @@ ipcMain.handle('creditos:getAbertos', (_, clienteRemoteId) =>
 ipcMain.handle('creditos:resumo', (_, clienteRemoteId) =>
   db.creditosCliente.resumoPorCliente(clienteRemoteId)
 );
+// Créditos do cliente direto do servidor, ao escolher o cliente no balcão.
+// Sem internet (ou com erro), fica o que o terminal já tinha — o resumo
+// local continua respondendo.
+ipcMain.handle('creditos:atualizarDoCliente', async (_, clienteRemoteId) => {
+  if (!clienteRemoteId) return { ok: false };
+  if (db.creditosCliente.temVendaComCreditoPendente(clienteRemoteId)) return { ok: false, motivo: 'venda_pendente' };
+  try {
+    const lista = await api.getCreditosDoCliente(clienteRemoteId);
+    if (!Array.isArray(lista)) return { ok: false };
+    db.creditosCliente.substituirDoCliente(clienteRemoteId, lista);
+    return { ok: true, resumo: db.creditosCliente.resumoPorCliente(clienteRemoteId) };
+  } catch (e) {
+    return { ok: false, erro: e.message };
+  }
+});
 ipcMain.handle('creditos:criar', async (_, clienteRemoteId, clienteNome, clienteTelefone, valor, observacao) => {
   const usuario = store.get('auth.usuario') || {};
   const payload = {

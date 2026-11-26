@@ -1304,11 +1304,14 @@ async function receberCarteira({ clienteId, valor, contaIds = null, forma, obser
 
 async function getCreditosDoCliente(clienteRemoteId) {
   const { data, error } = await supabase.from('creditos_cliente').select('*').eq('cliente_id', clienteRemoteId).in('status', ['disponivel', 'parcial']).order('created_at');
-  if (error) { console.warn('[Creditos]', error.message); return []; }
+  // Erro é "não sei", não "não tem": devolver [] faria quem chama apagar os
+  // créditos que o terminal já tinha.
+  if (error) { console.warn('[Creditos]', error.message); return null; }
   return (data || []).map(c => ({
     id: c.id, cliente_id: c.cliente_id, valor_original: c.valor_original,
     saldo_atual: c.saldo_disponivel, status: STATUS_CREDITO_REMOTO_PARA_LOCAL[c.status] || 'aberto',
-    observacao: c.observacao, created_date: c.created_at,
+    empresa_id: c.empresa_id, origem: c.origem, observacao: c.observacao || c.descricao,
+    created_date: c.created_at, updated_date: c.updated_at,
   }));
 }
 

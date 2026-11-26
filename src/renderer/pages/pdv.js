@@ -2,6 +2,9 @@
 const PDV = (() => {
   let cart = [];
   let selectedClient = null;
+  // Crédito do cliente (vale de devolução, troca, pagamento a mais) que ele
+  // pode usar como pagamento. Atualizado a cada desenho da barra do cliente.
+  let creditoClienteDisponivel = 0;
   let searchTimeout = null;
   let payMethod = 'dinheiro';
   // Em quantas vezes o cartao foi passado. 1 é a venda a vista, que é o
@@ -22,6 +25,18 @@ const PDV = (() => {
   let _orcamentoOrigem = null;   // { id, numero, revisao_base }
   let pedidoObservacao = ''; // nota livre do pedido (ex: telefone pra ligar) — impressa no comprovante
   let _ultimaVenda = null;  // { numero, remoteId, venda } — usado pelos botões do comprovante
+
+  // QUANDO A ATUALIZAÇÃO PODE INSTALAR SOZINHA (updater.js pergunta a cada
+  // minuto). Só com o balcão parado: carrinho vazio, sem venda em edição,
+  // nenhuma janela aberta e cinco minutos sem ninguém mexer. Reiniciar no
+  // meio de um atendimento perderia o carrinho na frente do cliente.
+  let _ultimaAtividade = Date.now();
+  ['keydown', 'mousedown', 'mousemove', 'wheel', 'touchstart'].forEach(ev =>
+    document.addEventListener(ev, () => { _ultimaAtividade = Date.now(); }, { passive: true, capture: true }));
+  window.__pdvPodeAtualizar = () =>
+    cart.length === 0 && !modoEdicao
+    && !document.getElementById('modal-overlay')?.classList.contains('open')
+    && Date.now() - _ultimaAtividade > 5 * 60 * 1000;
 
   // A política de nota da loja, lida uma vez na abertura da tela.
   //
@@ -1706,7 +1721,7 @@ ${podeDesconto ? `
   const _NOMES_FORMA_CURTO = {
     pix: 'Pix', dinheiro: 'Din', debito: 'Débito',
     credito_vista: 'Créd. à vista', credito_parc: 'Créd. parc.',
-    carteira: 'Carteira', fiado: 'Fiado',
+    carteira: 'Carteira', fiado: 'Fiado', credito_cliente: 'Créd. cliente',
   };
   function _labelFormasAvista() {
     return formasAvista.map(f => _NOMES_FORMA_CURTO[f] || f).join('/');
@@ -1854,6 +1869,13 @@ ${podeDesconto ? `
       { key: 'carteira', icon: '👤', label: 'Carteira',  num: '5' },
       { key: 'misto',    icon: '⊕',  label: 'Misto',     num: '6' },
     ];
+    // CRÉDITO DO CLIENTE: só aparece com cliente escolhido e saldo. O saldo é
+    // lido de novo aqui, e não só na barra, porque o carrinho pode ter mudado
+    // de cliente sem a barra redesenhar.
+    await _lerCreditoCliente();
+    if (selectedClient && creditoClienteDisponivel > 0) {
+      payOpts.push({ key: 'credito_cliente', icon: '🎫', label: 'Créd. cliente', num: '7' });
+    }
 
     // NENHUMA FORMA ACESA ENQUANTO NINGUEM ESCOLHEU, quando ha promocao no
     // carrinho. Acender "Dinheiro" por ser o valor inicial da variavel diria
@@ -1869,6 +1891,17 @@ ${podeDesconto ? `
   ${exigirEscolha ? `<div style="font-size:12px;color:var(--accent);font-weight:600;margin-top:6px">
     🏷️ Tem item em promoção — escolha a forma para ver o valor final</div>` : ''}
 </div>
+${selectedClient && creditoClienteDisponivel > 0 ? `
+<div style="display:flex;align-items:center;gap:10px;background:var(--bg3);border:1px solid var(--green);border-radius:8px;padding:10px 12px;margin-bottom:12px">
+  <span style="font-size:20px">🎫</span>
+  <div style="flex:1;font-size:13px">
+    <b>${selectedClient.nome}</b> tem <b style="color:var(--green)">R$ ${fmtMoney(creditoClienteDisponivel)}</b> de crédito
+    <div style="font-size:11px;color:var(--text3)">${creditoClienteDisponivel >= total
+      ? 'Cobre a compra inteira.'
+      : `Cobre parte: o resto, R$ ${fmtMoney(total - creditoClienteDisponivel)}, em outra forma.`}</div>
+  </div>
+  <button class="btn btn-primary btn-sm" onclick="PDV._usarCredito()">Usar crédito</button>
+</div>` : ''}
 <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:16px">
   ${payOpts.map(o => `
   <button class="pay-opt ${!exigirEscolha && payMethod === o.key ? 'active' : ''}" data-pay="${o.key}"
@@ -1957,7 +1990,7 @@ ${podeDesconto ? `
 
   const ROTULO_FORMA = {
     dinheiro: 'Dinheiro', pix: 'PIX', credito: 'Crédito',
-    debito: 'Débito', carteira: 'Carteira',
+    debito: 'Débito', carteira: 'Carteira', credito_cliente: 'Crédito do cliente',
   };
 
   const cent = v => Math.round(Number(v || 0) * 100);
@@ -1978,6 +2011,7 @@ ${podeDesconto ? `
   </div>`).join('');
 
     const opcoes = Object.entries(ROTULO_FORMA)
+      .filter(([k]) => k !== 'credito_cliente' || (selectedClient && creditoClienteDisponivel > 0))
       .map(([k, r]) => `<option value="${k}">${r}</option>`).join('');
     const parcelas = [];
     for (let n = 1; n <= PARCELAS_MAX; n++) parcelas.push(`<option value="${n}">${n}x</option>`);
@@ -2027,6 +2061,34 @@ ${podeDesconto ? `
     const extra = document.getElementById('modal-pay-extra');
     if (extra) extra.innerHTML = _mistoHtml(getTotal());
     setTimeout(() => document.getElementById('misto-valor')?.focus(), 30);
+  }
+
+  // "USAR CRÉDITO": cobre tudo → forma Créd. cliente; cobre parte → Misto com
+  // a parte do crédito já somada, e o campo pronto para o resto.
+  function _usarCredito() {
+    const total = getTotal();
+    if (!selectedClient || creditoClienteDisponivel <= 0) return;
+    if (cent(creditoClienteDisponivel) >= cent(total)) {
+      const btn = document.querySelector('.pay-opt[data-pay="credito_cliente"]');
+      if (btn) _selectPay('credito_cliente', btn);
+      return;
+    }
+    const btn = document.querySelector('.pay-opt[data-pay="misto"]');
+    if (!btn) return;
+    _selectPay('misto', btn);
+    payComposicao = [{ forma: 'credito_cliente', valor: cent(creditoClienteDisponivel) / 100, parcelas: 1 }];
+    const extra = document.getElementById('modal-pay-extra');
+    if (extra) extra.innerHTML = _mistoHtml(total);
+    setTimeout(() => document.getElementById('misto-valor')?.focus(), 30);
+  }
+
+  /** Quanto desta venda está sendo pago com o crédito do cliente. */
+  function _creditoNaVenda(total) {
+    if (payMethod === 'credito_cliente') return cent(total) / 100;
+    if (payMethod === 'misto') {
+      return payComposicao.filter(p => p.forma === 'credito_cliente').reduce((s, p) => s + cent(p.valor), 0) / 100;
+    }
+    return 0;
   }
 
   function _mistoRemove(i) {
@@ -2138,11 +2200,26 @@ ${podeDesconto ? `
       if (!autorizado) return;
     }
 
+    // O CRÉDITO DO CLIENTE não pode passar do saldo dele.
+    const creditoUsado = _creditoNaVenda(total);
+    if (creditoUsado > 0) {
+      if (!selectedClient) { Toast.show('Selecione o cliente para usar o crédito dele', 'warning'); return; }
+      // A edição de venda já gravada não passa pela baixa do crédito no
+      // servidor; usar crédito é só em venda nova.
+      if (modoEdicao) { Toast.show('Crédito do cliente só pode ser usado numa venda nova', 'warning'); return; }
+      await _lerCreditoCliente();
+      if (cent(creditoUsado) > cent(creditoClienteDisponivel)) {
+        Toast.show(payMethod === 'credito_cliente'
+          ? `O crédito (R$ ${fmtMoney(creditoClienteDisponivel)}) não cobre a compra. Use "Usar crédito" ou Misto para pagar o resto.`
+          : `Crédito usado (R$ ${fmtMoney(creditoUsado)}) maior que o saldo do cliente (R$ ${fmtMoney(creditoClienteDisponivel)})`, 'error');
+        return;
+      }
+    }
+
     if (payMethod === 'carteira') {
       if (!selectedClient) { Toast.show('Selecione um cliente para usar Carteira', 'warning'); return; }
-      const remoteId = selectedClient.remote_id || selectedClient.id;
-      const resumo = await window.pdv.creditos.resumo(remoteId).catch(() => null);
-      const emAberto = resumo?.total_saldo || 0;
+      // Em aberto é o fiado (`saldo_devedor`), não o crédito do cliente.
+      const emAberto = Math.max(0, Number(selectedClient.saldo_devedor || 0));
       const disponivel = Math.max(0, (selectedClient.limite_credito || 0) - emAberto);
       if (disponivel < total) {
         Toast.show(`Crédito insuficiente. Disponível: R$ ${fmtMoney(disponivel)}`, 'error'); return;
@@ -2559,7 +2636,9 @@ ${podeDesconto ? `
         : undefined,
       valor_pago: eDevolucao ? 0 : valorPago,
       troco: eDevolucao ? valorDevolver : (payMethod === 'dinheiro' ? Math.max(0, valorPago - total) : 0),
-      usa_credito: payMethod === 'carteira',
+      // Pagou (no todo ou em parte) com o CRÉDITO DO CLIENTE. Carteira (fiado)
+      // não é uso de crédito — até a 1.18 este campo misturava os dois.
+      usa_credito: !eDevolucao && _creditoNaVenda(total) > 0,
       devolucao: eDevolucao,
       valor_devolvido: valorDevolver,
       observacao: pedidoObservacao || null,
@@ -2601,8 +2680,13 @@ ${podeDesconto ? `
         }
         Toast.show(`Devolução #${result.numero} — Crédito R$ ${fmtMoney(valorDevolver)} na carteira`, 'success');
       } else {
+        const creditoUsadoVenda = _creditoNaVenda(total);
+        const saldoAntes = creditoClienteDisponivel;
         result = await window.pdv.vendas.registrar(venda);
         Toast.show(`Venda #${result.numero} — ${vendedorAtual?.nome || 'OK'}`, 'success');
+        if (creditoUsadoVenda > 0) {
+          Toast.show(`🎫 R$ ${fmtMoney(creditoUsadoVenda)} pagos com crédito · saldo do cliente: R$ ${fmtMoney(Math.max(0, saldoAntes - creditoUsadoVenda))}`, 'success');
+        }
       }
 
       // Registrar entrega se houver dados agendados (apenas em venda nova, não edição)
@@ -2925,7 +3009,7 @@ ${podeDesconto ? `
   <div style="display:flex;justify-content:space-between;font-family:'Syne',sans-serif;font-size:18px;font-weight:700;margin-top:10px;border-top:1px dashed var(--border2);padding-top:10px">
     <span>TOTAL</span><span style="color:${venda.total < 0 ? 'var(--red)' : 'var(--accent)'}">R$ ${fmtMoney(Math.abs(venda.total))}</span>
   </div>
-  <div style="margin-top:10px;color:var(--text2);font-size:12px">Pagamento: ${venda.forma_pagamento.toUpperCase()}</div>
+  <div style="margin-top:10px;color:var(--text2);font-size:12px">Pagamento: ${venda.forma_pagamento === 'credito_cliente' ? 'CRÉDITO DO CLIENTE' : String(venda.forma_pagamento || '').toUpperCase()}</div>
   ${venda.troco > 0 ? `<div style="color:var(--green)">Troco: R$ ${fmtMoney(venda.troco)}</div>` : ''}
   ${itensDevol.length && venda.total < 0 ? `<div style="color:var(--green);font-size:12px">Crédito na carteira: R$ ${fmtMoney(Math.abs(venda.total))}</div>` : ''}
 </div>
@@ -3012,6 +3096,30 @@ ${podeDesconto ? `
     renderClientBar();
     renderSugestoes();
     Modal.close();
+    _avisarCreditoDoCliente(c);
+  }
+
+  // O CRÉDITO DO CLIENTE NA HORA EM QUE ELE É ESCOLHIDO. Primeiro o servidor
+  // (um crédito lançado no painel agora há pouco já aparece); sem internet,
+  // vale o que o terminal tem. Com saldo, o vendedor é avisado — é o momento
+  // de oferecer: "o senhor tem R$ 23,06 de crédito, quer usar?".
+  async function _avisarCreditoDoCliente(c) {
+    const remoteId = c?.remote_id || c?.id;
+    if (!remoteId) return;
+    await window.pdv.creditos.atualizarDoCliente?.(remoteId)?.catch?.(() => null);
+    if (selectedClient !== c) return; // trocou de cliente enquanto buscava
+    await renderClientBar();
+    if (creditoClienteDisponivel > 0) {
+      Toast.show(`🎫 ${c.nome} tem R$ ${fmtMoney(creditoClienteDisponivel)} de crédito — ofereça para usar nesta compra`, 'success');
+    }
+  }
+
+  async function _lerCreditoCliente() {
+    if (!selectedClient) { creditoClienteDisponivel = 0; return 0; }
+    const remoteId = selectedClient.remote_id || selectedClient.id;
+    const r = await window.pdv.creditos.resumo(remoteId).catch(() => null);
+    creditoClienteDisponivel = Math.max(0, Math.round(Number(r?.total_saldo || 0) * 100) / 100);
+    return creditoClienteDisponivel;
   }
 
   function clearClient() {
@@ -3039,10 +3147,13 @@ ${podeDesconto ? `
     const el = document.getElementById('pdv-client-bar');
     if (!el) return;
     if (selectedClient) {
-      const remoteId = selectedClient.remote_id || selectedClient.id;
-      const resumo = await window.pdv.creditos.resumo(remoteId).catch(() => null);
-      const emAberto = resumo?.total_saldo || 0;
+      // EM ABERTO é o fiado: o que o cliente DEVE (`saldo_devedor`, que o
+      // servidor calcula das contas a receber). O CRÉDITO é o contrário: o
+      // que a loja deve a ele. Até a 1.18 os dois vinham da mesma tabela e o
+      // crédito aparecia em vermelho, como dívida, e ainda comia o limite.
+      const emAberto = Math.max(0, Number(selectedClient.saldo_devedor || 0));
       const disponivel = Math.max(0, (selectedClient.limite_credito || 0) - emAberto);
+      const credito = await _lerCreditoCliente();
       el.innerHTML = `
         <div style="display:flex;align-items:center;gap:8px">
           <span>👤</span>
@@ -3052,69 +3163,57 @@ ${podeDesconto ? `
               Limite: R$ ${fmtMoney(selectedClient.limite_credito || 0)} ·
               Em aberto: <span style="color:${emAberto > 0 ? 'var(--red)' : 'var(--text2)'}">R$ ${fmtMoney(emAberto)}</span> ·
               Disponível: <span style="color:${disponivel > 0 ? 'var(--green)' : 'var(--red)'}">R$ ${fmtMoney(disponivel)}</span>
+              ${credito > 0 ? ` · <span style="color:var(--green);font-weight:700">🎫 Crédito: R$ ${fmtMoney(credito)}</span>` : ''}
             </div>
           </div>
         </div>
         <div class="flex gap-8">
-          ${emAberto > 0 ? `<button class="btn btn-danger btn-sm" onclick="PDV.verContaCliente()">Ver Conta</button>` : ''}
+          ${credito > 0 ? `<button class="btn btn-ghost btn-sm" style="color:var(--green)" onclick="PDV.verContaCliente()">Ver créditos</button>` : ''}
           <button class="btn btn-ghost btn-sm" onclick="PDV.openClientSearch()">Trocar</button>
         </div>`;
     } else {
+      creditoClienteDisponivel = 0;
       el.innerHTML = `
         <span class="text-muted" style="font-size:12px">👤 Sem cliente</span>
         <button class="btn btn-ghost btn-sm" onclick="PDV.openClientSearch()">+ Selecionar</button>`;
     }
   }
 
+  // OS CRÉDITOS DO CLIENTE — o que a loja deve a ele, para usar em compras.
+  // Só consulta: usar é pela forma de pagamento "Créd. cliente". Até a 1.18
+  // esta tela tratava o crédito como dívida e tinha um botão "Receber", que
+  // dava baixa no vale como se o cliente estivesse pagando.
   async function verContaCliente() {
     if (!selectedClient) return;
     const remoteId = selectedClient.remote_id || selectedClient.id;
-    const creditos = await window.pdv.creditos.getAbertos(remoteId);
-    const resumo = await window.pdv.creditos.resumo(remoteId).catch(() => null);
-    const emAberto = resumo?.total_saldo || 0;
-    const disponivel = Math.max(0, (selectedClient.limite_credito || 0) - emAberto);
+    const creditos = await window.pdv.creditos.getAbertos(remoteId).catch(() => []);
+    const total = creditos.reduce((s, c) => s + Number(c.saldo_atual || 0), 0);
+    const ORIGEM = { devolucao: 'Devolução', troca: 'Troca', adiantamento: 'Adiantamento',
+      pagamento_excedente: 'Pagamento a mais', ajuste: 'Ajuste', manual: 'Manual' };
 
-    const renderLista = (items) => !items.length
-      ? '<div style="color:var(--text3);text-align:center;padding:24px">Nenhuma conta em aberto</div>'
-      : items.map(cr => `
-<div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:8px">
-  <div class="flex-between" style="margin-bottom:6px">
-    <div>
-      <span style="font-size:11px;color:var(--text3)">${cr.origem ? cr.origem.toUpperCase() : 'CRÉDITO'}${cr.venda_origem_numero ? ' · Venda #' + cr.venda_origem_numero : ''}</span>
-      <div style="font-size:11px;color:var(--text3)">${cr.created_date ? new Date(cr.created_date).toLocaleDateString('pt-BR') : ''}</div>
-    </div>
-    <div style="text-align:right">
-      <div style="font-size:11px;color:var(--text3)">Original: R$ ${fmtMoney(cr.valor_original)}</div>
-      <div style="font-weight:700;color:var(--red)">Saldo: R$ ${fmtMoney(cr.saldo_atual)}</div>
-    </div>
+    const lista = !creditos.length
+      ? '<div style="color:var(--text3);text-align:center;padding:24px">Nenhum crédito disponível</div>'
+      : creditos.map(cr => `
+<div style="background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:6px" class="flex-between">
+  <div>
+    <div style="font-size:12px;font-weight:600">${ORIGEM[cr.origem] || 'Crédito'}${cr.venda_origem_numero ? ' · Venda #' + cr.venda_origem_numero : ''}</div>
+    <div style="font-size:11px;color:var(--text3)">${cr.created_date ? new Date(cr.created_date).toLocaleDateString('pt-BR') : ''}${cr.observacao ? ' · ' + cr.observacao : ''}</div>
   </div>
-  <div class="flex gap-8" style="margin-top:8px">
-    <input class="input" type="number" step="0.01" min="0.01" max="${cr.saldo_atual}"
-      id="pdv-rec-${cr.id}" value="${(cr.saldo_atual || 0).toFixed(2)}"
-      style="flex:1;padding:6px 10px;font-size:13px">
-    <button class="btn btn-primary btn-sm"
-      onclick="PDV._receberCredito('${cr.id}',${cr.saldo_atual})">Receber</button>
+  <div style="text-align:right">
+    <div style="font-size:11px;color:var(--text3)">de R$ ${fmtMoney(cr.valor_original)}</div>
+    <div style="font-weight:700;color:var(--green)">R$ ${fmtMoney(cr.saldo_atual)}</div>
   </div>
 </div>`).join('');
 
     Modal.open(`
-<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:14px">
-  <div style="background:var(--bg3);border-radius:8px;padding:10px;text-align:center">
-    <div style="font-size:10px;color:var(--text3)">LIMITE</div>
-    <div class="font-syne" style="font-size:16px">R$ ${fmtMoney(selectedClient.limite_credito || 0)}</div>
-  </div>
-  <div style="background:var(--bg3);border-radius:8px;padding:10px;text-align:center">
-    <div style="font-size:10px;color:var(--text3)">EM ABERTO</div>
-    <div class="font-syne" style="font-size:16px;color:var(--red)">R$ ${fmtMoney(emAberto)}</div>
-  </div>
-  <div style="background:var(--bg3);border-radius:8px;padding:10px;text-align:center">
-    <div style="font-size:10px;color:var(--text3)">DISPONÍVEL</div>
-    <div class="font-syne" style="font-size:16px;color:var(--green)">R$ ${fmtMoney(disponivel)}</div>
-  </div>
+<div style="background:var(--bg3);border-radius:8px;padding:12px;text-align:center;margin-bottom:12px">
+  <div style="font-size:10px;color:var(--text3)">CRÉDITO DISPONÍVEL PARA USAR EM COMPRAS</div>
+  <div class="font-syne" style="font-size:24px;font-weight:800;color:var(--green)">R$ ${fmtMoney(total)}</div>
+  <div style="font-size:11px;color:var(--text3);margin-top:4px">Para usar: no pagamento (F9), escolha 🎫 Créd. cliente — ou "Usar crédito", que divide sozinho quando o crédito não cobre tudo.</div>
 </div>
-<div id="pdv-conta-lista">${renderLista(creditos)}</div>
+<div style="max-height:320px;overflow:auto">${lista}</div>
 <div class="modal-actions"><button class="btn btn-ghost" onclick="Modal.close()">Fechar</button></div>
-`, `Conta — ${selectedClient.nome}`);
+`, `Créditos — ${selectedClient.nome}`);
   }
 
   async function _receberCredito(creditoId, saldoAtual) {
@@ -3241,7 +3340,7 @@ ${podeDesconto ? `
 
       // ── Atalhos numéricos no modal de pagamento (1-6) ─────────
       if (modalAberto && !emInput) {
-        const payMap = { '1':'dinheiro','2':'pix','3':'credito','4':'debito','5':'carteira','6':'misto' };
+        const payMap = { '1':'dinheiro','2':'pix','3':'credito','4':'debito','5':'carteira','6':'misto','7':'credito_cliente' };
         if (payMap[e.key] && document.querySelector('.pay-opt')) {
           e.preventDefault();
           const btn = document.querySelector(`.pay-opt[data-pay="${payMap[e.key]}"]`);
@@ -3483,7 +3582,7 @@ ${podeDesconto ? `
     _abrirNovoCliente, _salvarNovoCliente,
     _reimprimir, _enviarImpressao,
     _emitirNFCeComprovante, _confirmarDocumentoNota, _voltarAoComprovante,
-    verContaCliente, _receberCredito,
+    verContaCliente, _receberCredito, _usarCredito,
     salvarComoOrcamento, carregarDoOrcamento,
     colocarEmEspera, retomarEspera, descartarEspera,
     abrirObservacao, _salvarObservacao };

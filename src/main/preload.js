@@ -71,6 +71,7 @@ contextBridge.exposeInMainWorld('pdv', {
   creditos: {
     getAbertos: (clienteRemoteId) => ipcRenderer.invoke('creditos:getAbertos', clienteRemoteId),
     resumo: (clienteRemoteId) => ipcRenderer.invoke('creditos:resumo', clienteRemoteId),
+    atualizarDoCliente: (clienteRemoteId) => ipcRenderer.invoke('creditos:atualizarDoCliente', clienteRemoteId),
     receber: (remoteId, valorPago, saldoAtual, obs) =>
       ipcRenderer.invoke('creditos:receber', remoteId, valorPago, saldoAtual, obs),
     criarCredito: (clienteRemoteId, nome, tel, valor, obs) =>
